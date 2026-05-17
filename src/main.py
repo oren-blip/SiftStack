@@ -1861,6 +1861,14 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             max_records=args.max_notices,
         )
 
+    # --- Mecklenburg year-round delinquent-tax search × tax_delinquent ---
+    if "mecklenburg" in counties_lower and "tax_delinquent" in types_lower:
+        from mecklenburg_delinquent_scraper import scrape_mecklenburg_delinquent
+        logger.info("NC dispatcher → Mecklenburg year-round delinquent tax bills")
+        notices += scrape_mecklenburg_delinquent(
+            max_records=args.max_notices,
+        )
+
     # --- NC eCourts × foreclosure/probate (Mecklenburg + Lincoln) ---
     # Uses CapSolver to bypass AWS WAF. Only fires for counties not covered
     # by a free newspaper source for the requested type.
