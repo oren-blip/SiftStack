@@ -1861,6 +1861,27 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             max_records=args.max_notices,
         )
 
+    # --- NC eCourts × foreclosure/probate (Mecklenburg + Lincoln) ---
+    # Uses CapSolver to bypass AWS WAF. Only fires for counties not covered
+    # by a free newspaper source for the requested type.
+    ECOURTS_COUNTIES = {"mecklenburg", "lincoln"}
+    ecourts_types = {"foreclosure", "probate"} & types_lower
+    ecourts_counties_wanted = sorted(
+        c for c in counties if c.lower() in (ECOURTS_COUNTIES & counties_lower)
+    )
+    if ecourts_counties_wanted and ecourts_types and config.CAPSOLVER_API_KEY:
+        from ecourts_scraper import scrape_ecourts_sync
+        logger.info(
+            "NC dispatcher → eCourts (Smart Search via CapSolver): counties=%s types=%s",
+            ecourts_counties_wanted, sorted(ecourts_types),
+        )
+        notices += scrape_ecourts_sync(
+            counties=ecourts_counties_wanted,
+            types=sorted(ecourts_types),
+            since_date_override=args.since,
+            max_records=args.max_notices,
+        )
+
     if not notices:
         logger.warning(
             "No NC scraper covers the requested (county, type) combination: "

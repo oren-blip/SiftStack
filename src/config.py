@@ -38,6 +38,7 @@ LOG_DIR.mkdir(exist_ok=True)
 TNPN_EMAIL = os.getenv("TNPN_EMAIL", "")
 TNPN_PASSWORD = os.getenv("TNPN_PASSWORD", "")
 CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")  # 2Captcha API key
+CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY", "")  # CapSolver API key (AWS WAF for NC eCourts)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Claude Haiku for LLM parsing
 SMARTY_AUTH_ID = os.getenv("SMARTY_AUTH_ID", "")        # Smarty address standardization
 SMARTY_AUTH_TOKEN = os.getenv("SMARTY_AUTH_TOKEN", "")
