@@ -39,6 +39,7 @@ from playwright.async_api import (
 
 import config
 from aws_waf_solver import WAFSolveError, solve_aws_waf
+from ecourts_case_api import CaseDetailClient, extract_case_id
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
@@ -449,10 +450,14 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
             }
             for (const tr of trs) {
                 const cells = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').trim());
-                const link = tr.querySelector('a[href*="CaseDetail"], a[href*="Case"]') || tr.querySelector('a[href]');
+                // The actual case link is `a.caseLink`; other anchors in
+                // the row are hidden Kendo expand/collapse icons.
+                const caseAnchor = tr.querySelector('a.caseLink') || tr.querySelector('a[href]');
+                const dataUrl = caseAnchor ? (caseAnchor.getAttribute('data-url') || '') : '';
                 rows.push({
                     cells,
-                    href: link ? link.href : null,
+                    href: caseAnchor ? caseAnchor.href : null,
+                    data_url: dataUrl,
                     text: tr.innerText.trim().slice(0, 500),
                 });
             }
@@ -539,6 +544,11 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
         if not href or href.endswith("#"):
             href = f"{PORTAL_URL}#case={case_no}"
 
+        # Stash the Register-of-Actions case id (from the caseLink's data-url
+        # attribute) on the notice so the post-parse loop can fetch parties.
+        data_url = row.get("data_url") or ""
+        case_id_hex = extract_case_id(data_url)
+
         notice = NoticeData(
             county=county,
             state="NC",
@@ -546,7 +556,10 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
             date_added=date_added,
             raw_text=row.get("text", ""),
             source_url=href,
+            case_number=case_no,
         )
+        # _roa_id is a transient attribute used by _enrich_with_parties below
+        notice._roa_id = case_id_hex  # type: ignore[attr-defined]
         if notice_type == "probate":
             notice.decedent_name = primary_name
         else:
@@ -554,6 +567,73 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
         notices.append(notice)
 
     return notices
+
+
+def _enrich_with_parties(
+    notices: list[NoticeData],
+    *,
+    waf_token: str,
+    user_agent: str,
+) -> None:
+    """For each probate notice with a Register-of-Actions case id, fetch
+    the Parties OData endpoint and populate executor + beneficiary fields.
+
+    Mutates notices in place. Failures are logged and skipped (notice keeps
+    only the search-results data — decedent + case#).
+    """
+    import json as _json
+    import time as _time
+    targets = [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"]
+    if not targets:
+        return
+    logger.info("eCourts: enriching %d probate notice(s) via Parties API", len(targets))
+    client = CaseDetailClient(waf_token=waf_token, user_agent=user_agent)
+    enriched = 0
+    for i, n in enumerate(targets):
+        if i > 0:
+            _time.sleep(0.8)  # be a good citizen — polite cadence between cases
+        case_hex = getattr(n, "_roa_id", "")
+        detail = client.fetch_detail(case_hex)
+        if not detail.parties:
+            logger.debug("eCourts API: no parties for %s", n.case_number)
+            continue
+
+        # If the search-results decedent name was blank or partial, refresh
+        # it from the canonical Parties data
+        dec = detail.decedent
+        if dec and (not n.decedent_name or len(n.decedent_name) < len(dec.full_name)):
+            n.decedent_name = dec.full_name
+
+        ex = detail.executor
+        if ex:
+            n.executor_first_name = ex.first_name
+            n.executor_last_name = ex.last_name
+            # Populate the existing PR/contact mailing fields too so the
+            # downstream pipeline (Smarty, skip trace, etc.) targets the
+            # executor as the primary contact.
+            n.owner_name = ex.full_name
+            addr = ex.first_address
+            if not addr.is_blank():
+                n.owner_street = " ".join(filter(None, [addr.line1, addr.line2])).strip()
+                n.owner_city = addr.city
+                n.owner_state = addr.state
+                n.owner_zip = addr.zip
+
+        if detail.beneficiaries:
+            ben_list = []
+            for b in detail.beneficiaries:
+                addr = b.first_address
+                ben_list.append({
+                    "name": b.full_name,
+                    "street": " ".join(filter(None, [addr.line1, addr.line2])).strip(),
+                    "city": addr.city,
+                    "state": addr.state,
+                    "zip": addr.zip,
+                })
+            n.beneficiaries_json = _json.dumps(ben_list, separators=(",", ":"))
+
+        enriched += 1
+    logger.info("eCourts: enriched %d/%d notice(s) with parties data", enriched, len(targets))
 
 
 # ── Public entry ─────────────────────────────────────────────────────
@@ -692,8 +772,23 @@ async def scrape_ecourts(
             if max_records and len(notices) >= max_records:
                 break
 
+        # Capture the WAF token + UA before tearing down the browser context
+        # so the Parties API client (pure HTTP) can use them.
+        ctx_cookies = await ctx.cookies("https://portal-nc.tylertech.cloud/")
+        waf_cookie = next((c for c in ctx_cookies if c["name"] == "aws-waf-token"), None)
+        waf_token_for_api = waf_cookie["value"] if waf_cookie else ""
+        ua_for_api = (cached.get("user_agent") if cached else _DEFAULT_UA) or _DEFAULT_UA
+
         await ctx.close()
         await browser.close()
+
+    # Per-case enrichment via OData Parties endpoint (pure HTTP — no browser)
+    # Fills executor + beneficiaries from each case's Register of Actions
+    if waf_token_for_api and notices:
+        try:
+            _enrich_with_parties(notices, waf_token=waf_token_for_api, user_agent=ua_for_api)
+        except Exception:
+            logger.exception("eCourts: parties enrichment failed (continuing with bare notices)")
 
     save_seen_ids(seen_ids)
     save_last_run_date()

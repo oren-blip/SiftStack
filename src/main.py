@@ -1928,6 +1928,7 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             gis_stats["dropped_heir_occupied"],
         )
 
+
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
 
     opts = PipelineOptions(
@@ -1989,6 +1990,18 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             logging.info("Output: %s", p)
     else:
         logging.info("Output: %s", write_csv(notices))
+
+    # FTM-style NC Estates CSV — matches user's manual weekly probate sheet
+    # layout (File Date / County / Case No. / Deceased / Executor First+Last+
+    # Mailing / Parcel ID / Property addr / Property use / Notes-with-
+    # beneficiaries / Tags / List). Written alongside the standard CSV.
+    probate_notices = [n for n in notices if n.notice_type == "probate"]
+    if probate_notices:
+        from nc_ftm_writer import write_ftm_csv
+        ts_ftm = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ftm_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.csv"
+        write_ftm_csv(probate_notices, ftm_path)
+        logging.info("NC Estates FTM-format CSV: %s (%d rows)", ftm_path, len(probate_notices))
 
     if getattr(args, "upload_datasift", False):
         from datasift_formatter import write_datasift_split_csvs

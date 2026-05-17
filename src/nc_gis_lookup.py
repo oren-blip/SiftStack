@@ -82,10 +82,28 @@ def _normalize_name(name: str) -> str:
 def split_decedent_name(name: str) -> tuple[str, str, str]:
     """Best-effort split into (first, middle, last).
 
-    eCourts gives names like "Helen Barbara Barlow" → ("HELEN", "BARBARA", "BARLOW").
-    Single-token names (rare) → ("", "", name).
-    Two tokens → ("first", "", "last").
+    Handles BOTH formats:
+    - "Helen Barbara Barlow"        → ("HELEN", "BARBARA", "BARLOW")
+    - "Barlow, Helen Barbara"       → ("HELEN", "BARBARA", "BARLOW")  (Tyler API)
+    - "Thrower, James W Jr."        → ("JAMES", "W", "THROWER")        (suffix stripped first)
+    Single-token names → ("", "", name).
     """
+    if not name:
+        return ("", "", "")
+    # Comma format: "Last, First Middle" — split on comma BEFORE normalizing
+    raw = name.strip()
+    if "," in raw:
+        last_part, _, first_part = raw.partition(",")
+        # Suffixes in first_part are handled by _normalize_name's noise strip
+        last = _normalize_name(last_part)
+        first_mid = _normalize_name(first_part)
+        first_tokens = first_mid.split()
+        if not first_tokens:
+            return ("", "", last)
+        if len(first_tokens) == 1:
+            return (first_tokens[0], "", last)
+        return (first_tokens[0], " ".join(first_tokens[1:]), last)
+    # No comma — treat as "First Middle Last"
     norm = _normalize_name(name)
     if not norm:
         return ("", "", "")
@@ -234,6 +252,37 @@ def _polaris3g_search(
 _POLARIS3G_VACANT_PREFIXES = ("V", "AGV", "00")  # vacant land
 _POLARIS3G_RESIDENTIAL_PREFIXES = ("R",)          # R100, R122, ...
 _POLARIS3G_COMMERCIAL_PREFIXES = ("C", "O", "I")  # commercial / office / industrial
+
+
+def simplify_use_code(use_code: str, use_description: str = "") -> str:
+    """Map a polaris3g land_use_code to user's simple SFR / MH / Vacant Land bucket.
+
+    Per the user's FTM_2026_NC Estates manual file, property use is one of:
+    SFR, MH, Vacant Land, MH/Vacant, Condo, Commercial (extra). Returns
+    empty string when no mapping fits.
+    """
+    code = (use_code or "").strip().upper()
+    desc = (use_description or "").strip().upper()
+    if not code and not desc:
+        return ""
+    # Mobile / manufactured home
+    if "MOBILE HOME" in desc or "MANUFACTURED" in desc or code.startswith("R200"):
+        return "MH"
+    # Condominium / townhouse
+    if "CONDOMINIUM" in desc or code.startswith("R300"):
+        return "Condo"
+    if "TOWN HOUSE" in desc or "TOWNHOUSE" in desc or code.startswith("R309"):
+        return "Townhouse"
+    # Single-family residential
+    if code.startswith("R100") or code.startswith("R1") or "SINGLE FAMILY" in desc:
+        return "SFR"
+    if any(code.startswith(p) for p in _POLARIS3G_VACANT_PREFIXES) or "VACANT" in desc:
+        return "Vacant Land"
+    if any(code.startswith(p) for p in _POLARIS3G_COMMERCIAL_PREFIXES):
+        return "Commercial"
+    if code.startswith("R"):
+        return "Residential"  # catch-all for other R* codes
+    return ""
 
 
 def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> PropertyCandidate | None:
@@ -554,6 +603,7 @@ def expand_notices_with_gis(
             new_n.zip = zipc
             new_n.state = "NC"
             new_n.parcel_id = c.pid
+            new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description)
             if c.market_value is not None:
                 new_n.estimated_value = f"{c.market_value:.0f}"
             if c.year_built is not None:
@@ -570,12 +620,13 @@ def expand_notices_with_gis(
                 new_n.mls_last_sold_date = c.sale_date
             if c.sale_price is not None:
                 new_n.mls_last_sold_price = f"{c.sale_price:.0f}"
-            # If we have a separate mailing address, route it into owner_*
-            # so the contact-mailing path picks it up. (For probate the
-            # PR's address is the contact target; if GIS owner mailing differs
-            # from situs, it's likely the heir/PR's mailing.)
+            # For probate notices, DO NOT overwrite owner_* fields here —
+            # the executor's mailing (set upstream by ecourts_scraper from
+            # the Parties API) is the canonical primary contact. Only
+            # populate owner_* when it's empty (e.g. foreclosures from GIS).
             if c.mailing_address and not _addresses_match(c.situs_address, c.mailing_address):
-                _populate_mailing(new_n, c.mailing_address)
+                if not (new_n.owner_street or new_n.owner_name):
+                    _populate_mailing(new_n, c.mailing_address)
             out.append(new_n)
             stats["expanded_out"] += 1
 

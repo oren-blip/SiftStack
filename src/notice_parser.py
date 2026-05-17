@@ -132,6 +132,12 @@ class NoticeData:
     email_5: str = ""
     # Pipeline metadata (set by enrichment_pipeline)
     run_id: str = ""                   # Unique pipeline run identifier for data lineage
+    # NC eCourts case fields (populated by ecourts_scraper after Parties API call)
+    case_number: str = ""              # eCourts case# (e.g. "26E001794-590")
+    executor_first_name: str = ""      # Affiant/Executor/Administrator first name
+    executor_last_name: str = ""       # Affiant/Executor/Administrator last name
+    beneficiaries_json: str = ""       # JSON list of {name, street, city, state, zip}
+    property_use_simple: str = ""      # Simplified use code: SFR / MH / Vacant Land / Condo / Commercial
 
 
 # ── Known TN cities in Knox & Blount counties ─────────────────────────
