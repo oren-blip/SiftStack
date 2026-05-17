@@ -1869,6 +1869,14 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             max_records=args.max_notices,
         )
 
+    # --- Rowan annual delinquent-tax XLSX × tax_delinquent ---
+    if "rowan" in counties_lower and "tax_delinquent" in types_lower:
+        from rowan_delinquent_scraper import scrape_rowan_delinquent
+        logger.info("NC dispatcher → Rowan annual delinquent-tax XLSX")
+        notices += scrape_rowan_delinquent(
+            max_records=args.max_notices,
+        )
+
     # --- NC eCourts × foreclosure/probate (Mecklenburg + Lincoln) ---
     # Uses CapSolver to bypass AWS WAF. Only fires for counties not covered
     # by a free newspaper source for the requested type.

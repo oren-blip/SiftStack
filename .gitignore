@@ -29,6 +29,8 @@ ecourts_seen_ids.json
 ecourts_waf_cookies.json
 meck_delinquent_last_run.json
 meck_delinquent_seen_ids.json
+rowan_delinquent_last_run.json
+rowan_delinquent_seen_ids.json
 *.tmp
 *.bak
 
