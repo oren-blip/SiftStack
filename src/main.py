@@ -1261,7 +1261,12 @@ def cli_main() -> None:
     parser.add_argument(
         "--include-vacant",
         action="store_true",
-        help="Keep vacant land parcels (default: filtered out). Use if your buy box includes land deals.",
+        help="Keep vacant land parcels (default: filtered out for TN). Use if your buy box includes land deals.",
+    )
+    parser.add_argument(
+        "--no-include-vacant",
+        action="store_true",
+        help="Drop vacant land parcels in NC runs (NC default keeps them since user's NC buy box includes land).",
     )
     parser.add_argument(
         "--include-commercial",
@@ -1877,14 +1882,14 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             max_records=args.max_notices,
         )
 
-    # --- NC eCourts × foreclosure/probate (Mecklenburg + Lincoln) ---
-    # Uses CapSolver to bypass AWS WAF. Only fires for counties not covered
-    # by a free newspaper source for the requested type.
-    ECOURTS_COUNTIES = {"mecklenburg", "lincoln"}
+    # --- NC eCourts × foreclosure/probate (statewide; all 100 NC counties) ---
+    # Tyler Tech Odyssey portal at portal-nc.tylertech.cloud is the statewide
+    # NC eCourts rollout (Oct 2025). Uses CapSolver to bypass AWS WAF.
+    # Configured as the primary online portal for NC courthouse data — fires
+    # for every requested NC county. Free newspaper sources still run alongside
+    # (column.us, Salisbury Post, Gannett); dedup happens later in the pipeline.
     ecourts_types = {"foreclosure", "probate"} & types_lower
-    ecourts_counties_wanted = sorted(
-        c for c in counties if c.lower() in (ECOURTS_COUNTIES & counties_lower)
-    )
+    ecourts_counties_wanted = sorted(counties)
     if ecourts_counties_wanted and ecourts_types and config.CAPSOLVER_API_KEY:
         from ecourts_scraper import scrape_ecourts_sync
         logger.info(
@@ -1906,14 +1911,21 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             counties, types,
         )
 
-    # Probate property lookup is Knox-Tax-API-only today — calling it for NC
-    # counties is a graceful no-op, but skip to keep logs clean.
-    probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
-    if probate_notices:
-        logging.info(
-            "NC probate property lookup not yet implemented "
-            "(%d probate notices will export with no property address)",
-            len(probate_notices),
+    # NC probate property lookup via county GIS — for every probate notice
+    # with a decedent name, search the county GIS by name to find owned
+    # parcels, then apply the heir-occupancy filter (drop properties whose
+    # mailing address matches the property address → owner lives there).
+    # Currently supports Mecklenburg (polaris3g). Other counties pass through.
+    if notices:
+        from nc_gis_lookup import expand_notices_with_gis
+        notices, gis_stats = expand_notices_with_gis(notices)
+        logger.info(
+            "NC GIS lookup: input=%d, supported=%d, unsupported=%d, expanded_in=%d, "
+            "expanded_out=%d, dropped_no_match=%d, dropped_heir_occupied=%d",
+            gis_stats["input"], gis_stats["counties_supported"],
+            gis_stats["counties_unsupported"], gis_stats["expanded_in"],
+            gis_stats["expanded_out"], gis_stats["dropped_no_match"],
+            gis_stats["dropped_heir_occupied"],
         )
 
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
@@ -1921,7 +1933,9 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
     opts = PipelineOptions(
         skip_parcel_lookup=True,        # NC has no Knox-equivalent tax API yet
         skip_tax=True,                  # tax enrichment is Knox-County-specific
-        skip_vacant_filter=getattr(args, "include_vacant", False),
+        # User's NC buy box includes land deals — keep vacant parcels by default.
+        # Pass --no-include-vacant to revert to the default vacant-land drop.
+        skip_vacant_filter=not getattr(args, "no_include_vacant", False),
         skip_commercial_filter=getattr(args, "include_commercial", False),
         skip_entity_filter=getattr(args, "include_entities", False),
         skip_smarty=getattr(args, "skip_smarty", False),
