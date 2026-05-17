@@ -18,6 +18,8 @@ column_last_run.json
 column_seen_ids.json
 mecklenburg_tax_last_run.json
 mecklenburg_tax_seen_ids.json
+zacchaeus_last_run.json
+zacchaeus_seen_ids.json
 *.tmp
 *.bak
 

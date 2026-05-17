@@ -1823,6 +1823,16 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             max_records=args.max_notices,
         )
 
+    # --- Zacchaeus Legal Services × tax_sale (Cabarrus, Catawba) ---
+    if "tax_sale" in types_lower:
+        from zacchaeus_scraper import ZACCHAEUS_TARGET_COUNTIES, scrape_zacchaeus_sync
+        zacc_counties_wanted = [
+            c for c in ZACCHAEUS_TARGET_COUNTIES if c.lower() in counties_lower
+        ]
+        if zacc_counties_wanted:
+            logger.info("NC dispatcher → Zacchaeus tax foreclosures: %s", zacc_counties_wanted)
+            notices += scrape_zacchaeus_sync(counties=zacc_counties_wanted)
+
     if not notices:
         logger.warning(
             "No NC scraper covers the requested (county, type) combination: "
