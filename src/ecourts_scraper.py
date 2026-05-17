@@ -589,6 +589,7 @@ def _enrich_with_parties(
     logger.info("eCourts: enriching %d probate notice(s) via Parties API", len(targets))
     client = CaseDetailClient(waf_token=waf_token, user_agent=user_agent)
     enriched = 0
+    guardianships: list[NoticeData] = []
     for i, n in enumerate(targets):
         if i > 0:
             _time.sleep(0.8)  # be a good citizen — polite cadence between cases
@@ -596,6 +597,12 @@ def _enrich_with_parties(
         detail = client.fetch_detail(case_hex)
         if not detail.parties:
             logger.debug("eCourts API: no parties for %s", n.case_number)
+            continue
+        # Guardianship cases (living incapacitated person, not a decedent)
+        # are filed under Estates but aren't probate leads — flag for removal.
+        if detail.is_guardianship:
+            logger.info("eCourts: %s is a guardianship case — dropping from probate output", n.case_number)
+            guardianships.append(n)
             continue
 
         # If the search-results decedent name was blank or partial, refresh
@@ -633,7 +640,15 @@ def _enrich_with_parties(
             n.beneficiaries_json = _json.dumps(ben_list, separators=(",", ":"))
 
         enriched += 1
-    logger.info("eCourts: enriched %d/%d notice(s) with parties data", enriched, len(targets))
+    # Strip the guardianship cases from the live notice list
+    if guardianships:
+        ids_to_drop = {id(n) for n in guardianships}
+        # Mutate in place so the caller's list reflects the filter
+        notices[:] = [n for n in notices if id(n) not in ids_to_drop]
+    logger.info(
+        "eCourts: enriched %d/%d notice(s) with parties data; dropped %d guardianship(s)",
+        enriched, len(targets), len(guardianships),
+    )
 
 
 # ── Public entry ─────────────────────────────────────────────────────

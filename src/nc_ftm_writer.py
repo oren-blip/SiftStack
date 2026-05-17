@@ -81,15 +81,42 @@ def _format_decedent(name: str) -> str:
     return f"{last}, {rest}"
 
 
-def _build_notes(notice: NoticeData) -> str:
-    """Build the multi-line Notes block — beneficiary list, extra notes."""
+def _format_extra_parcels(extras: list[NoticeData]) -> str:
+    """Format a 'PLUS N PARCELS' note for additional properties of a decedent.
+
+    Each extra is rendered as: 'parcel_id  property_address, city zip [USE]'
+    so the user can see what's been collapsed off the main row.
+    """
+    if not extras:
+        return ""
+    lines = [f"PLUS {len(extras)} PARCEL{'S' if len(extras) > 1 else ''}"]
+    for e in extras:
+        bits = []
+        if e.parcel_id:
+            bits.append(e.parcel_id)
+        addr = " ".join(filter(None, [e.address, e.city, e.zip])).strip()
+        if addr:
+            bits.append(addr)
+        if e.property_use_simple:
+            bits.append(f"[{e.property_use_simple}]")
+        lines.append("  " + " | ".join(bits))
+    return "\n".join(lines)
+
+
+def _build_notes(notice: NoticeData, *, extra_parcels: list[NoticeData] | None = None) -> str:
+    """Build the multi-line Notes block — beneficiary list + extra parcel notes."""
     parts: list[str] = []
+    extra_block = _format_extra_parcels(extra_parcels or [])
+    if extra_block:
+        parts.append(extra_block)
     if notice.beneficiaries_json:
         try:
             bens = json.loads(notice.beneficiaries_json)
         except (ValueError, TypeError):
             bens = []
         if bens:
+            if parts:
+                parts.append("")  # blank separator
             parts.append("Beneficiary")
             for b in bens:
                 name = b.get("name", "")
@@ -117,8 +144,17 @@ def _iso_week_tag(date_str: str) -> str:
     return f"NC Estates Week {week} {d.year}"
 
 
-def notice_to_ftm_row(notice: NoticeData, *, tag_override: str = "") -> dict[str, str]:
-    """Convert one NoticeData record to a single FTM-format dict."""
+def notice_to_ftm_row(
+    notice: NoticeData,
+    *,
+    tag_override: str = "",
+    extra_parcels: list[NoticeData] | None = None,
+) -> dict[str, str]:
+    """Convert one NoticeData record to a single FTM-format dict.
+
+    `extra_parcels` (if any) get listed in Notes as 'PLUS N PARCELS: ...'
+    so a decedent with multiple properties collapses to one row.
+    """
     tag = tag_override or _iso_week_tag(notice.date_added)
     return {
         "File Date":        _format_date(notice.date_added),
@@ -137,11 +173,41 @@ def notice_to_ftm_row(notice: NoticeData, *, tag_override: str = "") -> dict[str
         "Property State":   notice.state if notice.state == "NC" else "NC",
         "Property Zip":     notice.zip,
         "Property use":     notice.property_use_simple,
-        "Notes":            _build_notes(notice),
+        "Notes":            _build_notes(notice, extra_parcels=extra_parcels),
         "Phone 1":          notice.primary_phone,
         "Tags":             tag,
         "List":             "PROBATE",
     }
+
+
+def _market_value_key(n: NoticeData) -> float:
+    """Sort key for picking the 'main' parcel per decedent — highest value wins."""
+    try:
+        return float(n.estimated_value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[NoticeData]]]:
+    """Group notices by case_number; return [(main_parcel, [extra_parcels])].
+
+    Main parcel = the one with the highest estimated_value. Falls back to
+    the first if values are equal/missing. Notices without a case_number
+    are returned individually with no extras.
+    """
+    groups: dict[str, list[NoticeData]] = {}
+    out: list[tuple[NoticeData, list[NoticeData]]] = []
+    for n in notices:
+        key = n.case_number or f"_no_case_{id(n)}"
+        groups.setdefault(key, []).append(n)
+    for key, items in groups.items():
+        if len(items) == 1:
+            out.append((items[0], []))
+            continue
+        items_sorted = sorted(items, key=_market_value_key, reverse=True)
+        main, extras = items_sorted[0], items_sorted[1:]
+        out.append((main, extras))
+    return out
 
 
 def write_ftm_csv(
@@ -149,13 +215,24 @@ def write_ftm_csv(
     out_path: Path,
     *,
     tag_override: str = "",
+    collapse_multi_parcel: bool = True,
 ) -> int:
     """Write NoticeData list to a CSV matching the FTM Estates format.
+
+    With `collapse_multi_parcel=True` (default), decedents with multiple
+    parcels collapse to one row (highest-value parcel as main; the rest
+    listed in Notes as 'PLUS N PARCELS: ...'). Set False to emit one
+    row per parcel.
 
     Returns the number of rows written.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [notice_to_ftm_row(n, tag_override=tag_override) for n in notices]
+    if collapse_multi_parcel:
+        groups = collapse_by_case(notices)
+        rows = [notice_to_ftm_row(main, tag_override=tag_override, extra_parcels=extras)
+                for main, extras in groups]
+    else:
+        rows = [notice_to_ftm_row(n, tag_override=tag_override) for n in notices]
     with out_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=FTM_COLUMNS, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
