@@ -1833,6 +1833,17 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             logger.info("NC dispatcher → Zacchaeus tax foreclosures: %s", zacc_counties_wanted)
             notices += scrape_zacchaeus_sync(counties=zacc_counties_wanted)
 
+    # --- Salisbury Post AdHunter × foreclosure/probate (Rowan) ---
+    if "rowan" in counties_lower:
+        sp_types = {"foreclosure", "probate"} & types_lower
+        if sp_types:
+            from salisbury_post_scraper import scrape_salisbury_post
+            logger.info("NC dispatcher → Salisbury Post (Rowan): %s", sorted(sp_types))
+            notices += scrape_salisbury_post(
+                types=sorted(sp_types),
+                max_records=args.max_notices,
+            )
+
     if not notices:
         logger.warning(
             "No NC scraper covers the requested (county, type) combination: "

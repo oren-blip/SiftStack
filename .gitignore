@@ -20,6 +20,8 @@ mecklenburg_tax_last_run.json
 mecklenburg_tax_seen_ids.json
 zacchaeus_last_run.json
 zacchaeus_seen_ids.json
+salisbury_post_last_run.json
+salisbury_post_seen_ids.json
 *.tmp
 *.bak
 

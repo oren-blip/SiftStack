@@ -176,14 +176,19 @@ CLAIMS_AGAINST_RE = re.compile(
 # PR/Executor name — appears in the closing signature block.
 # Canonical NC pattern: "This the Nth day of MONTH, YYYY. NAME, Title"
 # A few notices use "This the Nth day MONTH of YYYY." (word-order swap).
-# REQUIRE the date prefix — without it the regex matches lead-in junk like
+# Salisbury Post uses "Today's date MM/DD/YYYY. NAME, as Title for the estate"
+# REQUIRE a date prefix — without it the regex matches lead-in junk like
 # "Having qualified as Administrator..." instead of the real PR name.
 PR_NAME_RE = re.compile(
+    r"(?:"
     r"This\s+(?:the\s+)?\d+(?:st|nd|rd|th)?\s+day\s+"
     r"(?:of\s+\w+,?\s*\d{4}|\w+\s+of\s+\d{4})"
+    r"|Today'?s?\s+date\s+\d{1,2}/\d{1,2}/\d{2,4}"
+    r")"
     r"\.?\s+"
     r"([A-Z][A-Za-z.\s,'-]+?[A-Za-z.])"
     r"\s*,\s*"
+    r"(?:as\s+)?"  # Salisbury Post wraps title with 'as'
     r"(?:Executor|Executrix|Administrator|Administratrix|Personal\s+Representative|Ancillary\s+(?:Co-)?(?:Executor|Executrix|Administrator|Administratrix)|Co[-\s]?Administrator(?:s|ix)?|Co[-\s]?Executor(?:s|ix)?)",
     re.IGNORECASE,
 )
