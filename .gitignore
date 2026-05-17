@@ -22,6 +22,8 @@ zacchaeus_last_run.json
 zacchaeus_seen_ids.json
 salisbury_post_last_run.json
 salisbury_post_seen_ids.json
+gannett_legals_last_run.json
+gannett_legals_seen_ids.json
 *.tmp
 *.bak
 

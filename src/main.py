@@ -1844,6 +1844,23 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
                 max_records=args.max_notices,
             )
 
+    # --- Gannett Marketplace × foreclosure/probate (Gaston via Gaston Gazette) ---
+    from gannett_legals_scraper import PAPER_SLUGS as GANNETT_PAPERS, scrape_gannett_legals
+    gannett_counties_wanted = [
+        c for c in GANNETT_PAPERS.values() if c.lower() in counties_lower
+    ]
+    gannett_types_wanted = {"foreclosure", "probate", "tax_sale"} & types_lower
+    if gannett_counties_wanted and gannett_types_wanted:
+        logger.info(
+            "NC dispatcher → Gannett Marketplace: counties=%s types=%s",
+            gannett_counties_wanted, sorted(gannett_types_wanted),
+        )
+        notices += scrape_gannett_legals(
+            counties=gannett_counties_wanted,
+            types=sorted(gannett_types_wanted),
+            max_records=args.max_notices,
+        )
+
     if not notices:
         logger.warning(
             "No NC scraper covers the requested (county, type) combination: "
