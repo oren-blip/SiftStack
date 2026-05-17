@@ -12,8 +12,17 @@ cookies.json
 datasift_cookies.json
 dropbox_state.json
 photo_state.json
+nc_last_run.json
+nc_seen_ids.json
+column_last_run.json
+column_seen_ids.json
+mecklenburg_tax_last_run.json
+mecklenburg_tax_seen_ids.json
 *.tmp
 *.bak
+
+# Playwright bundled browser binaries (large, installed via `playwright install`)
+.playwright-browsers/
 
 # Output (generated data)
 output/

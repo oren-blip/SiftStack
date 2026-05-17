@@ -69,6 +69,34 @@ BASE_URL = "https://www.tnpublicnotice.com"
 LOGIN_URL = f"{BASE_URL}/authenticate.aspx"
 SMART_SEARCH_URL = f"{BASE_URL}/Smartsearch/Default.aspx"
 
+# ── NC Site (ncnotices.com — NC Press Association, ASP.NET, no login, no CAPTCHA) ──
+NC_BASE_URL = "https://www.ncnotices.com"
+NC_SEARCH_URL = f"{NC_BASE_URL}/Search.aspx"
+NC_STATE_FILE = PROJECT_ROOT / "nc_last_run.json"
+NC_SEEN_IDS_FILE = PROJECT_ROOT / "nc_seen_ids.json"
+
+# ── NC Selectors (ncnotices.com — same vendor as TN, shares ctl00$...$as1$ namespace) ──
+NC_SEL_CATEGORY = "#ctl00_ContentPlaceHolder1_as1_ddlPopularSearches"
+NC_SEL_KEYWORD = "#ctl00_ContentPlaceHolder1_as1_txtSearch"
+NC_SEL_EXCLUDE = "#ctl00_ContentPlaceHolder1_as1_txtExclude"
+NC_SEL_MATCH_ALL = "#ctl00_ContentPlaceHolder1_as1_rdoType_0"
+NC_SEL_MATCH_ANY = "#ctl00_ContentPlaceHolder1_as1_rdoType_1"
+NC_SEL_MATCH_EXACT = "#ctl00_ContentPlaceHolder1_as1_rdoType_2"
+NC_SEL_DATE_LAST_DAYS_RADIO = "#ctl00_ContentPlaceHolder1_as1_rbLastNumDays"
+NC_SEL_DATE_LAST_DAYS_INPUT = "#ctl00_ContentPlaceHolder1_as1_txtLastNumDays"
+NC_SEL_SUBMIT = "#ctl00_ContentPlaceHolder1_as1_btnGo"
+NC_SEL_RESET = "#ctl00_ContentPlaceHolder1_as1_btnReset1"
+NC_SEL_PER_PAGE = "#ctl00_ContentPlaceHolder1_WSExtendedGridNP1_GridView1_ctl01_ddlPerPage"
+NC_SEL_VIEW_BUTTON_PATTERN = "input.viewButton[name$='btnView2']"
+NC_SEL_NEXT_PAGE = "input[name$='btnNext'][title='Next page']"
+NC_SEL_CURRENT_PAGE = "#ctl00_ContentPlaceHolder1_WSExtendedGridNP1_GridView1_ctl01_lblCurrentPage"
+NC_SEL_TOTAL_PAGES = "#ctl00_ContentPlaceHolder1_WSExtendedGridNP1_GridView1_ctl01_lblTotalPages"
+
+# NC counties currently in scope (subset of 100 NC counties on the site)
+NC_TARGET_COUNTIES = [
+    "Cabarrus", "Catawba", "Gaston", "Iredell", "Lincoln", "Mecklenburg", "Rowan",
+]
+
 # ── ASP.NET Selectors ─────────────────────────────────────────────────
 # Login form
 SEL_LOGIN_EMAIL = "#ctl00_ContentPlaceHolder1_AuthenticateIPA1_txtEmailAddress"
@@ -119,6 +147,32 @@ SAVED_SEARCHES: list[SavedSearch] = [
     SavedSearch("Knox", "foreclosure", "Foreclosure V2 Knox"),
     SavedSearch("Blount", "foreclosure", "Foreclosure V2 Blount"),
 ]
+
+
+@dataclass
+class NCSavedSearch:
+    """A search definition for ncnotices.com.
+
+    The site has no saved-search dropdown — each search is built up on the
+    form: optional category dropdown, optional keyword, and a county checkbox.
+    One NCSavedSearch = one (county, notice_type) combination.
+    """
+    county: str            # Single NC county name (matches checkbox label)
+    notice_type: str       # foreclosure | probate | tax_sale | tax_delinquent
+    category: str | None   # "Foreclosure" or None
+    keyword: str | None    # e.g. "notice to creditors", or None
+    match_type: str = "EXACT"  # ALL / ANY / EXACT (only used when keyword is set)
+
+
+# 7 counties × 3 search variants = 21 NC searches.
+# tax_sale and tax_delinquent overlap heavily on this site (both surface "tax
+# foreclosure" notices) — we keep just one "tax_sale" search per county to
+# avoid duplicate hits; classification can refine later.
+NC_SAVED_SEARCHES: list[NCSavedSearch] = (
+    [NCSavedSearch(c, "foreclosure", "Foreclosure", None) for c in NC_TARGET_COUNTIES]
+    + [NCSavedSearch(c, "probate", None, "notice to creditors", "EXACT") for c in NC_TARGET_COUNTIES]
+    + [NCSavedSearch(c, "tax_sale", None, "tax foreclosure", "EXACT") for c in NC_TARGET_COUNTIES]
+)
 
 # ── Entity Detection ──────────────────────────────────────────────────
 # Business entity patterns — shared across obituary_enricher, tax_enricher,

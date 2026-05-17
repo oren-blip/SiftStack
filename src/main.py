@@ -16,9 +16,11 @@ from pathlib import Path
 import config
 from config import (
     LOG_DIR,
+    NC_SAVED_SEARCHES,
     NOTICE_TYPES,
     OUTPUT_DIR,
     SAVED_SEARCHES,
+    NCSavedSearch,
     SavedSearch,
 )
 from data_formatter import deduplicate, write_csv, write_csv_by_type
@@ -48,6 +50,21 @@ def _filter_searches(
     return searches
 
 
+def _filter_nc_searches(
+    counties: list[str] | None,
+    types: list[str] | None,
+) -> list[NCSavedSearch]:
+    """Filter NC_SAVED_SEARCHES by county and/or notice type."""
+    searches = list(NC_SAVED_SEARCHES)
+    if counties:
+        cs = {c.lower() for c in counties}
+        searches = [s for s in searches if s.county.lower() in cs]
+    if types:
+        ts = {t.lower() for t in types}
+        searches = [s for s in searches if s.notice_type.lower() in ts]
+    return searches
+
+
 # ── Preflight health checks ─────────────────────────────────────────
 
 
@@ -60,7 +77,8 @@ def _preflight_check(mode: str) -> list[str]:
 
     # ── Credential checks (mode-dependent) ──────────────────────────
     scrape_modes = {"daily", "historical"}
-    enrichment_modes = scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
+    nc_scrape_modes = {"nc-daily", "nc-historical"}
+    enrichment_modes = scrape_modes | nc_scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
 
     if mode in scrape_modes:
@@ -99,6 +117,15 @@ def _preflight_check(mode: str) -> list[str]:
                 failures.append(f"tnpublicnotice.com returned {resp.status_code} — site may be down")
         except Exception as e:
             failures.append(f"Cannot reach tnpublicnotice.com: {e}")
+
+    if mode in nc_scrape_modes:
+        import requests as _requests
+        try:
+            resp = _requests.head(config.NC_BASE_URL, timeout=10, allow_redirects=True)
+            if resp.status_code >= 500:
+                failures.append(f"ncnotices.com returned {resp.status_code} — site may be down")
+        except Exception as e:
+            failures.append(f"Cannot reach ncnotices.com: {e}")
 
     # ── 2Captcha balance check ──────────────────────────────────────
     if mode in scrape_modes and config.CAPTCHA_API_KEY:
@@ -1016,7 +1043,8 @@ def cli_main() -> None:
     parser.add_argument(
         "mode",
         choices=[
-            "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
+            "daily", "historical", "nc-daily", "nc-historical",
+            "pdf-import", "photo-import", "dropbox-watch",
             "csv-import", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
@@ -1024,7 +1052,8 @@ def cli_main() -> None:
             "playbook",
         ],
         help=(
-            "daily/historical = scrape notices; pdf-import/photo-import = import from files; "
+            "daily/historical = scrape TN notices; nc-daily/nc-historical = scrape NC notices; "
+            "pdf-import/photo-import = import from files; "
             "dropbox-watch = poll Dropbox; csv-import = re-enrich CSV; "
             "phone-validate = Trestle scoring; manage-sold/manage-presets = DataSift ops; "
             "comp = comparable sales ARV; rehab = rehab cost estimate; "
@@ -1683,6 +1712,36 @@ def cli_main() -> None:
         _run_csv_import(args)
         return
 
+    # NC scrape modes — separate pipeline (different site, no login, no CAPTCHA)
+    if args.mode in ("nc-daily", "nc-historical"):
+        nc_counties = None
+        if args.counties and args.counties.lower() != "all":
+            nc_counties = [c.strip() for c in args.counties.split(",")]
+        nc_types = None
+        if args.types and args.types.lower() != "all":
+            nc_types = [t.strip() for t in args.types.split(",")]
+
+        nc_searches = _filter_nc_searches(nc_counties, nc_types)
+        if not nc_searches:
+            logging.error("No NC searches match the given --counties / --types filters")
+            sys.exit(1)
+        logging.info(
+            "Running %d NC searches: %s",
+            len(nc_searches),
+            ", ".join(f"{s.county}/{s.notice_type}" for s in nc_searches),
+        )
+        try:
+            _run_nc_scrape_pipeline(args, nc_searches)
+        except Exception as e:
+            logging.exception("NC pipeline failed with unhandled error")
+            try:
+                from slack_notifier import notify_error
+                notify_error("NC Pipeline (top-level)", e, context=f"mode={args.mode}")
+            except Exception:
+                pass
+            sys.exit(1)
+        return
+
     # Filter saved searches
     counties = None
     if args.counties and args.counties.lower() != "all":
@@ -1713,6 +1772,165 @@ def cli_main() -> None:
         except Exception:
             pass
         sys.exit(1)
+
+
+def _run_nc_scrape_pipeline(args, searches) -> None:
+    """Run the NC scrape → enrich → export → upload pipeline.
+
+    Dispatches to whichever scrapers cover the requested (county, type) pairs:
+      - column.us (Iredell, Cabarrus, Catawba) × (foreclosure, probate)
+      - Mecklenburg ArcGIS (Mecklenburg) × (tax_sale)
+      - <future scrapers per Phase 2 backlog>
+
+    The legacy ncnotices.com scraper (`nc_scraper.scrape_nc_all`) is dormant
+    while that site is parked.
+    """
+    from column_scraper import COLUMN_SUBDOMAINS, scrape_column_all
+    from mecklenburg_tax_scraper import scrape_mecklenburg_tax_foreclosures
+
+    nc_mode = "daily" if args.mode == "nc-daily" else "historical"
+
+    # Derive county + type filters from the NCSavedSearch list
+    counties = sorted({s.county for s in searches})
+    types = sorted({s.notice_type for s in searches})
+    counties_lower = {c.lower() for c in counties}
+    types_lower = {t.lower() for t in types}
+
+    notices: list = []
+
+    # --- column.us (Iredell, Cabarrus, Catawba) × foreclosure/probate ---
+    column_counties = {c for _slug, c, _pub in COLUMN_SUBDOMAINS}
+    column_types_wanted = {"foreclosure", "probate"} & types_lower
+    column_counties_wanted = {c for c in column_counties if c.lower() in counties_lower}
+    if column_counties_wanted and column_types_wanted:
+        logger.info(
+            "NC dispatcher → column.us: counties=%s types=%s",
+            sorted(column_counties_wanted), sorted(column_types_wanted),
+        )
+        notices += asyncio.run(scrape_column_all(
+            mode=nc_mode,
+            counties=sorted(column_counties_wanted),
+            types=sorted(column_types_wanted),
+            since_date_override=args.since,
+        ))
+
+    # --- Mecklenburg ArcGIS × tax_sale ---
+    if "mecklenburg" in counties_lower and "tax_sale" in types_lower:
+        logger.info("NC dispatcher → Mecklenburg ArcGIS tax foreclosures")
+        notices += scrape_mecklenburg_tax_foreclosures(
+            include_vacant=getattr(args, "include_vacant", False),
+            include_commercial=getattr(args, "include_commercial", False),
+            max_records=args.max_notices,
+        )
+
+    if not notices:
+        logger.warning(
+            "No NC scraper covers the requested (county, type) combination: "
+            "counties=%s types=%s. Supported: column.us=Iredell/Cabarrus/Catawba × foreclosure/probate; "
+            "Mecklenburg ArcGIS × tax_sale. See project_nc_build_plan.md Phase 2 backlog.",
+            counties, types,
+        )
+
+    # Probate property lookup is Knox-Tax-API-only today — calling it for NC
+    # counties is a graceful no-op, but skip to keep logs clean.
+    probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
+    if probate_notices:
+        logging.info(
+            "NC probate property lookup not yet implemented "
+            "(%d probate notices will export with no property address)",
+            len(probate_notices),
+        )
+
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+
+    opts = PipelineOptions(
+        skip_parcel_lookup=True,        # NC has no Knox-equivalent tax API yet
+        skip_tax=True,                  # tax enrichment is Knox-County-specific
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
+        skip_smarty=getattr(args, "skip_smarty", False),
+        skip_zillow=getattr(args, "skip_zillow", False),
+        skip_geocode=getattr(args, "skip_geocode", False),
+        skip_obituary=args.skip_obituary,
+        skip_ancestry=getattr(args, "skip_ancestry", False),
+        skip_entity_research=not getattr(args, "research_entities", False),
+        skip_heir_verification=args.skip_heir_verification,
+        max_heir_depth=args.max_heir_depth,
+        skip_dm_address=args.skip_dm_address,
+        tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        source_label=f"CLI {args.mode}",
+    )
+    notices = run_enrichment_pipeline(notices, opts)
+
+    if not notices:
+        logging.warning("No NC notices found")
+        if getattr(args, "notify_slack", False):
+            try:
+                from slack_notifier import send_slack_notification
+                send_slack_notification([])
+            except Exception:
+                logging.exception("Slack notification for empty NC run failed")
+        sys.exit(0)
+
+    # Tracerfy (same logic as TN)
+    tiers_map: dict = {}
+    if not getattr(args, "skip_tracerfy", False) and config.TRACERFY_API_KEY:
+        from tracerfy_skip_tracer import batch_skip_trace
+        ts = batch_skip_trace(notices)
+        logging.info(
+            "Tracerfy: %d/%d matched, %d phones, %d emails, $%.2f",
+            ts.get("matched", 0), ts.get("submitted", 0),
+            ts.get("phones_found", 0), ts.get("emails_found", 0), ts.get("cost", 0.0),
+        )
+        if config.TRESTLE_API_KEY:
+            from phone_validator import score_record_phones
+            dp_cands = [
+                n for n in notices
+                if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
+            ]
+            if dp_cands:
+                try:
+                    tiers_map = score_record_phones(dp_cands, config.TRESTLE_API_KEY)
+                except Exception:
+                    logging.exception("Trestle scoring failed")
+
+    if args.split:
+        for p in write_csv_by_type(notices):
+            logging.info("Output: %s", p)
+    else:
+        logging.info("Output: %s", write_csv(notices))
+
+    if getattr(args, "upload_datasift", False):
+        from datasift_formatter import write_datasift_split_csvs
+        from datasift_uploader import upload_datasift_split, upload_to_datasift
+
+        do_enrich = not getattr(args, "no_enrich", False)
+        do_skip_trace = not getattr(args, "no_skip_trace", False)
+        csv_infos = write_datasift_split_csvs(notices)
+        for info in csv_infos:
+            logging.info("DataSift CSV (%s): %s", info["label"], info["path"])
+        if len(csv_infos) > 1:
+            upload_result = asyncio.run(upload_datasift_split(
+                csv_infos, enrich=do_enrich, skip_trace=do_skip_trace,
+            ))
+        else:
+            upload_result = asyncio.run(upload_to_datasift(
+                csv_infos[0]["path"], enrich=do_enrich, skip_trace=do_skip_trace,
+            ))
+        if upload_result.get("success"):
+            logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+        else:
+            logging.error("DataSift upload failed: %s", upload_result.get("message"))
+
+    if getattr(args, "notify_slack", False):
+        try:
+            from slack_notifier import send_slack_notification
+            send_slack_notification(notices)
+        except Exception:
+            logging.exception("Slack notification failed")
+
+    logging.info("Done — %d NC notices exported", len(notices))
 
 
 def _run_scrape_pipeline(args, searches) -> None:
