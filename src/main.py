@@ -1918,7 +1918,10 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
     # Currently supports Mecklenburg (polaris3g). Other counties pass through.
     if notices:
         from nc_gis_lookup import expand_notices_with_gis
-        notices, gis_stats = expand_notices_with_gis(notices)
+        # Keep notices with no GIS match so the FTM CSV gets 1 row per
+        # case even when the decedent's parcels can't be found in the
+        # county GIS (matches user's manual weekly sheet behavior).
+        notices, gis_stats = expand_notices_with_gis(notices, drop_unmatched=False)
         logger.info(
             "NC GIS lookup: input=%d, supported=%d, unsupported=%d, expanded_in=%d, "
             "expanded_out=%d, dropped_no_match=%d, dropped_heir_occupied=%d",
@@ -1927,6 +1930,18 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             gis_stats["expanded_out"], gis_stats["dropped_no_match"],
             gis_stats["dropped_heir_occupied"],
         )
+
+    # Write the FTM-format NC Estates CSV NOW — before the standard
+    # enrichment pipeline runs validation that would drop records with
+    # missing addresses. The user's manual workflow keeps those rows
+    # (executor data still useful even when property can't be found).
+    probate_notices_ftm = [n for n in notices if n.notice_type == "probate"]
+    if probate_notices_ftm:
+        from nc_ftm_writer import write_ftm_csv
+        ts_ftm = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ftm_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.csv"
+        ftm_count = write_ftm_csv(probate_notices_ftm, ftm_path)
+        logger.info("NC Estates FTM-format CSV (pre-validation): %s (%d rows)", ftm_path, ftm_count)
 
 
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
@@ -1990,18 +2005,6 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             logging.info("Output: %s", p)
     else:
         logging.info("Output: %s", write_csv(notices))
-
-    # FTM-style NC Estates CSV — matches user's manual weekly probate sheet
-    # layout (File Date / County / Case No. / Deceased / Executor First+Last+
-    # Mailing / Parcel ID / Property addr / Property use / Notes-with-
-    # beneficiaries / Tags / List). Written alongside the standard CSV.
-    probate_notices = [n for n in notices if n.notice_type == "probate"]
-    if probate_notices:
-        from nc_ftm_writer import write_ftm_csv
-        ts_ftm = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        ftm_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.csv"
-        write_ftm_csv(probate_notices, ftm_path)
-        logging.info("NC Estates FTM-format CSV: %s (%d rows)", ftm_path, len(probate_notices))
 
     if getattr(args, "upload_datasift", False):
         from datasift_formatter import write_datasift_split_csvs

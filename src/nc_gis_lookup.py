@@ -391,12 +391,303 @@ def _lookup_mecklenburg(decedent_name: str, min_score: float = 0.7) -> list[Prop
     return candidates
 
 
+# ── ArcGIS REST search (other 6 NC counties) ─────────────────────────
+#
+# Cabarrus, Catawba, Gaston, Iredell, Lincoln, Rowan all expose standard
+# Esri ArcGIS FeatureServer / MapServer endpoints. The query pattern is:
+#   {base}/query?where=<OWNER_FIELD> LIKE 'NAME%'&outFields=*&f=json
+# Each county uses different field names — captured in _ARCGIS_CONFIG below.
+
+
+_ARCGIS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,*/*",
+}
+
+
+# Per-county config: how to query + which fields to read.
+# - url:        FeatureServer/MapServer layer URL ending in /<layer_index>
+# - owner_fields: list of fields to OR-search on (some counties have OWNNAME + OWN2)
+# - mailing_fields: ordered list of fields composing the mailing address
+#                  (line1, line2, city, state, zip)
+# - situs_fields: ordered list of fields composing the property address.
+#                If multiple, they're concatenated with spaces. None means
+#                the county doesn't expose a single situs field (Cabarrus).
+# - parcel_field: the parcel ID field
+# - use_field:    the use-code/description field (None means use vacant
+#                inference from total value)
+# - use_desc_field: optional secondary descriptive field
+_ARCGIS_CONFIG: dict[str, dict] = {
+    "rowan": {
+        "url": "https://gis.rowancountync.gov/arcgis/rest/services/Public/MapViewer/MapServer/9",
+        "owner_fields": ["OWNNAME", "OWN2"],
+        "mailing_fields": ["TAXADD1", None, "CITY", "STATE", "ZIPCODE"],
+        "situs_fields": ["PROP_ADDRESS"],
+        "parcel_field": "PARCEL_ID",
+        "use_field": None,
+        "use_desc_field": "NEIGCLAS",
+    },
+    "cabarrus": {
+        "url": "https://location.cabarruscounty.us/arcgisservices/rest/services/Tax_Parcels_Full/MapServer/0",
+        "owner_fields": ["AcctName1", "AcctName2"],
+        "mailing_fields": ["MailAddr1", "MailAddr2", "MailCity", "MailState", "MailZipCode"],
+        # Cabarrus doesn't expose a situs/property address — best we have is
+        # LegalDesc (e.g. "112 ST MARY ST N W (LT 4 BLK P)") which loosely
+        # contains the street. We surface it as the address.
+        "situs_fields": ["LegalDesc"],
+        "parcel_field": "PIN",
+        "use_field": "VacantOrImproved",  # 'V' or 'I'
+        "use_desc_field": None,
+    },
+    "gaston": {
+        "url": "https://services6.arcgis.com/2mzSgEVuNJwBvEDM/arcgis/rest/services/Gaston_County_Parcels/FeatureServer/0",
+        "owner_fields": ["CURR_NAME1", "CURR_NAME2"],
+        "mailing_fields": ["CURR_ADDR1", "CURR_ADDR2", "CURR_CITY", "CURR_STATE", "CURR_ZIPCO"],
+        "situs_fields": ["PHYSSTRADD"],
+        "parcel_field": "PIN",
+        "use_field": "DESC1_DESC",
+        "use_desc_field": None,
+    },
+    "catawba": {
+        "url": "https://services1.arcgis.com/aT1T0pU1ZdpuDk1t/arcgis/rest/services/PP3_Q1_Map_WFL1/FeatureServer/5",
+        "owner_fields": ["owner", "owner2"],
+        "mailing_fields": ["address", "address2", "city", "state", "zip"],
+        "situs_fields": ["paddress"],
+        "parcel_field": "PIN",
+        "use_field": "zoning",
+        "use_desc_field": None,
+    },
+    "iredell": {
+        "url": "https://maps.iredellcountync.gov/server/rest/services/Data/TaxSQL_Parcels/FeatureServer/0",
+        "owner_fields": ["Name", "Jan1Own2"],
+        "mailing_fields": ["ADD1", "ADD2", "CITY", "STATE", "ZIP"],
+        "situs_fields": ["HouseNumber", "SDIR", "STREET", "STYPE", "ST_SUFFIX"],
+        "parcel_field": "PIN",
+        "use_field": "Land_Use_Code",
+        "use_desc_field": "Building_Use",
+    },
+    "lincoln": {
+        "url": "https://arcgisserver.lincolncountync.gov/arcgis/rest/services/Server_TaxParcelViewerSP/MapServer/0",
+        "owner_fields": ["NAME1", "NAME2"],
+        "mailing_fields": ["ADDRESS1", "ADDRESS2", "CITY", "STATE", "ZIP"],
+        "situs_fields": ["PHYSICALADDR"],
+        "parcel_field": "PIN",
+        "use_field": "ZONING",
+        "use_desc_field": "VACANT",  # "YES"/"NO"
+    },
+}
+
+
+def _compose_address(rec: dict, fields: list[str | None]) -> str:
+    """Compose a single address line from a list of field names (None = skip)."""
+    parts: list[str] = []
+    for f in fields:
+        if not f:
+            continue
+        val = rec.get(f)
+        if val is None:
+            continue
+        s = str(val).strip()
+        if s and s.lower() != "null":
+            parts.append(s)
+    return " ".join(parts).strip()
+
+
+def _arcgis_query(
+    url: str,
+    owner_field: str,
+    name_token: str,
+    *,
+    record_limit: int = 100,
+) -> list[dict]:
+    """Run a single ArcGIS REST query and return the attribute dicts.
+
+    Uses LIKE 'NAME%' to match owners whose names start with the token.
+    """
+    if not name_token:
+        return []
+    where = f"UPPER({owner_field}) LIKE '{name_token.upper()}%'"
+    params = {
+        "where": where,
+        "outFields": "*",
+        "returnGeometry": "false",
+        "f": "json",
+        "resultRecordCount": str(record_limit),
+    }
+    try:
+        r = requests.get(url + "/query", params=params, headers=_ARCGIS_HEADERS, timeout=30)
+    except requests.RequestException as e:
+        logger.warning("ArcGIS: query failed at %s: %s", url, e)
+        return []
+    if r.status_code != 200:
+        logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
+        return []
+    try:
+        data = r.json()
+    except ValueError:
+        logger.warning("ArcGIS: invalid JSON at %s", url)
+        return []
+    if "error" in data:
+        logger.warning("ArcGIS error at %s: %s", url, data["error"])
+        return []
+    return [f.get("attributes") or {} for f in (data.get("features") or [])]
+
+
+def _arcgis_to_candidate(
+    rec: dict, county: str, decedent_name: str, cfg: dict,
+) -> PropertyCandidate | None:
+    """Convert one ArcGIS attribute dict → PropertyCandidate. None if unusable."""
+    # Owner string — concatenate all owner fields
+    owner_parts: list[str] = []
+    for f in cfg["owner_fields"]:
+        v = rec.get(f)
+        if v:
+            owner_parts.append(str(v).strip())
+    owner_full = " | ".join(owner_parts).strip()
+    if not owner_full:
+        return None
+
+    score = _name_match_score(decedent_name, owner_full.replace(" | ", " "))
+    if score == 0.0:
+        return None
+
+    # Mailing address (single line composed)
+    mailing = _compose_address(rec, cfg["mailing_fields"])
+
+    # Situs (property address) — may be None (Cabarrus). For multi-field
+    # compositions like Iredell (HouseNumber + SDIR + STREET + STYPE), join with spaces.
+    situs = _compose_address(rec, cfg["situs_fields"])
+
+    # Parcel ID
+    pid = str(rec.get(cfg["parcel_field"]) or "").strip()
+
+    # Use code + description
+    use_code = str(rec.get(cfg["use_field"]) or "").strip().upper() if cfg.get("use_field") else ""
+    use_desc = str(rec.get(cfg["use_desc_field"]) or "").strip() if cfg.get("use_desc_field") else ""
+
+    # Cabarrus special: VacantOrImproved is "V"/"I"
+    is_vacant = False
+    is_residential = False
+    is_commercial = False
+    if county.lower() == "cabarrus":
+        is_vacant = use_code == "V"
+        is_residential = use_code == "I"  # everything else is "improved" — assumed residential
+    elif county.lower() == "lincoln":
+        # VACANT field is "YES"/"NO"
+        is_vacant = use_desc.upper() == "YES"
+        is_residential = use_code.startswith("R")
+    else:
+        # General Esri counties — use description-keyword matching
+        desc_upper = (use_desc + " " + use_code).upper()
+        is_vacant = "VACANT" in desc_upper or "VAC" in desc_upper
+        is_residential = (
+            "RESIDENTIAL" in desc_upper or "SINGLE FAMILY" in desc_upper
+            or use_code.startswith("R") or "DWELL" in desc_upper
+        )
+        is_commercial = "COMMERCIAL" in desc_upper or "OFFICE" in desc_upper or "INDUSTRIAL" in desc_upper
+
+    return PropertyCandidate(
+        county=county,
+        pid=pid,
+        owner_name=owner_full,
+        situs_address=situs,
+        mailing_address=mailing,
+        use_code=use_code,
+        use_description=use_desc,
+        market_value=None,  # ArcGIS counties don't standardize value fields
+        year_built=None,
+        bedrooms=None,
+        bathrooms=None,
+        living_sqft=None,
+        lot_area=None,
+        sale_date=None,
+        sale_price=None,
+        owner_offsite=not _addresses_match(situs, mailing),
+        is_residential=is_residential,
+        is_vacant_land=is_vacant,
+        is_commercial=is_commercial,
+        match_score=score,
+        raw=rec,
+    )
+
+
+def _lookup_arcgis_county(
+    decedent_name: str, county_key: str, min_score: float = 0.7,
+) -> list[PropertyCandidate]:
+    """Generic ArcGIS-backed search — works for the 5 standard-Esri counties."""
+    cfg = _ARCGIS_CONFIG.get(county_key)
+    if not cfg:
+        return []
+    first, _middle, last = split_decedent_name(decedent_name)
+    if not last:
+        return []
+    # Search each owner field on lastname
+    raw_rows: list[dict] = []
+    seen_pids: set[str] = set()
+    for owner_field in cfg["owner_fields"]:
+        rows = _arcgis_query(cfg["url"], owner_field, last)
+        for r in rows:
+            pid = str(r.get(cfg["parcel_field"]) or "")
+            if pid and pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            raw_rows.append(r)
+    candidates: list[PropertyCandidate] = []
+    for rec in raw_rows:
+        c = _arcgis_to_candidate(rec, county_key.title(), decedent_name, cfg)
+        if not c:
+            continue
+        if c.match_score < min_score:
+            continue
+        candidates.append(c)
+    candidates.sort(key=lambda c: -c.match_score)
+    logger.info(
+        "%s GIS: %r → %d raw rows → %d scoring matches",
+        county_key.title(), decedent_name, len(raw_rows), len(candidates),
+    )
+    return candidates
+
+
+# Per-county adapter functions to register in _LOOKUP_BY_COUNTY
+def _lookup_rowan(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "rowan", min_score)
+
+
+def _lookup_cabarrus(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "cabarrus", min_score)
+
+
+def _lookup_gaston(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "gaston", min_score)
+
+
+def _lookup_catawba(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "catawba", min_score)
+
+
+def _lookup_iredell(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "iredell", min_score)
+
+
+def _lookup_lincoln(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
+    return _lookup_arcgis_county(decedent_name, "lincoln", min_score)
+
+
 # ── Public entry ─────────────────────────────────────────────────────
 
 
 # County → backend function. Add new counties here as they're built.
 _LOOKUP_BY_COUNTY = {
     "mecklenburg": _lookup_mecklenburg,
+    "rowan":       _lookup_rowan,
+    "cabarrus":    _lookup_cabarrus,
+    "gaston":      _lookup_gaston,
+    "catawba":     _lookup_catawba,
+    "iredell":     _lookup_iredell,
+    "lincoln":     _lookup_lincoln,
 }
 
 
@@ -476,6 +767,13 @@ def filter_for_lead_quality(
 _LOOKUP_CACHE: dict[tuple[str, str], list["PropertyCandidate"]] = {}
 
 
+_TWO_WORD_NC_CITIES = {
+    "MINT HILL", "MOUNT HOLLY", "HIGH POINT", "WINSTON SALEM",
+    "ROCKY MOUNT", "CHINA GROVE", "HOPE MILLS", "GOLD HILL",
+    "SCOTLAND NECK", "PINE LEVEL", "OAK ISLAND", "OAK RIDGE",
+}
+
+
 def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
     """Split a 'STREET CITY NC ZIP' situs string into (street, city, zip).
 
@@ -497,10 +795,8 @@ def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
     if len(tokens) >= 3:
         city = tokens[-1]
         street = " ".join(tokens[:-1])
-        # Check known 2-word Mecklenburg cities
-        TWO_WORD_CITIES = {"MINT HILL"}
         last_two = " ".join(tokens[-2:]).upper()
-        if last_two in TWO_WORD_CITIES:
+        if last_two in _TWO_WORD_NC_CITIES:
             city = " ".join(tokens[-2:])
             street = " ".join(tokens[:-2])
     else:
@@ -518,7 +814,7 @@ def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
             m_tokens = m_no_state.split()
             if m_tokens:
                 mailing_city = m_tokens[-1]
-                if " ".join(m_tokens[-2:]) in TWO_WORD_CITIES:
+                if " ".join(m_tokens[-2:]) in _TWO_WORD_NC_CITIES:
                     mailing_city = " ".join(m_tokens[-2:])
                 if city.upper() == mailing_city:
                     zipc = m_zip.group(1)
