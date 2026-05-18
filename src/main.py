@@ -1931,17 +1931,20 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             gis_stats["dropped_heir_occupied"],
         )
 
-    # Write the FTM-format NC Estates CSV NOW — before the standard
+    # Write the FTM-format NC Estates CSV + XLSX NOW — before the standard
     # enrichment pipeline runs validation that would drop records with
     # missing addresses. The user's manual workflow keeps those rows
     # (executor data still useful even when property can't be found).
+    # XLSX includes a County dropdown for easy filtering in Google Sheets.
     probate_notices_ftm = [n for n in notices if n.notice_type == "probate"]
     if probate_notices_ftm:
-        from nc_ftm_writer import write_ftm_csv
+        from nc_ftm_writer import write_ftm_csv, write_ftm_xlsx
         ts_ftm = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        ftm_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.csv"
-        ftm_count = write_ftm_csv(probate_notices_ftm, ftm_path)
-        logger.info("NC Estates FTM-format CSV (pre-validation): %s (%d rows)", ftm_path, ftm_count)
+        ftm_csv_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.csv"
+        ftm_xlsx_path = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_ftm}.xlsx"
+        ftm_count = write_ftm_csv(probate_notices_ftm, ftm_csv_path)
+        write_ftm_xlsx(probate_notices_ftm, ftm_xlsx_path)
+        logger.info("NC Estates FTM (pre-validation): %s + .xlsx (%d rows)", ftm_csv_path, ftm_count)
 
 
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline

@@ -36,6 +36,7 @@ FTM_COLUMNS = [
     "County",
     "Case No.",
     "Deceased Owner",
+    "Executor Full Name",
     "First Name",
     "Last Name",
     "Mailing Address",
@@ -52,6 +53,11 @@ FTM_COLUMNS = [
     "Phone 1",
     "Tags",
     "List",
+]
+
+# County values for the Sheets dropdown validation
+NC_COUNTY_OPTIONS = [
+    "Cabarrus", "Catawba", "Gaston", "Iredell", "Lincoln", "Mecklenburg", "Rowan",
 ]
 
 
@@ -156,13 +162,15 @@ def notice_to_ftm_row(
     so a decedent with multiple properties collapses to one row.
     """
     tag = tag_override or _iso_week_tag(notice.date_added)
+    exec_full = " ".join(filter(None, [notice.executor_first_name, notice.executor_last_name])).strip()
     return {
-        "File Date":        _format_date(notice.date_added),
-        "County":           notice.county,
-        "Case No.":         notice.case_number,
-        "Deceased Owner":   _format_decedent(notice.decedent_name),
-        "First Name":       notice.executor_first_name,
-        "Last Name":        notice.executor_last_name,
+        "File Date":          _format_date(notice.date_added),
+        "County":             notice.county,
+        "Case No.":           notice.case_number,
+        "Deceased Owner":     _format_decedent(notice.decedent_name),
+        "Executor Full Name": exec_full,
+        "First Name":         notice.executor_first_name,
+        "Last Name":          notice.executor_last_name,
         "Mailing Address":  notice.owner_street,
         "Mailing City":     notice.owner_city,
         "Mailing State":    notice.owner_state,
@@ -208,6 +216,85 @@ def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[N
         main, extras = items_sorted[0], items_sorted[1:]
         out.append((main, extras))
     return out
+
+
+def write_ftm_xlsx(
+    notices: list[NoticeData],
+    out_path: Path,
+    *,
+    tag_override: str = "",
+    collapse_multi_parcel: bool = True,
+) -> int:
+    """Write the FTM Estates output as XLSX with a County dropdown.
+
+    Imports openpyxl lazily because not all callers need XLSX.
+    Returns the number of data rows written.
+    """
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if collapse_multi_parcel:
+        groups = collapse_by_case(notices)
+        rows = [notice_to_ftm_row(main, tag_override=tag_override, extra_parcels=extras)
+                for main, extras in groups]
+    else:
+        rows = [notice_to_ftm_row(n, tag_override=tag_override) for n in notices]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "NC Estates"
+
+    # Header row
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    for col_idx, col_name in enumerate(FTM_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Data rows
+    for r_idx, r in enumerate(rows, start=2):
+        for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=r.get(col_name, ""))
+            # Wrap Notes column so beneficiary blocks render readably
+            if col_name == "Notes":
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # County dropdown — applied to the full County column
+    county_col_idx = FTM_COLUMNS.index("County") + 1
+    county_col_letter = get_column_letter(county_col_idx)
+    # Quote each county and join with commas — Excel/Sheets dropdown format
+    county_formula = '"' + ",".join(NC_COUNTY_OPTIONS) + '"'
+    dv = DataValidation(type="list", formula1=county_formula, allow_blank=True)
+    dv.error = "Pick one of the 7 NC counties"
+    dv.errorTitle = "Invalid county"
+    dv.prompt = "Select a NC county"
+    dv.promptTitle = "County"
+    ws.add_data_validation(dv)
+    dv.add(f"{county_col_letter}2:{county_col_letter}1048576")
+
+    # Column widths — make the important fields legible
+    col_widths = {
+        "File Date": 11, "County": 14, "Case No.": 18, "Deceased Owner": 32,
+        "Executor Full Name": 25, "First Name": 16, "Last Name": 18,
+        "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
+        "Parcel ID": 16, "Property Address": 28, "Property City": 16,
+        "Property State": 8, "Property Zip": 8, "Property use": 14,
+        "Notes": 60, "Phone 1": 14, "Tags": 26, "List": 10,
+    }
+    for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)
+
+    # Freeze the header row so it stays visible on scroll
+    ws.freeze_panes = "A2"
+
+    wb.save(out_path)
+    logger.info("Wrote %d NC Estates rows to %s", len(rows), out_path)
+    return len(rows)
 
 
 def write_ftm_csv(
