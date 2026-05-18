@@ -218,6 +218,13 @@ def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[N
     return out
 
 
+# FTM-style color palette
+_HEADER_FILL_COLOR = "1B5E20"        # dark green
+_HEADER_TEXT_COLOR = "FFFFFF"        # white
+_BAND_FILL_COLOR = "FFFDE7"          # very light yellow (banded rows)
+_DEFAULT_ROW_HEIGHT = 16             # single-line height
+
+
 def write_ftm_xlsx(
     notices: list[NoticeData],
     out_path: Path,
@@ -226,6 +233,11 @@ def write_ftm_xlsx(
     collapse_multi_parcel: bool = True,
 ) -> int:
     """Write the FTM Estates output as XLSX with a County dropdown.
+
+    Styling: dark-green header with white bold text + alternating white /
+    pale-yellow banded rows. Single-line row height (Notes shown truncated
+    in cell but full content preserved in the underlying value — hover or
+    expand row to see).
 
     Imports openpyxl lazily because not all callers need XLSX.
     Returns the number of data rows written.
@@ -247,27 +259,37 @@ def write_ftm_xlsx(
     ws = wb.active
     ws.title = "NC Estates"
 
-    # Header row
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    # Header row — dark green fill, bold white text
+    header_font = Font(bold=True, color=_HEADER_TEXT_COLOR)
+    header_fill = PatternFill(start_color=_HEADER_FILL_COLOR,
+                              end_color=_HEADER_FILL_COLOR, fill_type="solid")
     for col_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 20
 
-    # Data rows
+    # Data rows — single-line height, alternating banded fill
+    band_fill = PatternFill(start_color=_BAND_FILL_COLOR,
+                            end_color=_BAND_FILL_COLOR, fill_type="solid")
+    # Notes column contains embedded newlines — replace with " | " so the
+    # single-line display still shows beneficiaries readably.
     for r_idx, r in enumerate(rows, start=2):
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=r.get(col_name, ""))
-            # Wrap Notes column so beneficiary blocks render readably
-            if col_name == "Notes":
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            val = r.get(col_name, "")
+            if col_name == "Notes" and val:
+                val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+            # Even rows in the displayed table (every other data row) get the band fill
+            if (r_idx % 2) == 0:
+                cell.fill = band_fill
+        ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
 
     # County dropdown — applied to the full County column
     county_col_idx = FTM_COLUMNS.index("County") + 1
     county_col_letter = get_column_letter(county_col_idx)
-    # Quote each county and join with commas — Excel/Sheets dropdown format
     county_formula = '"' + ",".join(NC_COUNTY_OPTIONS) + '"'
     dv = DataValidation(type="list", formula1=county_formula, allow_blank=True)
     dv.error = "Pick one of the 7 NC counties"
@@ -284,7 +306,7 @@ def write_ftm_xlsx(
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
-        "Notes": 60, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 80, "Phone 1": 14, "Tags": 26, "List": 10,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)

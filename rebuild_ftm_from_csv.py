@@ -56,23 +56,37 @@ def _write_xlsx(rows: list[dict], out_path: Path) -> None:
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.styles import Font, PatternFill, Alignment
 
+    HEADER_FILL = "1B5E20"  # dark green
+    BAND_FILL = "FFFDE7"     # very light yellow
+
     wb = Workbook()
     ws = wb.active
     ws.title = "NC Estates"
 
+    # Header — dark green fill, bold white text
     header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_fill = PatternFill(start_color=HEADER_FILL, end_color=HEADER_FILL, fill_type="solid")
     for col_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 20
 
+    # Data rows — single-line height, alternating banded fill
+    band_fill = PatternFill(start_color=BAND_FILL, end_color=BAND_FILL, fill_type="solid")
     for r_idx, r in enumerate(rows, start=2):
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=r.get(col_name, ""))
-            if col_name == "Notes":
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            val = r.get(col_name, "")
+            # Collapse Notes newlines into ' | ' so the single-line cell
+            # still shows the beneficiary block readably.
+            if col_name == "Notes" and val:
+                val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+            if (r_idx % 2) == 0:
+                cell.fill = band_fill
+        ws.row_dimensions[r_idx].height = 16
 
     # County dropdown
     county_col_idx = FTM_COLUMNS.index("County") + 1
@@ -92,7 +106,7 @@ def _write_xlsx(rows: list[dict], out_path: Path) -> None:
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
-        "Notes": 60, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 80, "Phone 1": 14, "Tags": 26, "List": 10,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)
