@@ -123,18 +123,24 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
 def _name_match_score(decedent: str, owner_fullname: str) -> float:
     """Score how confidently the owner name matches the decedent.
 
+    Handles BOTH name formats:
+    - "Carroll, Iris Jenelle" (Tyler API format — lastname before comma)
+    - "Iris Jenelle Carroll" (space-separated, last token is lastname)
+
     Returns:
-      1.0  - first AND last token both appear in owner name (strong match)
-      0.7  - last token + first initial (or initial only) match
-      0.0  - lastname mismatch (we never call this with mismatched lastnames,
-             but defensive)
+      1.0  - first AND last name both appear in owner name (strong match)
+      0.7  - lastname + first initial match (e.g. "CARROLL IRIS J" matches
+             decedent Iris Jenelle Carroll)
+      0.6  - lastname-only decedent (no firstname available)
+      0.0  - lastname mismatch
     """
-    d_tokens = _normalize_name(decedent).split()
-    o_tokens = _normalize_name(owner_fullname).split()
-    if not d_tokens or not o_tokens:
+    # Pull decedent's first + last using the same comma-aware logic as split_decedent_name
+    d_first, _d_middle, d_last = split_decedent_name(decedent)
+    if not d_last:
         return 0.0
-    d_last = d_tokens[-1]
-    d_first = d_tokens[0] if len(d_tokens) > 1 else ""
+    o_tokens = _normalize_name(owner_fullname).split()
+    if not o_tokens:
+        return 0.0
     o_set = set(o_tokens)
     if d_last not in o_set:
         return 0.0
@@ -142,12 +148,16 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
         return 0.6  # lastname-only decedent; lower confidence
     if d_first in o_set:
         return 1.0
-    # Initial match — owner has "B BELL" or "BRENDA J BELL" and decedent is "Brenda Bell"
+    # Initial match — owner has "CARROLL IRIS J" or "CARROLL I J" and decedent is "Iris J Carroll"
     d_first_initial = d_first[0]
     for t in o_tokens:
-        if t == d_first_initial or (len(t) >= 1 and t[0] == d_first_initial and len(t) <= 2):
+        if t == d_first_initial:
             return 0.7
-    return 0.0
+        if len(t) <= 2 and t[0] == d_first_initial:
+            return 0.7
+    # No first-name match — return 0.4 (lastname-only) so caller can decide
+    # whether to keep it. With min_score=0.5 it will be dropped, with 0.4 kept.
+    return 0.4
 
 
 # ── Address comparison helpers ────────────────────────────────────────
@@ -259,26 +269,79 @@ _POLARIS3G_RESIDENTIAL_PREFIXES = ("R",)          # R100, R122, ...
 _POLARIS3G_COMMERCIAL_PREFIXES = ("C", "O", "I")  # commercial / office / industrial
 
 
-def simplify_use_code(use_code: str, use_description: str = "") -> str:
-    """Map a polaris3g land_use_code to user's simple SFR / MH / Vacant Land bucket.
+def simplify_use_code(use_code: str, use_description: str = "", county: str = "") -> str:
+    """Map a county-specific use_code / description to user's bucket.
 
     Per the user's FTM_2026_NC Estates manual file, property use is one of:
-    SFR, MH, Vacant Land, MH/Vacant, Condo, Commercial (extra). Returns
-    empty string when no mapping fits.
+    SFR, MH, Vacant Land, MH/Vacant, Condo, Townhouse, Commercial.
+    Returns empty string when no mapping fits.
+
+    Each NC county uses a different scheme:
+    - Mecklenburg polaris3g: R100/R200/R300/V*/C*/O*/I*
+    - Cabarrus:              'V' (vacant) or 'I' (improved — assume residential)
+    - Catawba:               zoning (R-20, R-40)
+    - Lincoln:               ZONING + VACANT flag ('YES'/'NO' in desc field)
+    - Gaston:                DESC1_DESC text ('Residential 1 Family', etc)
+    - Iredell:               Land_Use_Code (0100 = SFH, 0122 = Waterfront)
+    - Rowan:                 NEIGCLAS — no real use field; default to SFR
     """
     code = (use_code or "").strip().upper()
     desc = (use_description or "").strip().upper()
-    if not code and not desc:
+    cty = (county or "").strip().lower()
+
+    if not code and not desc and not cty:
         return ""
-    # Mobile / manufactured home
+
+    # Per-county short-circuits BEFORE the polaris3g logic
+    if cty == "cabarrus":
+        if code == "V":
+            return "Vacant Land"
+        if code == "I":
+            return "SFR"  # 'Improved' — assume residential default
+        return ""
+    if cty == "lincoln":
+        # Lincoln stores 'YES'/'NO' in the desc field (VACANT flag)
+        if desc == "YES":
+            return "Vacant Land"
+        if code.startswith("MH") or "MOBILE" in desc:
+            return "MH"
+        if code.startswith("R"):
+            return "SFR"
+        return ""
+    if cty == "catawba":
+        # zoning codes like R-20, R-40, R-3, RU40 — all residential
+        if code.startswith("R"):
+            return "SFR"
+        return ""
+    if cty == "iredell":
+        if code.startswith("01"):
+            return "SFR"
+        if code.startswith("02"):
+            return "MH"
+        if code.startswith("00"):
+            return "Vacant Land"
+        return ""
+    if cty == "rowan":
+        # NEIGCLAS isn't a use code; default residential when we have anything
+        return "SFR" if (code or desc) else ""
+    if cty == "gaston":
+        if "MOBILE HOME" in desc or "MANUFACTURED" in desc:
+            return "MH"
+        if "RESIDENTIAL" in desc or "SINGLE FAMILY" in desc:
+            return "SFR"
+        if "VACANT" in desc:
+            return "Vacant Land"
+        if "COMMERCIAL" in desc or "OFFICE" in desc or "INDUSTRIAL" in desc:
+            return "Commercial"
+        return ""
+
+    # Default (Mecklenburg / polaris3g style)
     if "MOBILE HOME" in desc or "MANUFACTURED" in desc or code.startswith("R200"):
         return "MH"
-    # Condominium / townhouse
     if "CONDOMINIUM" in desc or code.startswith("R300"):
         return "Condo"
     if "TOWN HOUSE" in desc or "TOWNHOUSE" in desc or code.startswith("R309"):
         return "Townhouse"
-    # Single-family residential
     if code.startswith("R100") or code.startswith("R1") or "SINGLE FAMILY" in desc:
         return "SFR"
     if any(code.startswith(p) for p in _POLARIS3G_VACANT_PREFIXES) or "VACANT" in desc:
@@ -286,7 +349,7 @@ def simplify_use_code(use_code: str, use_description: str = "") -> str:
     if any(code.startswith(p) for p in _POLARIS3G_COMMERCIAL_PREFIXES):
         return "Commercial"
     if code.startswith("R"):
-        return "Residential"  # catch-all for other R* codes
+        return "Residential"
     return ""
 
 
@@ -631,6 +694,10 @@ def _arcgis_to_candidate(
             situs = c_street
             situs_city_override = c_city.title()
             situs_zip_override = c_zip
+        else:
+            # No address-point match — situs is LegalDesc-style garbage.
+            # Blank it out so the FTM CSV doesn't show a fake address.
+            situs = ""
 
     # Use code + description
     use_code = str(rec.get(cfg["use_field"]) or "").strip().upper() if cfg.get("use_field") else ""
@@ -973,7 +1040,7 @@ def expand_notices_with_gis(
             new_n.zip = zipc
             new_n.state = "NC"
             new_n.parcel_id = c.pid
-            new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description)
+            new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description, c.county)
             if c.market_value is not None:
                 new_n.estimated_value = f"{c.market_value:.0f}"
             if c.year_built is not None:
