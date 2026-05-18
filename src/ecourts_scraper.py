@@ -390,20 +390,72 @@ async def _submit_search(page: Page) -> bool:
         "text=/no\\s+(records|results|matches)/i",
         "text=/error/i",
     ]
+    grid_ready = False
     for _ in range(20):  # up to ~20 seconds
         await page.wait_for_timeout(1000)
         for sel in grid_selectors:
             try:
                 if await page.locator(sel).first.count() > 0:
-                    return True
+                    grid_ready = True
+                    break
             except Exception:
                 pass
-    # Fall back: give it networkidle one more time
+        if grid_ready:
+            break
+    if not grid_ready:
+        # Fall back: give it networkidle one more time
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except PwTimeout:
+            pass
+
+    # Bump the Kendo "items per page" dropdown to its max value so we get
+    # all results in one go instead of the default 10. The pager has a
+    # <select class="k-dropdown ...> with options like 10/20/50/100.
     try:
-        await page.wait_for_load_state("networkidle", timeout=15_000)
-    except PwTimeout:
-        pass
+        await _maximize_page_size(page)
+    except Exception:
+        logger.debug("eCourts: page-size bump failed (continuing with default)", exc_info=True)
+
     return True
+
+
+async def _maximize_page_size(page: Page) -> None:
+    """Switch the Kendo grid pager to its largest items-per-page value.
+
+    The pager renders a styled select with options like 10/20/50/100.
+    We find the max numeric option and pick it via the Kendo widget API.
+    """
+    max_n = await page.evaluate(
+        """() => {
+            // Find the kendo dropdown inside the pager
+            const select = document.querySelector('.k-pager-sizes select, .k-pager-info ~ * select, select[name="PageSize"]')
+                || Array.from(document.querySelectorAll('select')).find(s => {
+                    const opts = Array.from(s.options || []).map(o => o.value);
+                    return opts.some(v => /^\\d+$/.test(v));
+                });
+            if (!select) return 0;
+            const opts = Array.from(select.options || [])
+                .map(o => parseInt(o.value || '', 10))
+                .filter(n => !isNaN(n));
+            if (!opts.length) return 0;
+            const maxv = Math.max(...opts);
+            // Set via Kendo widget if present, else native + dispatch change
+            if (window.jQuery) {
+                try {
+                    const w = window.jQuery(select).data('kendoDropDownList');
+                    if (w) { w.value(String(maxv)); w.trigger('change'); return maxv; }
+                } catch (e) {}
+            }
+            select.value = String(maxv);
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+            return maxv;
+        }"""
+    )
+    if max_n and max_n > 10:
+        logger.info("eCourts: bumped page size to %d", max_n)
+        # Wait for the grid to re-render with the bigger page
+        await page.wait_for_timeout(2500)
 
 
 # ── Results parsing ───────────────────────────────────────────────────
@@ -412,21 +464,9 @@ async def _submit_search(page: Page) -> bool:
 # Result row pattern in the eCourts results table:
 #   <tr> ... <td>case number link</td> <td>filing date</td> <td>parties</td> ...
 # We extract via DOM query (selectors observed during smoke testing).
-async def _parse_results(page: Page, county: str, notice_type: str) -> list[NoticeData]:
-    """Walk the results table and build NoticeData list."""
-    notices: list[NoticeData] = []
-
-    # Lightweight post-submit log so 0-result runs are diagnosable
-    try:
-        body = await page.inner_text("body")
-        logger.info(
-            "eCourts: post-submit — title=%r body_len=%d",
-            await page.title(), len(body),
-        )
-    except Exception:
-        pass
-
-    rows = await page.evaluate(
+async def _extract_rows_from_grid(page: Page) -> list[dict]:
+    """Extract the current visible Kendo grid rows into [{cells, data_url, ...}]."""
+    return await page.evaluate(
         """() => {
             const rows = [];
             // Try a sequence of selectors — most specific first
@@ -464,108 +504,146 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
             return rows;
         }"""
     )
-    logger.info("eCourts: %d result row(s) for %s/%s", len(rows), county, notice_type)
-    if not rows:
-        return notices
 
-    # eCourts result-row cell order (observed for Mecklenburg estates):
-    #   cells[0] = "" (checkbox column, always empty)
-    #   cells[1] = case number    (e.g. "26E001794-590")
-    #   cells[2] = style / parties (e.g. "IN THE MATTER OF THE ESTATE OF Helen Barbara Barlow")
-    #   cells[3] = filing date    (MM/DD/YYYY)
-    #   cells[4] = case sub-type  (e.g. "Decedents' Estate - Small Estate")
-    #   cells[5] = case status    (e.g. "Pending")
-    #   cells[6] = court location (e.g. "Mecklenburg Clerk of Superior Court")
-    # Kendo grids interleave empty rows for expand/detail panes — skip those.
+
+async def _click_next_page(page: Page) -> bool:
+    """Try to advance the Kendo grid to the next page. Returns True if it did.
+
+    Tyler's pager renders next-page as `<a class="k-link"><span class="k-icon k-i-arrow-e">`.
+    Disabled state adds `k-state-disabled` on the anchor.
+    """
+    return await page.evaluate(
+        """() => {
+            // Find all anchors that contain a 'next page' icon (arrow-e or arrow-60-right)
+            const links = Array.from(document.querySelectorAll('a.k-link'));
+            for (const a of links) {
+                const icon = a.querySelector('.k-i-arrow-e, .k-i-arrow-60-right, .k-i-chevron-right');
+                if (!icon) continue;
+                if (a.classList.contains('k-state-disabled') || a.classList.contains('k-disabled')) continue;
+                // Found the active 'next page' button
+                a.click();
+                return true;
+            }
+            return false;
+        }"""
+    )
+
+
+def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | None:
+    """Convert one raw grid row dict into a NoticeData, or None if not a real result row."""
+    cells = row.get("cells", [])
+    if not cells:
+        return None
+
     case_no_re = re.compile(r"\d{2}[A-Z]{1,3}\d{3,6}-?\d{0,3}")
+    # Find the cell that contains the case number (not always cells[0]
+    # due to checkbox column + occasional layout variations)
+    case_no = ""
+    case_no_idx = -1
+    for i, c in enumerate(cells):
+        c2 = c.strip().replace(" ", "")
+        if c2 and case_no_re.fullmatch(c2):
+            case_no = c2
+            case_no_idx = i
+            break
+    if not case_no:
+        return None  # interleaved empty row / non-data row
 
-    for row in rows:
-        cells = row.get("cells", [])
-        if not cells:
-            continue
+    style = cells[case_no_idx + 1].strip() if case_no_idx + 1 < len(cells) else ""
 
-        # Find the cell that contains the case number (it's not always cells[0]
-        # due to the checkbox column + occasional layout variations)
-        case_no = ""
-        case_no_idx = -1
-        for i, c in enumerate(cells):
-            c = c.strip().replace(" ", "")
-            if c and case_no_re.fullmatch(c):
-                case_no = c
-                case_no_idx = i
+    filing_date = ""
+    for c in cells:
+        m = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", c)
+        if m:
+            filing_date = m.group(1)
+            break
+
+    primary_name = style
+    for prefix in [
+        r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+ESTATE\s+OF\s+",
+        r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+GUARDIANSHIP\s+OF\s+",
+        r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+TRUST\s+OF\s+",
+        r"^IN\s+RE:?\s*ESTATE\s+OF\s+",
+        r"^IN\s+RE:?\s+",
+        r"^ESTATE\s+OF\s+",
+        r"^GUARDIANSHIP\s+OF\s+",
+    ]:
+        primary_name = re.sub(prefix, "", primary_name, flags=re.IGNORECASE)
+    primary_name = re.split(r"\s+vs?\.\s+", primary_name, maxsplit=1, flags=re.IGNORECASE)[0]
+    primary_name = primary_name.strip().rstrip(",.")
+
+    date_added = filing_date
+    if filing_date:
+        for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+            try:
+                date_added = datetime.strptime(filing_date, fmt).strftime("%Y-%m-%d")
                 break
-        if not case_no:
-            continue  # interleaved empty row or non-data row
+            except ValueError:
+                pass
 
-        # style is the cell right after the case number
-        style = ""
-        if case_no_idx + 1 < len(cells):
-            style = cells[case_no_idx + 1].strip()
+    href = row.get("href") or ""
+    if not href or href.endswith("#"):
+        href = f"{PORTAL_URL}#case={case_no}"
 
-        # Filing date — search all cells for first MM/DD/YYYY
-        filing_date = ""
-        for c in cells:
-            m = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", c)
-            if m:
-                filing_date = m.group(1)
-                break
+    data_url = row.get("data_url") or ""
+    case_id_hex = extract_case_id(data_url)
 
-        # Decedent / grantor extraction
-        # Probate styles look like "IN THE MATTER OF THE ESTATE OF <NAME>" or
-        # "IN RE: ESTATE OF <NAME>" or just "<NAME>".
-        # Foreclosure SPs look like "<GRANTOR> vs. <TRUSTEE>" or similar.
-        primary_name = style
-        for prefix in [
-            r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+ESTATE\s+OF\s+",
-            r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+GUARDIANSHIP\s+OF\s+",
-            r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+TRUST\s+OF\s+",
-            r"^IN\s+RE:?\s*ESTATE\s+OF\s+",
-            r"^IN\s+RE:?\s+",
-            r"^ESTATE\s+OF\s+",
-            r"^GUARDIANSHIP\s+OF\s+",
-        ]:
-            primary_name = re.sub(prefix, "", primary_name, flags=re.IGNORECASE)
-        # Strip trailing "vs. <TRUSTEE>" for foreclosures
-        primary_name = re.split(r"\s+vs?\.\s+", primary_name, maxsplit=1, flags=re.IGNORECASE)[0]
-        primary_name = primary_name.strip().rstrip(",.")
+    notice = NoticeData(
+        county=county,
+        state="NC",
+        notice_type=notice_type,
+        date_added=date_added,
+        raw_text=row.get("text", ""),
+        source_url=href,
+        case_number=case_no,
+    )
+    notice._roa_id = case_id_hex  # type: ignore[attr-defined]
+    if notice_type == "probate":
+        notice.decedent_name = primary_name
+    else:
+        notice.owner_name = primary_name
+    return notice
 
-        date_added = filing_date
-        if filing_date:
-            for fmt in ("%m/%d/%Y", "%m/%d/%y"):
-                try:
-                    date_added = datetime.strptime(filing_date, fmt).strftime("%Y-%m-%d")
-                    break
-                except ValueError:
-                    pass
 
-        # source_url: Tyler doesn't expose direct case-detail URLs in result
-        # rows (link is "#"). Use the case number as the stable dedup key.
-        href = row.get("href") or ""
-        if not href or href.endswith("#"):
-            href = f"{PORTAL_URL}#case={case_no}"
+async def _parse_results(page: Page, county: str, notice_type: str) -> list[NoticeData]:
+    """Walk every page of the results grid and build a NoticeData list."""
+    notices: list[NoticeData] = []
+    seen_case_nos: set[str] = set()
 
-        # Stash the Register-of-Actions case id (from the caseLink's data-url
-        # attribute) on the notice so the post-parse loop can fetch parties.
-        data_url = row.get("data_url") or ""
-        case_id_hex = extract_case_id(data_url)
-
-        notice = NoticeData(
-            county=county,
-            state="NC",
-            notice_type=notice_type,
-            date_added=date_added,
-            raw_text=row.get("text", ""),
-            source_url=href,
-            case_number=case_no,
+    # Lightweight post-submit log so 0-result runs are diagnosable
+    try:
+        body = await page.inner_text("body")
+        logger.info(
+            "eCourts: post-submit — title=%r body_len=%d",
+            await page.title(), len(body),
         )
-        # _roa_id is a transient attribute used by _enrich_with_parties below
-        notice._roa_id = case_id_hex  # type: ignore[attr-defined]
-        if notice_type == "probate":
-            notice.decedent_name = primary_name
-        else:
-            notice.owner_name = primary_name
-        notices.append(notice)
+    except Exception:
+        pass
 
+    # Walk pages — first page is already visible. After each parse, try
+    # to click "next page". Stop when next is disabled or no new rows.
+    for page_idx in range(1, 25):  # hard cap of 25 pages = up to 2500 results
+        rows = await _extract_rows_from_grid(page)
+        added_on_page = 0
+        for row in rows:
+            n = _row_to_notice(row, county, notice_type)
+            if not n or n.case_number in seen_case_nos:
+                continue
+            seen_case_nos.add(n.case_number)
+            notices.append(n)
+            added_on_page += 1
+        logger.info(
+            "eCourts: page %d — %d raw rows, %d new notices (%d total)",
+            page_idx, len(rows), added_on_page, len(notices),
+        )
+        if added_on_page == 0 and page_idx > 1:
+            break  # next page returned no new rows — we're done
+        clicked = await _click_next_page(page)
+        if not clicked:
+            break  # no next-page button (last page)
+        await page.wait_for_timeout(1500)  # let the grid re-render
+
+    logger.info("eCourts: %d total result(s) for %s/%s", len(notices), county, notice_type)
     return notices
 
 
@@ -592,7 +670,7 @@ def _enrich_with_parties(
     guardianships: list[NoticeData] = []
     for i, n in enumerate(targets):
         if i > 0:
-            _time.sleep(0.8)  # be a good citizen — polite cadence between cases
+            _time.sleep(2.5)  # slow cadence to avoid Tyler's HTTP 202 throttle
         case_hex = getattr(n, "_roa_id", "")
         detail = client.fetch_detail(case_hex)
         if not detail.parties:

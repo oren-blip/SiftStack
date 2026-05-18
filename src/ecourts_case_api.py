@@ -192,12 +192,12 @@ class CaseDetailClient:
     def _cookies(self) -> dict[str, str]:
         return {"aws-waf-token": self.waf_token} if self.waf_token else {}
 
-    def fetch_parties(self, case_id: str, *, retries: int = 4) -> list[CaseParty]:
+    def fetch_parties(self, case_id: str, *, retries: int = 2) -> list[CaseParty]:
         """GET /Parties('{id}') and return parsed party objects.
 
         HTTP 202 (Accepted) is Tyler's "request queued, retry in a moment"
-        signal — back off and retry. After ~4 attempts we give up and
-        return empty.
+        signal — back off and retry. After ~2 attempts we give up and
+        return empty (caller can retry later).
         """
         if not case_id:
             return []
@@ -208,7 +208,7 @@ class CaseDetailClient:
             except requests.RequestException as e:
                 logger.warning("eCourts API: parties fetch failed (attempt %d): %s", attempt + 1, e)
                 if attempt < retries:
-                    time.sleep(2 + attempt * 2)
+                    time.sleep(3 + attempt * 3)
                     continue
                 return []
             if r.status_code == 200:
@@ -219,8 +219,8 @@ class CaseDetailClient:
                     return []
                 return [CaseParty.from_json(p) for p in (data.get("Parties") or [])]
             if r.status_code == 202:
-                # Queued — wait longer for the data to be ready
-                wait = 3 + attempt * 3
+                # Queued — wait for the data to be ready
+                wait = 5 + attempt * 5
                 logger.info("eCourts API: HTTP 202 on Parties (attempt %d) — waiting %ds", attempt + 1, wait)
                 if attempt < retries:
                     time.sleep(wait)

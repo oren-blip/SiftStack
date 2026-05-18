@@ -59,6 +59,11 @@ class PropertyCandidate:
     # Score 0.0-1.0 — how confidently the parcel owner matches the decedent name
     match_score: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
+    # Optional explicit overrides for situs city/zip when the situs string
+    # itself doesn't contain them (e.g. Cabarrus DataExplorerSearch returns
+    # street separately from city/zip).
+    situs_city_override: str = ""
+    situs_zip_override: str = ""
 
 
 # ── Name parsing helpers ──────────────────────────────────────────────
@@ -536,6 +541,57 @@ def _arcgis_query(
     return [f.get("attributes") or {} for f in (data.get("features") or [])]
 
 
+_CABARRUS_ADDR_URL = (
+    "https://location.cabarruscounty.us/arcgisservices/rest/services/"
+    "DataExplorerSearch/FeatureServer/0"
+)
+
+
+def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
+    """Look up real situs address for a Cabarrus parcel by PIN.
+
+    The Tax_Parcels_Full layer only has LegalDesc; this DataExplorerSearch
+    layer joins NG911 addresses to parcels via PIN14 and returns con_cat
+    (e.g. "16627 HOPEWELL CHURCH RD") + City + Zip.
+    Returns (street, city, zip) — empties when no match.
+    """
+    if not pin:
+        return ("", "", "")
+    # Normalize PIN — Cabarrus stores both 10-digit dotted (5552060223.00000000)
+    # and 14-char (55520602230000). Try the longer form first, then strip dots.
+    pin_clean = pin.replace(".", "").strip()
+    if not pin_clean.isdigit():
+        return ("", "", "")
+    # PIN14 is 14 chars, padded with trailing zeros
+    pin14 = (pin_clean + "00000000")[:14]
+    where = f"PIN14='{pin14}'"
+    params = {
+        "where": where,
+        "outFields": "*",
+        "returnGeometry": "false",
+        "f": "json",
+    }
+    try:
+        r = requests.get(_CABARRUS_ADDR_URL + "/query", params=params,
+                         headers=_ARCGIS_HEADERS, timeout=20)
+    except requests.RequestException:
+        return ("", "", "")
+    if r.status_code != 200:
+        return ("", "", "")
+    try:
+        data = r.json()
+    except ValueError:
+        return ("", "", "")
+    feats = data.get("features") or []
+    if not feats:
+        return ("", "", "")
+    a = feats[0].get("attributes") or {}
+    street = (a.get("con_cat") or "").strip()
+    city = (a.get("City") or "").strip()
+    zipc = (a.get("Zip") or "").strip()
+    return (street, city, zipc)
+
+
 def _arcgis_to_candidate(
     rec: dict, county: str, decedent_name: str, cfg: dict,
 ) -> PropertyCandidate | None:
@@ -563,6 +619,18 @@ def _arcgis_to_candidate(
 
     # Parcel ID
     pid = str(rec.get(cfg["parcel_field"]) or "").strip()
+
+    # Cabarrus situs override — Tax_Parcels_Full has only LegalDesc which is
+    # garbage as an address ("Lt 138" / "N/O Earnhardt Lake"). Replace with
+    # a real street address from the DataExplorerSearch address-points layer.
+    situs_city_override = ""
+    situs_zip_override = ""
+    if county.lower() == "cabarrus" and pid:
+        c_street, c_city, c_zip = _cabarrus_lookup_situs(pid)
+        if c_street:
+            situs = c_street
+            situs_city_override = c_city.title()
+            situs_zip_override = c_zip
 
     # Use code + description
     use_code = str(rec.get(cfg["use_field"]) or "").strip().upper() if cfg.get("use_field") else ""
@@ -611,6 +679,8 @@ def _arcgis_to_candidate(
         is_commercial=is_commercial,
         match_score=score,
         raw=rec,
+        situs_city_override=situs_city_override,
+        situs_zip_override=situs_zip_override,
     )
 
 
@@ -785,6 +855,10 @@ def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
     s = (c.situs_address or "").strip()
     if not s:
         return ("", "", "")
+    # If county lookup provided explicit overrides (e.g. Cabarrus pulls
+    # street from one layer and city/zip from another), trust them.
+    if c.situs_city_override or c.situs_zip_override:
+        return (s.title() if s.isupper() else s, c.situs_city_override, c.situs_zip_override)
     # Pull a trailing ZIP if present in situs (rare on polaris3g)
     zip_m = re.search(r"\b(\d{5}(?:-\d{4})?)\b", s)
     zipc = zip_m.group(1) if zip_m else ""
