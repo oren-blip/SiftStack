@@ -50,6 +50,7 @@ FTM_COLUMNS = [
     "Property Zip",
     "Property use",
     "Notes",
+    "Beneficiaries",
     "Phone 1",
     "Tags",
     "List",
@@ -110,34 +111,48 @@ def _format_extra_parcels(extras: list[NoticeData]) -> str:
 
 
 def _build_notes(notice: NoticeData, *, extra_parcels: list[NoticeData] | None = None) -> str:
-    """Build the multi-line Notes block — beneficiary list + extra parcel notes."""
-    parts: list[str] = []
+    """Build the Notes block — extra-parcel notes only (beneficiaries moved
+    to their own column in build 1.0.30+).
+    """
     extra_block = _format_extra_parcels(extra_parcels or [])
-    if extra_block:
-        parts.append(extra_block)
-    if notice.beneficiaries_json:
-        try:
-            bens = json.loads(notice.beneficiaries_json)
-        except (ValueError, TypeError):
-            bens = []
-        if bens:
-            if parts:
-                parts.append("")  # blank separator
-            parts.append("Beneficiary")
-            for b in bens:
-                name = b.get("name", "")
-                street = b.get("street", "")
-                city = b.get("city", "")
-                state = b.get("state", "")
-                zipc = b.get("zip", "")
-                if name:
-                    parts.append(name)
-                if street:
-                    parts.append(street)
-                citystatezip = ", ".join(filter(None, [city, " ".join(filter(None, [state, zipc])).strip()]))
-                if citystatezip:
-                    parts.append(citystatezip)
-    return "\n".join(parts)
+    return extra_block
+
+
+def _build_beneficiaries(notice: NoticeData) -> str:
+    """Format the beneficiary list for its own column.
+
+    One beneficiary per line (multi-line cell content). Each line:
+        "Last, First Middle — street, city ST zip"
+    """
+    if not notice.beneficiaries_json:
+        return ""
+    try:
+        bens = json.loads(notice.beneficiaries_json)
+    except (ValueError, TypeError):
+        return ""
+    if not bens:
+        return ""
+    lines: list[str] = []
+    for b in bens:
+        name = (b.get("name") or "").strip()
+        street = (b.get("street") or "").strip()
+        city = (b.get("city") or "").strip()
+        state = (b.get("state") or "").strip()
+        zipc = (b.get("zip") or "").strip()
+        addr_bits: list[str] = []
+        if street:
+            addr_bits.append(street)
+        csz = " ".join(filter(None, [city + "," if city else "", state, zipc])).strip()
+        if csz:
+            addr_bits.append(csz)
+        addr = ", ".join(addr_bits)
+        if name and addr:
+            lines.append(f"{name} - {addr}")
+        elif name:
+            lines.append(name)
+        elif addr:
+            lines.append(addr)
+    return "\n".join(lines)
 
 
 def _iso_week_tag(date_str: str) -> str:
@@ -182,6 +197,7 @@ def notice_to_ftm_row(
         "Property Zip":     notice.zip,
         "Property use":     notice.property_use_simple,
         "Notes":            _build_notes(notice, extra_parcels=extra_parcels),
+        "Beneficiaries":    _build_beneficiaries(notice),
         "Phone 1":          notice.primary_phone,
         "Tags":             tag,
         "List":             "PROBATE",
@@ -273,12 +289,13 @@ def write_ftm_xlsx(
     # Data rows — single-line height, alternating banded fill
     band_fill = PatternFill(start_color=_BAND_FILL_COLOR,
                             end_color=_BAND_FILL_COLOR, fill_type="solid")
-    # Notes column contains embedded newlines — replace with " | " so the
-    # single-line display still shows beneficiaries readably.
+    # Multi-line columns (Notes, Beneficiaries) collapse embedded newlines
+    # into ' | ' so the single-line cell still shows the content readably.
+    multiline_cols = {"Notes", "Beneficiaries"}
     for r_idx, r in enumerate(rows, start=2):
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
-            if col_name == "Notes" and val:
+            if col_name in multiline_cols and val:
                 val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
@@ -306,7 +323,7 @@ def write_ftm_xlsx(
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
-        "Notes": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)

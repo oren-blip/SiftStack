@@ -27,10 +27,44 @@ def main() -> None:
     print(f"Loaded {len(rows)} rows from {src_csv.name}")
 
     # Add the new Executor Full Name column derived from First + Last
+    # AND split the old combined Notes into Notes + Beneficiaries columns.
     for r in rows:
         first = (r.get("First Name") or "").strip()
         last = (r.get("Last Name") or "").strip()
         r["Executor Full Name"] = " ".join(filter(None, [first, last])).strip()
+
+        # Old Notes format: "PLUS N PARCELS\n  ...\n\nBeneficiary\n<name>\n<addr>..."
+        old_notes = (r.get("Notes") or "").strip()
+        if not old_notes:
+            r["Notes"] = ""
+            r["Beneficiaries"] = ""
+            continue
+        # Split on the 'Beneficiary' header line if present
+        if "Beneficiary" in old_notes:
+            before, _, after = old_notes.partition("Beneficiary")
+            notes_part = before.strip()
+            ben_block = after.strip()
+            # Re-format beneficiary block: every 3 lines = name / street / city,state zip
+            lines = [ln.strip() for ln in ben_block.split("\n") if ln.strip()]
+            ben_entries: list[str] = []
+            i = 0
+            while i < len(lines):
+                name = lines[i]
+                street = lines[i + 1] if i + 1 < len(lines) else ""
+                csz = lines[i + 2] if i + 2 < len(lines) else ""
+                addr_parts = [street, csz] if street and csz else ([street] if street else [csz] if csz else [])
+                if addr_parts:
+                    ben_entries.append(f"{name} - {', '.join(addr_parts)}")
+                else:
+                    ben_entries.append(name)
+                # Heuristic: try to detect groups by checking if next line looks like a name (Last, First pattern)
+                # Default to 3-line groups for now
+                i += 3
+            r["Notes"] = notes_part
+            r["Beneficiaries"] = "\n".join(ben_entries)
+        else:
+            r["Notes"] = old_notes
+            r["Beneficiaries"] = ""
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = Path("output") / f"nc_estates_ftm_{ts}.csv"
@@ -75,12 +109,12 @@ def _write_xlsx(rows: list[dict], out_path: Path) -> None:
 
     # Data rows — single-line height, alternating banded fill
     band_fill = PatternFill(start_color=BAND_FILL, end_color=BAND_FILL, fill_type="solid")
+    multiline_cols = {"Notes", "Beneficiaries"}
     for r_idx, r in enumerate(rows, start=2):
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
-            # Collapse Notes newlines into ' | ' so the single-line cell
-            # still shows the beneficiary block readably.
-            if col_name == "Notes" and val:
+            # Collapse multi-line cell content into ' | ' for single-line display.
+            if col_name in multiline_cols and val:
                 val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
@@ -106,7 +140,7 @@ def _write_xlsx(rows: list[dict], out_path: Path) -> None:
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
-        "Notes": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)
