@@ -2,7 +2,7 @@
 column / formatting changes without re-running the full pipeline (which
 takes ~50 min thanks to Tyler's throttle).
 
-Reads the latest nc_estates_ftm_*.csv, adds the new 'Executor Full Name'
+Reads the latest nc_estates_ftm_*.csv, adds the new 'Personal Representative'
 column, and writes both CSV (new column added) + XLSX (with County dropdown).
 """
 
@@ -26,12 +26,12 @@ def main() -> None:
         rows = list(csv.DictReader(f))
     print(f"Loaded {len(rows)} rows from {src_csv.name}")
 
-    # Add the new Executor Full Name column derived from First + Last
+    # Add the new Personal Representative column derived from First + Last
     # AND split the old combined Notes into Notes + Beneficiaries columns.
     for r in rows:
         first = (r.get("First Name") or "").strip()
         last = (r.get("Last Name") or "").strip()
-        r["Executor Full Name"] = " ".join(filter(None, [first, last])).strip()
+        r["Personal Representative"] = " ".join(filter(None, [first, last])).strip()
 
         # Old Notes format: "PLUS N PARCELS\n  ...\n\nBeneficiary\n<name>\n<addr>..."
         old_notes = (r.get("Notes") or "").strip()
@@ -136,7 +136,7 @@ def _write_xlsx(rows: list[dict], out_path: Path) -> None:
 
     col_widths = {
         "File Date": 11, "County": 14, "Case No.": 18, "Deceased Owner": 32,
-        "Executor Full Name": 25, "First Name": 16, "Last Name": 18,
+        "Personal Representative": 25, "First Name": 16, "Last Name": 18,
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
