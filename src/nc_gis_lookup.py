@@ -89,7 +89,7 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
 
     Handles BOTH formats:
     - "Helen Barbara Barlow"        → ("HELEN", "BARBARA", "BARLOW")
-    - "Barlow, Helen Barbara"       → ("HELEN", "BARBARA", "BARLOW")  (Tyler API)
+    - "Barlow, Helen Barbara"       → ("HELEN", "BARBARA", "BARLOW")  (Odyssey API)
     - "Thrower, James W Jr."        → ("JAMES", "W", "THROWER")        (suffix stripped first)
     Single-token names → ("", "", name).
     """
@@ -104,7 +104,15 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
         first_mid = _normalize_name(first_part)
         first_tokens = first_mid.split()
         if not first_tokens:
-            return ("", "", last)
+            # Comma was a suffix separator (e.g. "EDWARD EUGENE TAYLOR, II"
+            # where _normalize_name dropped the post-comma "II"). Fall back
+            # to treating the pre-comma chunk as "First Middle Last".
+            parts = last.split()
+            if len(parts) == 1:
+                return ("", "", parts[0])
+            if len(parts) == 2:
+                return (parts[0], "", parts[1])
+            return (parts[0], " ".join(parts[1:-1]), parts[-1])
         if len(first_tokens) == 1:
             return (first_tokens[0], "", last)
         return (first_tokens[0], " ".join(first_tokens[1:]), last)
@@ -120,22 +128,42 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
     return (parts[0], " ".join(parts[1:-1]), parts[-1])
 
 
+_MIDDLE_NOISE_TOKENS = {
+    "JR", "SR", "II", "III", "IV", "V", "WF", "HSB", "AND", "OR",
+    "MR", "MRS", "MS", "DR", "MD", "PHD", "ESQ", "REV",
+}
+
+
 def _name_match_score(decedent: str, owner_fullname: str) -> float:
     """Score how confidently the owner name matches the decedent.
 
-    Handles BOTH name formats:
-    - "Carroll, Iris Jenelle" (Tyler API format — lastname before comma)
-    - "Iris Jenelle Carroll" (space-separated, last token is lastname)
+    CRITICAL: When BOTH decedent and owner have a middle name/initial,
+    they MUST share at least the first letter — otherwise we treat it
+    as a different person. This prevents homonym false positives like
+    "James Lee Osborne" matching "JAMES D OSBORNE".
 
-    Returns:
-      1.0  - first AND last name both appear in owner name (strong match)
-      0.7  - lastname + first initial match (e.g. "CARROLL IRIS J" matches
-             decedent Iris Jenelle Carroll)
-      0.6  - lastname-only decedent (no firstname available)
-      0.0  - lastname mismatch
+    Owner strings often contain joint owners separated by "|" or "&"
+    (e.g. "RUSSELL WILLIAM JR | RUSSELL SYLVANIA WF"). We score each
+    sub-name independently and take the BEST score — the decedent
+    matching ANY co-owner is a valid hit.
     """
-    # Pull decedent's first + last using the same comma-aware logic as split_decedent_name
-    d_first, _d_middle, d_last = split_decedent_name(decedent)
+    if not decedent:
+        return 0.0
+    # Split joint-owner strings; score each sub-name and take the max
+    sub_names = re.split(r"\s*[|&]\s*", owner_fullname or "")
+    best = 0.0
+    for sub in sub_names:
+        s = _name_match_score_one(decedent, sub)
+        if s > best:
+            best = s
+        if best >= 1.0:
+            break
+    return best
+
+
+def _name_match_score_one(decedent: str, owner_fullname: str) -> float:
+    """Score a single (non-joint) owner name against the decedent."""
+    d_first, d_middle, d_last = split_decedent_name(decedent)
     if not d_last:
         return 0.0
     o_tokens = _normalize_name(owner_fullname).split()
@@ -145,19 +173,65 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
     if d_last not in o_set:
         return 0.0
     if not d_first:
-        return 0.6  # lastname-only decedent; lower confidence
-    if d_first in o_set:
+        return 0.6
+
+    first_full_match = d_first in o_set
+    first_initial_match = False
+    if not first_full_match:
+        d_first_initial = d_first[0]
+        for t in o_tokens:
+            if t == d_first_initial or (len(t) <= 2 and t[0] == d_first_initial):
+                first_initial_match = True
+                break
+    if not first_full_match and not first_initial_match:
+        return 0.4
+
+    # MIDDLE-NAME CHECK — when both sides have a middle, they must share
+    # at least the first letter of ANY decedent middle word. Compound
+    # middles like "Joyce Stafford" must match owner "S" (= Stafford
+    # initial) — common pattern where maiden name is used as middle.
+    if d_middle:
+        d_middle_words = [w for w in d_middle.split() if w]
+        d_middle_initials = {w[0] for w in d_middle_words}
+        owner_middle_tokens: list[str] = []
+        first_seen = False
+        last_seen = False
+        for t in o_tokens:
+            if t == d_last and not last_seen:
+                last_seen = True
+                continue
+            if t == d_first and not first_seen and first_full_match:
+                first_seen = True
+                continue
+            if first_initial_match and not first_full_match and not first_seen:
+                d_first_initial = d_first[0]
+                if t == d_first_initial or (len(t) <= 2 and t[0] == d_first_initial):
+                    first_seen = True
+                    continue
+            if t in _MIDDLE_NOISE_TOKENS:
+                continue
+            owner_middle_tokens.append(t)
+        if owner_middle_tokens:
+            owner_middle_matches = False
+            for t in owner_middle_tokens:
+                # Owner has full middle name matching any decedent middle word
+                if t in d_middle_words:
+                    owner_middle_matches = True
+                    break
+                # Owner has single-letter initial matching any decedent middle word's first letter
+                if len(t) == 1 and t in d_middle_initials:
+                    owner_middle_matches = True
+                    break
+                # Decedent has single-letter middle matching owner full middle's first letter
+                if any(len(w) == 1 and t[0] == w for w in d_middle_words):
+                    owner_middle_matches = True
+                    break
+            if not owner_middle_matches:
+                return 0.4
+
+    if first_full_match:
         return 1.0
-    # Initial match — owner has "CARROLL IRIS J" or "CARROLL I J" and decedent is "Iris J Carroll"
-    d_first_initial = d_first[0]
-    for t in o_tokens:
-        if t == d_first_initial:
-            return 0.7
-        if len(t) <= 2 and t[0] == d_first_initial:
-            return 0.7
-    # No first-name match — return 0.4 (lastname-only) so caller can decide
-    # whether to keep it. With min_score=0.5 it will be dropped, with 0.4 kept.
-    return 0.4
+    return 0.7
 
 
 # ── Address comparison helpers ────────────────────────────────────────
@@ -838,6 +912,15 @@ def lookup_properties(
 
     Returns [] when the county isn't yet supported (graceful no-op so the
     pipeline keeps moving while we roll out more counties).
+
+    Per-process cache: each unique (decedent, county) is fetched from the
+    county GIS ONCE per Python process (at the broadest min_score=0.4),
+    then in-memory filtered to the caller's requested threshold. This is
+    critical for the fix_addresses_and_prep pipeline which calls
+    lookup_properties multiple times per decedent across several steps
+    (validate / re-search / repair / re-collapse / populate-value).
+    Without the cache, Cabarrus's ~1-min-per-call GIS becomes the dominant
+    runtime bottleneck.
     """
     if not decedent_name or not county:
         return []
@@ -845,11 +928,20 @@ def lookup_properties(
     if fn is None:
         logger.debug("nc_gis_lookup: county %r not yet supported", county)
         return []
-    try:
-        return fn(decedent_name, min_score=min_score)
-    except Exception:
-        logger.exception("nc_gis_lookup: %s search for %r failed", county, decedent_name)
-        return []
+    cache_key = (decedent_name.strip().upper(), county.strip().upper())
+    candidates = _LOOKUP_CACHE.get(cache_key)
+    if candidates is None:
+        try:
+            # Fetch at the broadest threshold so the cached result can serve
+            # any caller's min_score by in-memory filtering.
+            candidates = fn(decedent_name, min_score=0.4)
+        except Exception:
+            logger.exception("nc_gis_lookup: %s search for %r failed", county, decedent_name)
+            candidates = []
+        _LOOKUP_CACHE[cache_key] = candidates
+    if min_score <= 0.4:
+        return list(candidates)
+    return [c for c in candidates if c.match_score >= min_score]
 
 
 def filter_for_lead_quality(
@@ -908,7 +1000,87 @@ _TWO_WORD_NC_CITIES = {
     "MINT HILL", "MOUNT HOLLY", "HIGH POINT", "WINSTON SALEM",
     "ROCKY MOUNT", "CHINA GROVE", "HOPE MILLS", "GOLD HILL",
     "SCOTLAND NECK", "PINE LEVEL", "OAK ISLAND", "OAK RIDGE",
+    # NC towns observed in our 7-county data
+    "IRON STATION", "EAST SPENCER", "GRANITE QUARRY", "GRANITE FALLS",
+    "MOUNT ULLA", "MOUNT MOURNE", "SAINT STEPHENS", "LONG VIEW",
+    "MOUNT PLEASANT",
 }
+
+# Tokens that look city-like (last token before state in a situs string)
+# but are actually parts of the street: street types + directional
+# suffixes. When the trailing token matches one of these, the situs has
+# NO city — fall through to the mailing-address city backfill instead.
+_NOT_A_CITY_TOKENS = {
+    # Street type abbreviations (and the full words just in case)
+    "DR", "DRIVE", "ST", "STREET", "RD", "ROAD", "LN", "LANE",
+    "CT", "COURT", "AVE", "AVENUE", "BLVD", "BOULEVARD",
+    "WAY", "CIR", "CIRCLE", "PL", "PLACE", "TC", "TER", "TERRACE",
+    "TR", "TRL", "TRAIL", "PKWY", "PARKWAY", "HWY", "HIGHWAY",
+    "ALY", "ALLEY", "PT", "POINT", "RDG", "RIDGE", "RUN", "ROW",
+    "XING", "CROSSING", "LOOP", "PATH", "PLZ", "PLAZA",
+    "SQ", "SQUARE", "EST", "ESTATES", "GLN", "GLEN",
+    # Directional suffixes/prefixes (also not cities)
+    "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+    "NORTH", "SOUTH", "EAST", "WEST",
+    # Unit / qualifiers sometimes left dangling
+    "APT", "UNIT", "STE", "SUITE", "BLDG", "BUILDING", "FL", "FLOOR",
+}
+
+
+def _looks_like_street_suffix(token: str) -> bool:
+    """True when a token is a street type or directional, not a city."""
+    return token.upper().strip(".") in _NOT_A_CITY_TOKENS
+
+
+_US_STATE_CODES = {
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN",
+    "IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV",
+    "NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN",
+    "TX","UT","VT","VA","WA","WV","WI","WY","DC",
+}
+
+
+def _extract_city_from_mailing(mailing: str) -> str:
+    """Pull the city out of a 'STREET CITY NC ZIP' mailing address.
+    Returns "" if mailing is offsite (state != NC), looks like a street
+    fragment, or the trailing token isn't a plausible city name.
+    """
+    if not mailing:
+        return ""
+    m = mailing.upper()
+    # Strip trailing ZIP — accept 5, 5-4 with dash, or 9-no-dash format
+    # (Gaston tax records sometimes store ZIP+4 without the dash).
+    zip_m = re.search(r"\b(\d{5}(?:-?\d{4})?)\s*$", m)
+    if zip_m:
+        m = m[: zip_m.start()].strip()
+    # Only trust mailing for property city when STATE is NC.
+    # Offsite owners in GA/SC/etc. have city = their out-of-state city,
+    # which is NOT the property's city. Bail in that case.
+    if not re.search(r"\bNC\b\s*$", m):
+        return ""
+    m = re.sub(r"\s+NC\s*$", "", m).strip()
+    # Mailings often abbreviate "Mount" as "Mt" (e.g., "Mt Holly", "Mt Ulla").
+    # Normalize for 2-word city detection.
+    m = re.sub(r"\bMT\b", "MOUNT", m)
+    tokens = m.split()
+    if not tokens:
+        return ""
+    # Two-word city (Mount Holly, Iron Station, etc.) takes precedence
+    if len(tokens) >= 2:
+        last_two = " ".join(tokens[-2:])
+        if last_two in _TWO_WORD_NC_CITIES:
+            return last_two
+    last = tokens[-1]
+    # Reject street-type suffixes (Dr, Rd, Ln, ...)
+    if _looks_like_street_suffix(last):
+        return ""
+    # Reject US state codes left over from malformed mailings (Ga, Ny, etc.)
+    if last in _US_STATE_CODES:
+        return ""
+    # Reject mostly-digit tokens (e.g., a ZIP that escaped the regex strip)
+    if last.replace("-", "").isdigit():
+        return ""
+    return last
 
 
 def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
@@ -926,40 +1098,95 @@ def _candidate_to_address_parts(c: PropertyCandidate) -> tuple[str, str, str]:
     # street from one layer and city/zip from another), trust them.
     if c.situs_city_override or c.situs_zip_override:
         return (s.title() if s.isupper() else s, c.situs_city_override, c.situs_zip_override)
-    # Pull a trailing ZIP if present in situs (rare on polaris3g)
-    zip_m = re.search(r"\b(\d{5}(?:-\d{4})?)\b", s)
+    # Pull a trailing ZIP if present in situs (rare on polaris3g).
+    # MUST anchor to end-of-string — otherwise a 5-digit street number at
+    # the start (e.g. "15679 KNOLL OAK CT HUNTERSVILLE NC") gets captured
+    # as the "ZIP" and the actual street + city are discarded.
+    zip_m = re.search(r"\b(\d{5}(?:-?\d{4})?)\s*$", s)
     zipc = zip_m.group(1) if zip_m else ""
     s_no_zip = s[: zip_m.start()].strip() if zip_m else s
     # Pull state suffix
     s_no_state = re.sub(r"\s+NC\s*$", "", s_no_zip, flags=re.IGNORECASE).strip()
     tokens = s_no_state.split()
+    city = ""
     if len(tokens) >= 3:
-        city = tokens[-1]
-        street = " ".join(tokens[:-1])
-        last_two = " ".join(tokens[-2:]).upper()
-        if last_two in _TWO_WORD_NC_CITIES:
+        # Common case: "STREET... CITY"  — take last token as city.
+        # BUT if the last token is actually a street-type suffix (Dr, St,
+        # Rd, Ave, etc.) or a directional (Se, Nw, etc.), the situs has
+        # NO city — keep the whole thing as street.
+        last_two_upper = " ".join(tokens[-2:]).upper()
+        if last_two_upper in _TWO_WORD_NC_CITIES:
             city = " ".join(tokens[-2:])
             street = " ".join(tokens[:-2])
+        elif _looks_like_street_suffix(tokens[-1]):
+            # No city in situs (e.g. "3429 ROCK CREEK DR")
+            street = s_no_state
+            city = ""
+        else:
+            city = tokens[-1]
+            street = " ".join(tokens[:-1])
     else:
         street, city = s_no_state, ""
 
-    # ZIP backfill from mailing address when cities match
-    if not zipc and c.mailing_address:
-        m_zip = re.search(r"\b(\d{5}(?:-\d{4})?)\b", c.mailing_address)
-        if m_zip:
-            # Extract the mailing city by stripping ZIP, state, then taking
-            # the trailing token(s) before state.
-            m = c.mailing_address.upper()
-            m_no_zip = m[: m_zip.start()].strip()
-            m_no_state = re.sub(r"\s+NC\s*$", "", m_no_zip).strip()
-            m_tokens = m_no_state.split()
-            if m_tokens:
-                mailing_city = m_tokens[-1]
-                if " ".join(m_tokens[-2:]) in _TWO_WORD_NC_CITIES:
-                    mailing_city = " ".join(m_tokens[-2:])
-                if city.upper() == mailing_city:
-                    zipc = m_zip.group(1)
+    situs_had_no_city = (not city)  # remember this before backfill mutates city
 
+    # City backfill from mailing address when situs had no city
+    if situs_had_no_city and c.mailing_address:
+        mailing_city = _extract_city_from_mailing(c.mailing_address)
+        if mailing_city:
+            # When situs explicitly lacked a city (last token was a street
+            # type like Dr/Rd/Ln), the mailing address IS the property
+            # mailing — trust it for the city regardless of match_score.
+            # For other low-confidence cases, fall back to the score gate.
+            city = mailing_city
+
+    # ZIP backfill from mailing address. Anchor to end-of-string —
+    # same street-number-as-ZIP trap. Reject offsite-state mailings —
+    # an Atlanta GA owner's ZIP is NOT the NC property's ZIP.
+    mailing_is_nc = False
+    if c.mailing_address:
+        mailing_up = c.mailing_address.upper()
+        # Strip trailing ZIP to check state at the end
+        _zm = re.search(r"\b(\d{5}(?:-?\d{4})?)\s*$", mailing_up)
+        if _zm:
+            stripped = mailing_up[: _zm.start()].rstrip()
+            if re.search(r"\bNC\s*$", stripped):
+                mailing_is_nc = True
+        elif re.search(r"\bNC\s*$", mailing_up):
+            mailing_is_nc = True
+    if not zipc and c.mailing_address and mailing_is_nc:
+        m_zip = re.search(r"\b(\d{5}(?:-?\d{4})?)\s*$", c.mailing_address)
+        if m_zip:
+            # Three conditions under which mailing ZIP IS the property ZIP:
+            #   1. GIS owner == decedent (probate-in-progress, same person)
+            #   2. Situs had no recognizable city — mailing is authoritative
+            #      anyway (e.g. ArcGIS counties return just "STREET DR")
+            #   3. Lower-score match where situs city == mailing city
+            #      (offsite-owner safety check)
+            if c.match_score >= 0.9 or situs_had_no_city:
+                zipc = m_zip.group(1)
+            else:
+                m = c.mailing_address.upper()
+                m_no_zip = m[: m_zip.start()].strip()
+                m_no_state = re.sub(r"\s+NC\s*$", "", m_no_zip).strip()
+                m_tokens = m_no_state.split()
+                if m_tokens:
+                    mailing_city = m_tokens[-1]
+                    if " ".join(m_tokens[-2:]) in _TWO_WORD_NC_CITIES:
+                        mailing_city = " ".join(m_tokens[-2:])
+                    if city.upper() == mailing_city:
+                        zipc = m_zip.group(1)
+
+    # Normalize 9-digit-no-dash ZIPs to proper "XXXXX-XXXX" format
+    if zipc and len(zipc) == 9 and zipc.isdigit():
+        zipc = f"{zipc[:5]}-{zipc[5:]}"
+        # If the +4 portion is all zeros, drop it (use 5-digit form)
+        if zipc.endswith("-0000"):
+            zipc = zipc[:5]
+    # Final safety: a city that's all digits is junk leftover from a
+    # malformed mailing — clear it rather than letting it land in CSV.
+    if city and city.replace("-", "").isdigit():
+        city = ""
     return (street.title(), city.title(), zipc)
 
 

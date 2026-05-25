@@ -36,7 +36,7 @@ FTM_COLUMNS = [
     "County",
     "Case No.",
     "Deceased Owner",
-    "Executor Full Name",
+    "Personal Representative",
     "First Name",
     "Last Name",
     "Mailing Address",
@@ -49,17 +49,44 @@ FTM_COLUMNS = [
     "Property State",
     "Property Zip",
     "Property use",
+    "Property Value",
     "Notes",
     "Beneficiaries",
     "Phone 1",
     "Tags",
     "List",
+    # Heir / Decision Maker columns — populated for rows that lack a
+    # court-named executor, via heir_prospect_no_executor.py (obituary
+    # survivors + multi-tier skip trace). Stays blank for executor rows.
+    "DM Name",
+    "DM Relationship",
+    "DM Phone",
+    "DM Email",
+    "DM 2 Name",
+    "DM 2 Relationship",
+    "DM 3 Name",
+    "DM 3 Relationship",
 ]
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
     "Cabarrus", "Catawba", "Gaston", "Iredell", "Lincoln", "Mecklenburg", "Rowan",
 ]
+
+# Per-county row tints — subtle pastel backgrounds so rows visually group
+# by county when the sheet is sorted by County. Picked low-saturation
+# shades that pair with the dark green header + don't clash.
+NC_COUNTY_COLORS: dict[str, str] = {
+    "Cabarrus":    "D6EAF8",  # light blue
+    "Catawba":     "D5F5E3",  # light green
+    "Gaston":      "FCF3CF",  # light yellow (close to FTM band)
+    "Iredell":     "FADBD8",  # light pink
+    "Lincoln":     "E8DAEF",  # light lavender
+    "Mecklenburg": "FDEBD0",  # light peach
+    "Rowan":       "D1F2EB",  # light teal
+}
+# Fallback for unknown counties (white = no fill)
+NC_COUNTY_DEFAULT_COLOR = ""
 
 
 def _format_date(yyyymmdd: str) -> str:
@@ -110,12 +137,11 @@ def _format_extra_parcels(extras: list[NoticeData]) -> str:
     return "\n".join(lines)
 
 
-def _build_notes(notice: NoticeData, *, extra_parcels: list[NoticeData] | None = None) -> str:
+def _build_notes(extra_parcels: list[NoticeData] | None = None) -> str:
     """Build the Notes block — extra-parcel notes only (beneficiaries moved
     to their own column in build 1.0.30+).
     """
-    extra_block = _format_extra_parcels(extra_parcels or [])
-    return extra_block
+    return _format_extra_parcels(extra_parcels or [])
 
 
 def _build_beneficiaries(notice: NoticeData) -> str:
@@ -175,6 +201,11 @@ def notice_to_ftm_row(
 
     `extra_parcels` (if any) get listed in Notes as 'PLUS N PARCELS: ...'
     so a decedent with multiple properties collapses to one row.
+
+    DM Name / DM Relationship / DM 2 / DM 3 are populated from
+    `notice.decision_maker_*` (set by the obituary enricher when
+    `--nc-obituary` runs). Phone/Email columns are left blank — DataSift's
+    post-upload skip-trace fills those.
     """
     tag = tag_override or _iso_week_tag(notice.date_added)
     exec_full = " ".join(filter(None, [notice.executor_first_name, notice.executor_last_name])).strip()
@@ -183,7 +214,7 @@ def notice_to_ftm_row(
         "County":             notice.county,
         "Case No.":           notice.case_number,
         "Deceased Owner":     _format_decedent(notice.decedent_name),
-        "Executor Full Name": exec_full,
+        "Personal Representative": exec_full,
         "First Name":         notice.executor_first_name,
         "Last Name":          notice.executor_last_name,
         "Mailing Address":  notice.owner_street,
@@ -196,28 +227,71 @@ def notice_to_ftm_row(
         "Property State":   notice.state if notice.state == "NC" else "NC",
         "Property Zip":     notice.zip,
         "Property use":     notice.property_use_simple,
-        "Notes":            _build_notes(notice, extra_parcels=extra_parcels),
+        "Property Value":   notice.estimated_value or "",
+        "Notes":            _build_notes(extra_parcels=extra_parcels),
         "Beneficiaries":    _build_beneficiaries(notice),
         "Phone 1":          notice.primary_phone,
         "Tags":             tag,
         "List":             "PROBATE",
+        "DM Name":          notice.decision_maker_name or "",
+        "DM Relationship":  notice.decision_maker_relationship or "",
+        "DM Phone":         "",
+        "DM Email":         "",
+        "DM 2 Name":        notice.decision_maker_2_name or "",
+        "DM 2 Relationship": notice.decision_maker_2_relationship or "",
+        "DM 3 Name":        notice.decision_maker_3_name or "",
+        "DM 3 Relationship": notice.decision_maker_3_relationship or "",
     }
 
 
 def _market_value_key(n: NoticeData) -> float:
-    """Sort key for picking the 'main' parcel per decedent — highest value wins."""
+    """Read estimated_value as a float; 0 when missing."""
     try:
         return float(n.estimated_value or 0)
     except (TypeError, ValueError):
         return 0.0
 
 
+def _main_parcel_priority(n: NoticeData) -> tuple[int, float]:
+    """Sort key for picking the 'main' parcel per decedent.
+
+    Priority (sorted DESCENDING, so highest tuple wins):
+      1. Residential beats vacant beats commercial — vacant lots and
+         commercial parcels should be NOTES, not the main lead. A
+         decedent who owned a house + 2 vacant lots: the house is the
+         lead.
+      2. Within same use-class, highest market value wins.
+
+    Use-class tier (higher = preferred as main):
+      3 = SFR / Residential / Townhouse / Condo / MH
+      2 = anything not classified (unknown — could be residential)
+      1 = Vacant Land
+      0 = Commercial / Industrial / Office
+    """
+    use = (getattr(n, "property_use_simple", "") or "").upper()
+    if "COMMERCIAL" in use or "INDUSTRIAL" in use or "OFFICE" in use:
+        tier = 0
+    elif "VACANT" in use or "LAND" in use:
+        tier = 1
+    elif use in {"SFR", "RESIDENTIAL", "TOWNHOUSE", "CONDO", "MH",
+                 "MULTI-FAMILY", "DUPLEX"}:
+        tier = 3
+    else:
+        tier = 2
+    return (tier, _market_value_key(n))
+
+
 def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[NoticeData]]]:
     """Group notices by case_number; return [(main_parcel, [extra_parcels])].
 
-    Main parcel = the one with the highest estimated_value. Falls back to
-    the first if values are equal/missing. Notices without a case_number
-    are returned individually with no extras.
+    Main parcel selection (in order of preference):
+      1. Residential / SFR / Condo / Townhouse (the actual house)
+      2. Unknown use-type (when no classification is available)
+      3. Vacant land
+      4. Commercial / industrial
+    Within same use-tier, highest estimated_value wins.
+
+    Notices without a case_number get returned individually.
     """
     groups: dict[str, list[NoticeData]] = {}
     out: list[tuple[NoticeData, list[NoticeData]]] = []
@@ -228,7 +302,7 @@ def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[N
         if len(items) == 1:
             out.append((items[0], []))
             continue
-        items_sorted = sorted(items, key=_market_value_key, reverse=True)
+        items_sorted = sorted(items, key=_main_parcel_priority, reverse=True)
         main, extras = items_sorted[0], items_sorted[1:]
         out.append((main, extras))
     return out
@@ -271,6 +345,10 @@ def write_ftm_xlsx(
     else:
         rows = [notice_to_ftm_row(n, tag_override=tag_override) for n in notices]
 
+    # Sort rows by County (alphabetical) then by Case No. — keeps each
+    # county's leads grouped together for visual scan-ability.
+    rows.sort(key=lambda r: ((r.get("County") or "ZZZ"), r.get("Case No.", "")))
+
     wb = Workbook()
     ws = wb.active
     ws.title = "NC Estates"
@@ -286,22 +364,23 @@ def write_ftm_xlsx(
         cell.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[1].height = 20
 
-    # Data rows — single-line height, alternating banded fill
-    band_fill = PatternFill(start_color=_BAND_FILL_COLOR,
-                            end_color=_BAND_FILL_COLOR, fill_type="solid")
-    # Multi-line columns (Notes, Beneficiaries) collapse embedded newlines
-    # into ' | ' so the single-line cell still shows the content readably.
+    # Data rows — single-line height, per-county color tint (replaces the
+    # old yellow-alternating-band so county groups are visually distinct).
+    county_fills = {
+        c: PatternFill(start_color=h, end_color=h, fill_type="solid")
+        for c, h in NC_COUNTY_COLORS.items()
+    }
     multiline_cols = {"Notes", "Beneficiaries"}
     for r_idx, r in enumerate(rows, start=2):
+        row_fill = county_fills.get(r.get("County", ""))
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
             if col_name in multiline_cols and val:
                 val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            # Even rows in the displayed table (every other data row) get the band fill
-            if (r_idx % 2) == 0:
-                cell.fill = band_fill
+            if row_fill:
+                cell.fill = row_fill
         ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
 
     # County dropdown — applied to the full County column
@@ -319,11 +398,16 @@ def write_ftm_xlsx(
     # Column widths — make the important fields legible
     col_widths = {
         "File Date": 11, "County": 14, "Case No.": 18, "Deceased Owner": 32,
-        "Executor Full Name": 25, "First Name": 16, "Last Name": 18,
+        "Personal Representative": 25, "First Name": 16, "Last Name": 18,
         "Mailing Address": 28, "Mailing City": 16, "Mailing State": 7, "Mailing Zip": 8,
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
+        "Property Value": 14,
         "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        # Heir / Decision Maker columns
+        "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
+        "DM 2 Name": 22, "DM 2 Relationship": 14,
+        "DM 3 Name": 22, "DM 3 Relationship": 14,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)
