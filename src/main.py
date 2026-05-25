@@ -2034,6 +2034,22 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
     else:
         logging.info("Output: %s", write_csv(notices))
 
+    # Re-write the FTM-format NC Estates CSV/XLSX POST-enrichment so the
+    # polish pipeline sees obituary-enricher output (DM Name, DM Relationship,
+    # DM 2/3, decision_maker_*). The pre-validation write earlier preserves
+    # rows that enrichment dropped; this second write captures the enrichment
+    # data for rows that survived. prepare_weekly_input picks the latest
+    # file per (county, case_no), so this becomes the authoritative source.
+    probate_notices_post = [n for n in notices if n.notice_type == "probate"]
+    if probate_notices_post:
+        from nc_ftm_writer import write_ftm_csv, write_ftm_xlsx
+        ts_post = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ftm_post_csv = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_post}.csv"
+        ftm_post_xlsx = config.OUTPUT_DIR / f"nc_estates_ftm_{ts_post}.xlsx"
+        count = write_ftm_csv(probate_notices_post, ftm_post_csv)
+        write_ftm_xlsx(probate_notices_post, ftm_post_xlsx)
+        logger.info("NC Estates FTM (post-enrichment): %s + .xlsx (%d rows)", ftm_post_csv, count)
+
     if getattr(args, "upload_datasift", False):
         from datasift_formatter import write_datasift_split_csvs
         from datasift_uploader import upload_datasift_split, upload_to_datasift
