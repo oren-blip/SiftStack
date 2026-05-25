@@ -862,8 +862,19 @@ def promote_dm_to_pr(row: dict) -> dict | None:
     dm_name = (row.get("DM Name") or "").strip()
     if not dm_name:
         return None
-    # Skip if DM Name is itself a generic 'Heirs of ...' placeholder
-    if dm_name.lower().startswith("heirs of"):
+    # Skip degenerate placeholders — let the row fall through to the
+    # regular "Heirs of [Decedent]" path instead:
+    #   - "Heirs of ..." (already a generic placeholder)
+    #   - "Estate of ..." (obituary enricher's Path 5 estate-fallback —
+    #     fires when no survivors are named in the obituary)
+    #   - Pure relationship words like "Wife"/"Husband" (parser pulled
+    #     the relation label instead of the actual person's name)
+    dm_lower = dm_name.lower()
+    if dm_lower.startswith("heirs of") or dm_lower.startswith("estate of"):
+        return None
+    if dm_lower in {"wife", "husband", "spouse", "son", "daughter",
+                    "brother", "sister", "mother", "father", "child",
+                    "children", "family"}:
         return None
     first, last = _split_person_name(dm_name)
     return {
