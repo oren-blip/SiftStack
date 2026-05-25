@@ -34,6 +34,10 @@ python src/main.py daily --counties Knox          # only Knox county
 python src/main.py daily --types foreclosure,probate  # only specific types
 python src/main.py daily -v                       # verbose/debug logging
 
+# NC probate weekly scrape (use scripts/nc_weekly_scrape.bat for defaults)
+scripts\nc_weekly_scrape.bat                      # last 7 days, all 7 NC counties
+scripts\nc_weekly_scrape.bat 2026-05-18           # from a specific date
+
 # DataSift preset/sequence management
 python src/main.py manage-presets --discover                      # list all presets and sequences
 python src/main.py manage-presets --add-sold-exclusion            # add Sold exclusion to all presets
@@ -201,6 +205,68 @@ Courthouse probate records have decedent name + PR/executor name but NO property
 - `opencv-python-headless>=4.13.0` — image preprocessing (headless = no GUI, saves 26MB in Docker)
 - `numpy>=1.26.0` — required by OpenCV
 - `dropbox>=12.0.2` — Dropbox SDK (minimum for post-Jan-2026 API compatibility)
+
+## NC Probate Pipeline (Phase 2 — 7-county expansion)
+
+Built on top of the TN pipeline but with distinct conventions:
+
+**One-command weekly run** (`scripts/nc_weekly_run.bat`) — wraps the entire 6-step pipeline:
+```
+scripts\nc_weekly_run.bat                  # last 7 days
+scripts\nc_weekly_run.bat 2026-05-18       # from a specific date
+```
+Steps it runs in sequence: scrape → merge by ISO week → manual archive index refresh → polish pipeline → eCourts name-search backfill → consolidate workbook. All output appends to `logs/nc_weekly_run.log`. Final workbook: `output/FTM_YYYY_NC_Estates_throughWeekN.xlsx`.
+
+**Standard NC weekly scrape command** (`scripts/nc_weekly_scrape.bat`):
+```
+python src/main.py nc-daily \
+  --since YYYY-MM-DD \
+  --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Mecklenburg,Rowan \
+  --types probate \
+  --skip-obituary \
+  --no-skip-trace
+```
+
+**Required NC flags (and why):**
+- `--skip-obituary` — kept on by default during the A/B rollout of NC obituary enrichment. The enricher is now state-aware (per-state Tier 1 gate, no more Knoxville fallback baked in), but the default still skips for NC until we've validated heir-discovery hit rate against the "Heirs of [Decedent]" baseline. **To opt in for a given run**, also pass `--nc-obituary` — it overrides `--skip-obituary` for NC notices and runs the Tier 2 path (Serper + Firecrawl + LLM; Knox Tax tier is gated off automatically for non-TN states). Ancestry SSDI stays disabled in NC opt-in (Knox-tested only).
+- `--no-skip-trace` — DataSift's $97/mo unlimited skip-trace (post-upload, auto-tag `skip_traced_YYYY-MM`) handles phones + emails. Tracerfy ($0.02/contact) is reserved for **Phase 2 deep prospecting** where DataSift can't help (heirs identified from obituary search who aren't in the CSV yet).
+
+**`--nc-obituary` A/B rollout (build 1.0.30+):**
+- Off by default. Set `NC_OBITUARY=1` env var before running `scripts\nc_weekly_scrape.bat` to enable it for a single run, OR pass `--nc-obituary` directly to `python src/main.py nc-daily ...`.
+- Plan: run one or two weeks A/B (with vs without). Compare confirmed-heir count against current "Heirs of [Decedent]" placeholder count. If hit rate is healthy, flip default by removing `--skip-obituary` from `nc_weekly_scrape.bat`.
+- Implementation: `obituary_enricher.py` now threads `notice.state` through every lookup helper. The Knox Tax tier is gated on `state == "TN"`; non-TN states go straight to Tier 2 (Serper + Firecrawl + Claude Haiku). `_STATE_FALLBACK_CITY = {"TN": "Knoxville"}` — for NC notices with no city, the lookup runs city-less rather than guessing.
+
+**Post-scrape polish pipeline** (`python fix_addresses_and_prep.py`):
+1. **Step -1** Backfill blank Case No. from user's manual archive (see `build_manual_archive_index.py` — newspapers publish Notice-to-Creditors 1-8 weeks AFTER eCourts filing, so blank-case-no rows often match cases the user already pulled manually in a prior week)
+2. **Step -0.8** Drop archive duplicates — rows whose backfilled Case No. resolves to a prior ISO week's manual entry. User's rule: keep the original in the prior week and update info there; remove from current week.
+3. **Step -0.5** Soft-dedup blank-case-no rows against same-decedent named rows in the current week (catches newspaper notices that ALSO appear in this week's eCourts pull)
+4. **Step 0** Validate existing parcel matches with middle-name-aware matcher (catches homonyms like "Osborne, James Lee" matched to "James D Osborne")
+5. **Step 0.5** Re-search with name variations for cases the audit blanked
+6. **Step 1** Repair property addresses + re-classify suspect Commercial-tagged rows
+7. **Step 1.5** Re-collapse multi-parcel decedents (prefer residential as main, vacant lots → Notes)
+8. **Step 1.7** Backfill Property Value from GIS
+9. **Step 1.8** Drop properties > $500K (user's buy-box cap)
+10. **Step 1.9** Drop heir-occupied (executor mailing == property address)
+11. **Step 1.95** Fill missing PR mailing from property address (so direct mail still goes to property)
+12. **Step 2** Drop genuinely commercial rows
+13. **Step 3** Collapse duplicate-decedent rows where Case No. is blank
+14. **Step 3.5** Clean bad-city / bad-zip leftovers — when Property City contains a street suffix (Dr/St/Rd/Ln), state code (Ga/Ny), or numeric value (9-digit-no-dash ZIPs that leaked through), merge the suffix back into Property Address and clear the bad city. Also reformat `281640000` → `28164` / `28164-0000`.
+15. **Step 4** Filter to has-parcel + apply "Heirs of [Decedent]" transform for no-PR rows (promotes first usable beneficiary to PR before falling back to "Heirs of")
+
+**Per-session GIS cache** — `nc_gis_lookup.lookup_properties` caches by `(decedent, county)` so each unique decedent only hits the county GIS once per pipeline run. Critical for Cabarrus (~1 min/call API).
+
+**Daily 8am auto-rerun** (`scripts/daily_reenrich.bat` via Windows Task Scheduler) — POLISHES the latest weekly FTM CSV (runs `reenrich_ftm_executors.py` + `recover_parcels.py`). Does NOT scrape new data. To pull a new week, manually invoke `scripts/nc_weekly_scrape.bat`.
+
+**FTM-format output** (`src/nc_ftm_writer.py`):
+- 30 columns including Beneficiaries (from eCourts Parties API), Property Value, DM columns (DM Name / Relationship / Phone / Email / DM 2/3)
+- Per-county color tints (Cabarrus light blue, Catawba light green, Gaston light yellow, Iredell light pink, Lincoln lavender, Mecklenburg peach, Rowan teal)
+- Sorted by County then Case No.
+- Dark green header, single-line row layout, County dropdown
+
+**Multi-week workbook consolidation** (`python consolidate_weeks.py`):
+- Combines `*_weekN_datasift.csv` files into one XLSX with a tab per ISO week
+- Auto-picks latest per week from `output/`
+- Output: `output/FTM_YYYY_NC_Estates_throughWeekN.xlsx`
 
 ## DataSift.ai (REISift) Integration
 
