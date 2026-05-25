@@ -41,6 +41,13 @@ rowan_delinquent_seen_ids.json
 output/
 logs/
 
+# User's personal manual XLSX (kept locally, not in repo)
+FTM_*NC*Estates*.xlsx
+
+# Throwaway recon artifacts (large HTML dumps, scratch text)
+portal_page.html
+selector_report.txt
+
 # Python
 __pycache__/
 *.pyc
