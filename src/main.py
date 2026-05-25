@@ -1211,6 +1211,16 @@ def cli_main() -> None:
         help="Skip obituary search for deceased owner detection",
     )
     parser.add_argument(
+        "--nc-obituary",
+        action="store_true",
+        help=(
+            "Opt-in: run obituary enrichment for NC notices (uses the "
+            "state-aware lookup path — Tier 2 Serper/Firecrawl, no Knox Tax). "
+            "Overrides --skip-obituary for NC modes. Off by default while "
+            "we A/B against current 'Heirs of [Decedent]' fallback."
+        ),
+    )
+    parser.add_argument(
         "--skip-ancestry",
         action="store_true",
         help="Skip Ancestry.com lookup (SSDI + obituary collection)",
@@ -1883,8 +1893,8 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
         )
 
     # --- NC eCourts × foreclosure/probate (statewide; all 100 NC counties) ---
-    # Tyler Tech Odyssey portal at portal-nc.tylertech.cloud is the statewide
-    # NC eCourts rollout (Oct 2025). Uses CapSolver to bypass AWS WAF.
+    # Odyssey portal (Tyler Technologies' court CMS) at portal-nc.tylertech.cloud
+    # is the statewide NC eCourts rollout (Oct 2025). Uses CapSolver to bypass AWS WAF.
     # Configured as the primary online portal for NC courthouse data — fires
     # for every requested NC county. Free newspaper sources still run alongside
     # (column.us, Salisbury Post, Gannett); dedup happens later in the pipeline.
@@ -1949,6 +1959,16 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
 
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
 
+    # --nc-obituary opts in to the state-aware obituary path for NC notices.
+    # When set, override --skip-obituary so the enricher runs for this NC pull.
+    nc_obituary_optin = getattr(args, "nc_obituary", False)
+    effective_skip_obituary = args.skip_obituary and not nc_obituary_optin
+    # Ancestry SSDI is Knox-tested only — keep it disabled for NC even when the
+    # user enables --nc-obituary, unless they explicitly toggle ancestry on.
+    effective_skip_ancestry = (
+        getattr(args, "skip_ancestry", False) or nc_obituary_optin
+    )
+
     opts = PipelineOptions(
         skip_parcel_lookup=True,        # NC has no Knox-equivalent tax API yet
         skip_tax=True,                  # tax enrichment is Knox-County-specific
@@ -1960,8 +1980,8 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
         skip_smarty=getattr(args, "skip_smarty", False),
         skip_zillow=getattr(args, "skip_zillow", False),
         skip_geocode=getattr(args, "skip_geocode", False),
-        skip_obituary=args.skip_obituary,
-        skip_ancestry=getattr(args, "skip_ancestry", False),
+        skip_obituary=effective_skip_obituary,
+        skip_ancestry=effective_skip_ancestry,
         skip_entity_research=not getattr(args, "research_entities", False),
         skip_heir_verification=args.skip_heir_verification,
         max_heir_depth=args.max_heir_depth,
@@ -1969,6 +1989,11 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
         tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
         source_label=f"CLI {args.mode}",
     )
+    if nc_obituary_optin:
+        logger.info(
+            "  --nc-obituary opt-in: obituary enrichment WILL run for this NC pull "
+            "(Tier 1 Knox Tax skipped; Tier 2 Serper/Firecrawl + LLM for heir lookup)"
+        )
     notices = run_enrichment_pipeline(notices, opts)
 
     if not notices:

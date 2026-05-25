@@ -1,7 +1,8 @@
 """NC eCourts Smart Search scraper for probate (Estates) + foreclosure (SP) cases.
 
-Source: https://portal-nc.tylertech.cloud/Portal/Home/Dashboard/29 (Tyler Tech
-Odyssey statewide NC portal, rolled out Oct 2025 to all 100 counties).
+Source: https://portal-nc.tylertech.cloud/Portal/Home/Dashboard/29 (Odyssey —
+the statewide NC court portal from Tyler Technologies, rolled out Oct 2025 to
+all 100 counties).
 
 The portal is gated by an AWS WAF "Human Verification" challenge that we
 solve via CapSolver (see aws_waf_solver.py). The voucher is the value of
@@ -294,7 +295,7 @@ async def _set_case_type(page: Page, value: str) -> None:
 async def _set_date_range(page: Page, start: str, end: str) -> None:
     """Set the file-date range via direct JS value + change event.
 
-    The Tyler datepickers wrap the raw input with a custom widget that
+    The Odyssey datepickers wrap the raw input with a custom widget that
     leaves the underlying <input> with zero offsetSize → Playwright treats
     it as 'not visible' and refuses to click/fill. Going around it with
     native JS is the reliable path.
@@ -509,7 +510,7 @@ async def _extract_rows_from_grid(page: Page) -> list[dict]:
 async def _click_next_page(page: Page) -> bool:
     """Try to advance the Kendo grid to the next page. Returns True if it did.
 
-    Tyler's pager renders next-page as `<a class="k-link"><span class="k-icon k-i-arrow-e">`.
+    Odyssey's pager renders next-page as `<a class="k-link"><span class="k-icon k-i-arrow-e">`.
     Disabled state adds `k-state-disabled` on the anchor.
     """
     return await page.evaluate(
@@ -563,6 +564,10 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
         r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+ESTATE\s+OF\s+",
         r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+GUARDIANSHIP\s+OF\s+",
         r"^IN\s+THE\s+MATTER\s+OF\s+THE\s+TRUST\s+OF\s+",
+        # Generic "IN THE MATTER OF <name>" — must come AFTER the more-specific
+        # patterns above so they get a chance to strip the "THE X OF" portion.
+        # Trailing \s* (not \s+) handles captions with no name (just "IN THE MATTER OF").
+        r"^IN\s+THE\s+MATTER\s+OF\s*",
         r"^IN\s+RE:?\s*ESTATE\s+OF\s+",
         r"^IN\s+RE:?\s+",
         r"^ESTATE\s+OF\s+",
@@ -670,7 +675,7 @@ def _enrich_with_parties(
     guardianships: list[NoticeData] = []
     for i, n in enumerate(targets):
         if i > 0:
-            _time.sleep(2.5)  # slow cadence to avoid Tyler's HTTP 202 throttle
+            _time.sleep(2.5)  # slow cadence to avoid Odyssey's HTTP 202 throttle
         case_hex = getattr(n, "_roa_id", "")
         detail = client.fetch_detail(case_hex)
         if not detail.parties:
@@ -683,11 +688,18 @@ def _enrich_with_parties(
             guardianships.append(n)
             continue
 
-        # If the search-results decedent name was blank or partial, refresh
-        # it from the canonical Parties data
+        # If the search-results decedent name was blank, garbage (failed
+        # "IN THE MATTER" strip), or shorter than the canonical Parties
+        # name, refresh from the canonical Parties data.
         dec = detail.decedent
-        if dec and (not n.decedent_name or len(n.decedent_name) < len(dec.full_name)):
-            n.decedent_name = dec.full_name
+        if dec:
+            looks_bad = (
+                not n.decedent_name
+                or "IN THE MATTER" in n.decedent_name.upper()
+                or len(n.decedent_name) < len(dec.full_name)
+            )
+            if looks_bad:
+                n.decedent_name = dec.full_name
 
         ex = detail.executor
         if ex:

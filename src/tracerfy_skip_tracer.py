@@ -147,6 +147,7 @@ def _lookup_missing_heir_addresses(
     from obituary_enricher import _lookup_dm_address
 
     city_hint = (notice.city or "").strip()
+    state_hint = (getattr(notice, "state", "") or "TN").strip().upper() or "TN"
     filled = 0
     for heir in heirs:
         if not isinstance(heir, dict):
@@ -164,6 +165,7 @@ def _lookup_missing_heir_addresses(
         try:
             addr = _lookup_dm_address(
                 heir_name, city_hint, api_key or "", tracerfy_tier1=False,
+                state=state_hint,
             )
         except Exception as e:
             logger.debug("Heir address lookup failed for %s: %s", heir_name, e)
@@ -171,7 +173,7 @@ def _lookup_missing_heir_addresses(
         if addr and addr.get("street"):
             heir["street"] = addr.get("street", "")
             heir["city"] = addr.get("city", "") or city_hint
-            heir["state"] = addr.get("state", "") or "TN"
+            heir["state"] = addr.get("state", "") or state_hint
             heir["zip"] = addr.get("zip", "")
             heir["address_source"] = addr.get("source", "")
             filled += 1

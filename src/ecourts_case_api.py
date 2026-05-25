@@ -1,6 +1,6 @@
 """eCourts case detail OData REST client.
 
-The Tyler Odyssey portal (`portal-nc.tylertech.cloud`) exposes a clean
+The Odyssey portal (`portal-nc.tylertech.cloud`) exposes a clean
 OData service at `/app/RegisterOfActionsService/` that returns every
 case detail piece as JSON. No login required — just the AWS WAF cookie
 (already managed by `ecourts_scraper.py`).
@@ -88,7 +88,7 @@ class CaseParty:
 @dataclass
 class CaseDetail:
     """Aggregated case detail derived from the Parties endpoint."""
-    case_id: str = ""                 # Tyler internal CaseId
+    case_id: str = ""                 # Odyssey internal CaseId
     parties: list[CaseParty] = field(default_factory=list)
 
     # Convenience accessors — these are what the FTM-style output needs
@@ -195,7 +195,7 @@ class CaseDetailClient:
     def fetch_parties(self, case_id: str, *, retries: int = 2) -> list[CaseParty]:
         """GET /Parties('{id}') and return parsed party objects.
 
-        HTTP 202 (Accepted) is Tyler's "request queued, retry in a moment"
+        HTTP 202 (Accepted) is Odyssey's "request queued, retry in a moment"
         signal — back off and retry. After ~2 attempts we give up and
         return empty (caller can retry later).
         """
