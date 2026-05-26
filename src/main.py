@@ -1289,6 +1289,18 @@ def cli_main() -> None:
         help="Keep entity-owned records (LLC, Corp, etc.) without filtering. Default: removed unless --research-entities finds a person.",
     )
     parser.add_argument(
+        "--include-newspapers",
+        action="store_true",
+        help=(
+            "NC modes only: also pull from the newspaper scrapers "
+            "(column.us, Salisbury Post AdHunter, Gannett iPublish) in "
+            "addition to Odyssey eCourts. Default is eCourts-only — every "
+            "row has a Case No., no soft-dedup needed, no truncated-name "
+            "fallout. Pass this flag if you specifically want newspaper-"
+            "only Notice-to-Creditors for cases where eCourts lags."
+        ),
+    )
+    parser.add_argument(
         "--upload-datasift",
         action="store_true",
         help="Upload results to DataSift.ai via Playwright (requires DATASIFT_EMAIL/PASSWORD)",
@@ -1792,18 +1804,29 @@ def cli_main() -> None:
 def _run_nc_scrape_pipeline(args, searches) -> None:
     """Run the NC scrape → enrich → export → upload pipeline.
 
-    Dispatches to whichever scrapers cover the requested (county, type) pairs:
-      - column.us (Iredell, Cabarrus, Catawba) × (foreclosure, probate)
-      - Mecklenburg ArcGIS (Mecklenburg) × (tax_sale)
-      - <future scrapers per Phase 2 backlog>
+    Default source matrix (eCourts-only):
+      - Odyssey eCourts (statewide, all 7 counties) × (foreclosure, probate)
+      - Mecklenburg ArcGIS × tax_sale
+      - Zacchaeus aggregator × tax_sale (Cabarrus, Catawba)
+      - Mecklenburg + Rowan county sites × tax_delinquent
+
+    With `--include-newspapers`, also pulls from:
+      - column.us (Iredell, Cabarrus, Catawba) × foreclosure/probate
+      - Salisbury Post AdHunter (Rowan) × foreclosure/probate
+      - Gannett iPublish Marketplace (Gaston) × foreclosure/probate
+
+    Newspaper sources lag eCourts (publishers print the Notice-to-Creditors
+    1–8 weeks AFTER the court filing). Default eCourts-only catches every
+    case as soon as it's docketed, eliminates the soft-dedup overhead, and
+    guarantees every row has a Case No.
 
     The legacy ncnotices.com scraper (`nc_scraper.scrape_nc_all`) is dormant
     while that site is parked.
     """
-    from column_scraper import COLUMN_SUBDOMAINS, scrape_column_all
     from mecklenburg_tax_scraper import scrape_mecklenburg_tax_foreclosures
 
     nc_mode = "daily" if args.mode == "nc-daily" else "historical"
+    include_newspapers = getattr(args, "include_newspapers", False)
 
     # Derive county + type filters from the NCSavedSearch list
     counties = sorted({s.county for s in searches})
@@ -1814,20 +1837,25 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
     notices: list = []
 
     # --- column.us (Iredell, Cabarrus, Catawba) × foreclosure/probate ---
-    column_counties = {c for _slug, c, _pub in COLUMN_SUBDOMAINS}
-    column_types_wanted = {"foreclosure", "probate"} & types_lower
-    column_counties_wanted = {c for c in column_counties if c.lower() in counties_lower}
-    if column_counties_wanted and column_types_wanted:
-        logger.info(
-            "NC dispatcher → column.us: counties=%s types=%s",
-            sorted(column_counties_wanted), sorted(column_types_wanted),
-        )
-        notices += asyncio.run(scrape_column_all(
-            mode=nc_mode,
-            counties=sorted(column_counties_wanted),
-            types=sorted(column_types_wanted),
-            since_date_override=args.since,
-        ))
+    # OFF by default — eCourts covers these counties more reliably. Opt in
+    # via --include-newspapers if you want the newspaper Notice-to-Creditors
+    # as a supplementary source.
+    if include_newspapers:
+        from column_scraper import COLUMN_SUBDOMAINS, scrape_column_all
+        column_counties = {c for _slug, c, _pub in COLUMN_SUBDOMAINS}
+        column_types_wanted = {"foreclosure", "probate"} & types_lower
+        column_counties_wanted = {c for c in column_counties if c.lower() in counties_lower}
+        if column_counties_wanted and column_types_wanted:
+            logger.info(
+                "NC dispatcher → column.us: counties=%s types=%s",
+                sorted(column_counties_wanted), sorted(column_types_wanted),
+            )
+            notices += asyncio.run(scrape_column_all(
+                mode=nc_mode,
+                counties=sorted(column_counties_wanted),
+                types=sorted(column_types_wanted),
+                since_date_override=args.since,
+            ))
 
     # --- Mecklenburg ArcGIS × tax_sale ---
     if "mecklenburg" in counties_lower and "tax_sale" in types_lower:
@@ -1849,7 +1877,8 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             notices += scrape_zacchaeus_sync(counties=zacc_counties_wanted)
 
     # --- Salisbury Post AdHunter × foreclosure/probate (Rowan) ---
-    if "rowan" in counties_lower:
+    # Newspaper source — gated behind --include-newspapers.
+    if include_newspapers and "rowan" in counties_lower:
         sp_types = {"foreclosure", "probate"} & types_lower
         if sp_types:
             from salisbury_post_scraper import scrape_salisbury_post
@@ -1860,21 +1889,24 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
             )
 
     # --- Gannett Marketplace × foreclosure/probate (Gaston via Gaston Gazette) ---
-    from gannett_legals_scraper import PAPER_SLUGS as GANNETT_PAPERS, scrape_gannett_legals
-    gannett_counties_wanted = [
-        c for c in GANNETT_PAPERS.values() if c.lower() in counties_lower
-    ]
-    gannett_types_wanted = {"foreclosure", "probate", "tax_sale"} & types_lower
-    if gannett_counties_wanted and gannett_types_wanted:
-        logger.info(
-            "NC dispatcher → Gannett Marketplace: counties=%s types=%s",
-            gannett_counties_wanted, sorted(gannett_types_wanted),
-        )
-        notices += scrape_gannett_legals(
-            counties=gannett_counties_wanted,
-            types=sorted(gannett_types_wanted),
-            max_records=args.max_notices,
-        )
+    # Newspaper source — gated behind --include-newspapers. (tax_sale via
+    # Gannett stays available, but it's almost never used for that type.)
+    if include_newspapers:
+        from gannett_legals_scraper import PAPER_SLUGS as GANNETT_PAPERS, scrape_gannett_legals
+        gannett_counties_wanted = [
+            c for c in GANNETT_PAPERS.values() if c.lower() in counties_lower
+        ]
+        gannett_types_wanted = {"foreclosure", "probate", "tax_sale"} & types_lower
+        if gannett_counties_wanted and gannett_types_wanted:
+            logger.info(
+                "NC dispatcher → Gannett Marketplace: counties=%s types=%s",
+                gannett_counties_wanted, sorted(gannett_types_wanted),
+            )
+            notices += scrape_gannett_legals(
+                counties=gannett_counties_wanted,
+                types=sorted(gannett_types_wanted),
+                max_records=args.max_notices,
+            )
 
     # --- Mecklenburg year-round delinquent-tax search × tax_delinquent ---
     if "mecklenburg" in counties_lower and "tax_delinquent" in types_lower:
@@ -1895,9 +1927,11 @@ def _run_nc_scrape_pipeline(args, searches) -> None:
     # --- NC eCourts × foreclosure/probate (statewide; all 100 NC counties) ---
     # Odyssey portal (Tyler Technologies' court CMS) at portal-nc.tylertech.cloud
     # is the statewide NC eCourts rollout (Oct 2025). Uses CapSolver to bypass AWS WAF.
-    # Configured as the primary online portal for NC courthouse data — fires
-    # for every requested NC county. Free newspaper sources still run alongside
-    # (column.us, Salisbury Post, Gannett); dedup happens later in the pipeline.
+    # **PRIMARY source** for NC probate/foreclosure as of build 1.0.32 — fires
+    # for every requested NC county. Newspaper sources (column.us, Salisbury
+    # Post, Gannett) are now opt-in via --include-newspapers; they lag eCourts
+    # by 1–8 weeks anyway, so eCourts-only catches every case faster + cleaner
+    # (every row has Case No., no soft-dedup overhead).
     ecourts_types = {"foreclosure", "probate"} & types_lower
     ecourts_counties_wanted = sorted(counties)
     if ecourts_counties_wanted and ecourts_types and config.CAPSOLVER_API_KEY:

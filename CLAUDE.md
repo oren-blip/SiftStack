@@ -236,6 +236,12 @@ python src/main.py nc-daily \
 - Plan: run one or two weeks A/B (with vs without). Compare confirmed-heir count against current "Heirs of [Decedent]" placeholder count. If hit rate is healthy, flip default by removing `--skip-obituary` from `nc_weekly_scrape.bat`.
 - Implementation: `obituary_enricher.py` now threads `notice.state` through every lookup helper. The Knox Tax tier is gated on `state == "TN"`; non-TN states go straight to Tier 2 (Serper + Firecrawl + Claude Haiku). `_STATE_FALLBACK_CITY = {"TN": "Knoxville"}` — for NC notices with no city, the lookup runs city-less rather than guessing.
 
+**eCourts-only by default (build 1.0.32+):**
+- The NC scrape pulls **only from Odyssey eCourts** by default. Newspaper scrapers (column.us, Salisbury Post AdHunter, Gannett iPublish Marketplace) are gated behind `--include-newspapers` and stay opt-in.
+- Why: newspapers publish Notice-to-Creditors 1–8 weeks AFTER the eCourts docket filing. eCourts-only catches every case faster, guarantees every row has a `Case No.`, eliminates soft-dedup overhead from cross-source dedup, and removes the truncated-name parser fragility (e.g. "Walker, Betty" vs "Walker, Betty Louise") that newspaper feeds introduced.
+- Pass `--include-newspapers` if you specifically need newspaper coverage for a county that's lagging in Odyssey, or to A/B test scope.
+- Tax-sale + tax-delinquent scrapers are unaffected (Mecklenburg ArcGIS, Zacchaeus, Mecklenburg/Rowan county XLSX) — those aren't newspaper sources.
+
 **Post-scrape polish pipeline** (`python fix_addresses_and_prep.py`):
 1. **Step -1** Backfill blank Case No. from user's manual archive (see `build_manual_archive_index.py` — newspapers publish Notice-to-Creditors 1-8 weeks AFTER eCourts filing, so blank-case-no rows often match cases the user already pulled manually in a prior week)
 2. **Step -0.8** Drop archive duplicates — rows whose backfilled Case No. resolves to a prior ISO week's manual entry. User's rule: keep the original in the prior week and update info there; remove from current week.
