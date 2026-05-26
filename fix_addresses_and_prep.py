@@ -31,9 +31,17 @@ _PARCEL_PROPERTY_FIELDS = (
 
 
 def _name_variations(decedent: str) -> list[str]:
-    """Variations to try when re-searching for the correct parcel."""
+    """Variations to try when re-searching for the correct parcel.
+
+    Order matters: the first variation that returns matches wins, and
+    every variation we try costs another GIS round-trip. User rule:
+    always try "LAST FIRST MIDDLE" first — that's the format the
+    county GIS owner-search indices return most reliably.
+    """
     first, mid, last = split_decedent_name(decedent)
     raw = [
+        f"{last} {first} {mid}".strip() if (last and first and mid) else None,
+        f"{last} {first}".strip() if (last and first) else None,
         decedent,
         f"{first} {mid} {last}".strip() if (first and mid and last) else None,
         f"{first} {last}".strip() if (first and last) else None,

@@ -2681,13 +2681,18 @@ async def discover_presets(page: Page) -> dict:
 
         # Scrape preset folder/preset names using Playwright locators
         # instead of JS evaluate — more reliable for styled-components DOM.
-        # We know the exact folder names from the user's screenshot.
+        # Live folder names captured from discovery 2026-05-25.
         known_folders = [
+            "00. Niche Sequential",
+            "NO PHONES",
+            "0. My Tasks",
+            "1. Lead Management",
+            "2. Acquisitions",
+            "3. Transactions",
+            "REISift Base Presets",
+            # Legacy / fallback names kept in case some users still have them
             "00 Niche Sequential Marketing",
-            "00 NICHE SEQUENTIAL MARKETING",
             "01. Bulk Sequential Marketing",
-            "01 BULK SEQUENTIAL MARKETING",
-            "01. Bulk Sequential",
         ]
 
         folders_data = {}
@@ -2718,12 +2723,29 @@ async def discover_presets(page: Page) -> dict:
                     let container = folderEl.parentElement;
                     if (!container) return presets;
 
-                    // Look for links/items within the same container
-                    const items = container.querySelectorAll('a, [role="button"], span, div');
+                    // Look for links/items within the same container.
+                    // Accept names that look like presets: start with digit-dot
+                    // (e.g., "01. Skipped No Numbers") OR are short uppercase
+                    // labels (e.g., for NO PHONES folder children).
+                    const skipLabels = new Set([
+                        'Load', 'Save', 'Save New', 'Clear', 'Filter Presets',
+                        'View Presets', 'Create New Folder', 'Build your own filter presets',
+                        'default', folderText,
+                    ]);
+                    const items = container.querySelectorAll('a, [role="button"], span, div, li');
                     for (const item of items) {
                         const t = item.innerText ? item.innerText.trim() : '';
-                        if (t && /^\d/.test(t) && t.length > 2 && t.length < 60
-                            && !presets.includes(t)) {
+                        if (!t || t.length < 3 || t.length > 80) continue;
+                        if (skipLabels.has(t)) continue;
+                        if (presets.includes(t)) continue;
+                        // Multi-line text is a container, not a leaf preset
+                        if (t.split('\n').length > 1) continue;
+                        // Accept: digit-dot prefix (e.g. "01.") OR short label
+                        const isDigitDot = /^\d{1,2}\.\s/.test(t);
+                        const isShortLabel = t.length <= 40
+                            && /^[A-Za-z0-9]/.test(t)
+                            && !t.includes('(') && !t.includes(':');
+                        if (isDigitDot || isShortLabel) {
                             presets.push(t);
                         }
                     }
