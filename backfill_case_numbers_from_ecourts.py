@@ -137,7 +137,19 @@ async def search_case_for_decedent(
 
 
 async def main_async(args) -> None:
-    src_csv = Path(args.csv) if args.csv else max(Path("output").glob("nc_estates_ftm_*_archive_backfilled.csv"))
+    # Prefer the post-polish *_datasift.csv (current polish-pipeline output).
+    # Fall back to the legacy *_archive_backfilled.csv name only if no
+    # _datasift.csv exists for that week (older pipeline artifact).
+    if args.csv:
+        src_csv = Path(args.csv)
+    else:
+        candidates = sorted(Path("output").glob("nc_estates_ftm_*_week*_datasift.csv"))
+        if not candidates:
+            candidates = sorted(Path("output").glob("nc_estates_ftm_*_archive_backfilled.csv"))
+        if not candidates:
+            logger.error("No source CSV found in output/ — aborting")
+            return
+        src_csv = candidates[-1]
     logger.info("Source: %s", src_csv)
     with src_csv.open(newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
@@ -243,14 +255,34 @@ async def main_async(args) -> None:
         await ctx.close()
         await browser.close()
 
-    # Write output
+    # Drop policy: rows whose Case No. is STILL blank after both
+    # archive cross-ref AND eCourts name-search are the truly-unfindable
+    # ones. They'll cycle through eCourts naturally on the next weekly
+    # run if/when the case eventually gets filed under a matching name.
+    # Default = drop. Pass --keep-still-blank to override.
+    pre_drop = len(rows)
+    if not args.keep_still_blank:
+        rows = [r for r in rows if (r.get("Case No.") or "").strip()]
+        dropped_blank = pre_drop - len(rows)
+    else:
+        dropped_blank = 0
+
+    # Write output. Use a stable filename pattern so consolidate_weeks
+    # finds it: strip any prior _archive_backfilled / _datasift suffix
+    # from the source stem.
+    stem = src_csv.stem
+    for suffix in ("_archive_backfilled", "_datasift"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    out_csv = Path("output") / f"{src_csv.stem.split('_archive_backfilled')[0]}_{ts}_ecourts_backfilled.csv"
+    out_csv = Path("output") / f"{stem}_{ts}_ecourts_backfilled.csv"
     out_xlsx = out_csv.with_suffix(".xlsx")
     write_csv(rows, out_csv)
     write_xlsx(rows, out_xlsx)
     logger.info("=" * 60)
-    logger.info("Backfilled via eCourts: %d  No-match: %d", backfilled, no_match)
+    logger.info("Backfilled via eCourts: %d  No-match: %d  Dropped still-blank: %d",
+                backfilled, no_match, dropped_blank)
     logger.info("Wrote: %s", out_csv)
 
 
@@ -263,6 +295,11 @@ def main():
     ap.add_argument("--headed", action="store_true", help="Watch the browser")
     ap.add_argument("--inter-case-delay", type=float, default=3.0,
                     help="Seconds between searches (default 3)")
+    ap.add_argument("--keep-still-blank", action="store_true",
+                    help="Keep rows whose Case No. is still blank after the "
+                         "eCourts name search. Default is to DROP them — "
+                         "they'll cycle through next week's scrape if the "
+                         "case gets filed under a findable name.")
     args = ap.parse_args()
     asyncio.run(main_async(args))
 

@@ -49,15 +49,28 @@ def _name_variations(decedent: str) -> list[str]:
     return out
 
 
-def research_blank_parcels(rows: list[dict], min_score: float = 0.7) -> int:
+def research_blank_parcels(
+    rows: list[dict],
+    min_score: float = 0.7,
+    audit_rejected_pids: set[tuple[str, str]] | None = None,
+) -> int:
     """For rows where Parcel ID is blank but we have a decedent name + county,
     re-search the county GIS with name variations and try to find the
     correct parcel using the middle-name-aware matcher. Recovers cases
     where the original (buggy-matcher) scrape picked the wrong parcel
     and the audit then blanked it — e.g. Osborne, James Lee → correct
     parcel exists but original search picked the wrong James D Osborne.
+
+    `audit_rejected_pids` (set of (county_lower, pid)) is a blacklist:
+    when the audit step just rejected a PID for this decedent because
+    the GIS owner doesn't match (e.g. property held by a family trust,
+    not the decedent personally), the re-search must NOT pick up that
+    same PID under a broader name variation — that's how
+    "Walker, Betty Louise" kept getting re-bound to the same Walker
+    Family Trust parcel after the audit had explicitly rejected it.
     """
     from nc_gis_lookup import filter_for_lead_quality
+    rejected = audit_rejected_pids or set()
     recovered = 0
     for r in rows:
         if (r.get("Parcel ID") or "").strip():
@@ -76,6 +89,8 @@ def research_blank_parcels(rows: list[dict], min_score: float = 0.7) -> int:
             if not results:
                 continue
             kept = filter_for_lead_quality(results)
+            # Drop any candidate whose PID was just rejected by the audit
+            kept = [c for c in kept if (county.lower(), c.pid or "") not in rejected]
             if not kept:
                 continue
             best = max(kept, key=lambda c: c.market_value or 0)
@@ -99,13 +114,17 @@ def research_blank_parcels(rows: list[dict], min_score: float = 0.7) -> int:
     return recovered
 
 
-def validate_existing_matches(rows: list[dict], min_score: float = 0.7) -> int:
+def validate_existing_matches(
+    rows: list[dict], min_score: float = 0.7,
+) -> tuple[int, set[tuple[str, str]]]:
     """Re-score each parceled row's GIS match with the current matcher.
     Blank the parcel + property fields on rows where the match no longer
     passes — these were false-positive homonym matches under the OLD
     matcher (e.g. "James Lee Osborne" vs "JAMES D OSBORNE").
 
-    Returns the number of rows blanked.
+    Returns (blanked_count, rejected_pids) where rejected_pids is a set
+    of (county_lower, pid) tuples that the re-search step should treat
+    as a blacklist — see research_blank_parcels.
     """
     # Group rows by (county, decedent) so we only call lookup_properties
     # once per unique decedent (most have a single parcel anyway).
@@ -121,6 +140,7 @@ def validate_existing_matches(rows: list[dict], min_score: float = 0.7) -> int:
         by_decedent[(county, dec)].append(r)
 
     blanked = 0
+    rejected_pids: set[tuple[str, str]] = set()
     for (county, dec), parcel_rows in by_decedent.items():
         try:
             # Use a wide min_score so we get ALL candidates including ones
@@ -148,7 +168,8 @@ def validate_existing_matches(rows: list[dict], min_score: float = 0.7) -> int:
                 for col in _PARCEL_PROPERTY_FIELDS:
                     r[col] = ""
                 blanked += 1
-    return blanked
+                rejected_pids.add((county.lower(), pid))
+    return blanked, rejected_pids
 
 
 # Property uses that we treat as "verify" because the original Cabarrus
@@ -479,6 +500,24 @@ def _norm_dec_name(name: str) -> tuple[str, str]:
     return (tokens[0], tokens[-1])
 
 
+def _dec_name_tokens(name: str) -> set[str]:
+    """Return the full set of meaningful name tokens for subset/superset
+    matching. Strips JR/SR/aliases like _norm_dec_name but keeps middle
+    names — useful for catching newspaper-truncated rows like
+    'Walker, Betty' that match the eCourts row 'Walker, Betty Louise'.
+    """
+    name = (name or "").strip()
+    if not name:
+        return set()
+    if " AKA " in name.upper():
+        name = re.split(r"\s+AKA\s+", name, flags=re.IGNORECASE, maxsplit=1)[0].strip()
+    noise = {"JR", "JR.", "SR", "SR.", "II", "III", "IV"}
+    return {
+        t.strip().upper() for t in re.split(r"[,\s]+", name)
+        if t.strip() and t.strip().upper() not in noise
+    }
+
+
 def soft_dedup_blank_case_no(rows: list[dict]) -> tuple[list[dict], int, int]:
     """For rows with blank Case No. (newspaper-published notices), check if
     the same decedent already exists as a named-case row in the same county.
@@ -505,16 +544,34 @@ def soft_dedup_blank_case_no(rows: list[dict]) -> tuple[list[dict], int, int]:
         last_b, first_b = _norm_dec_name(b.get("Deceased Owner", ""))
         if not last_b:
             continue
+        tokens_b = _dec_name_tokens(b.get("Deceased Owner", ""))
         # Look up candidates using ANY of the tokens
         candidates = []
         for tok in (last_b, first_b):
             for r in named_by_key.get((b["County"], tok), []):
                 if r not in candidates:
                     candidates.append(r)
-        # Filter to ones whose normalized name shares both tokens
+        # Match strategies:
+        #   1. Strict 2-token match (Last, First ↔ First Last orderings)
+        #   2. Subset match (truncated newspaper name is a subset of the
+        #      full eCourts name — catches 'Walker, Betty' ↔
+        #      'Walker, Betty Louise')
         for r in candidates:
             last_r, first_r = _norm_dec_name(r.get("Deceased Owner", ""))
-            if (last_b == last_r or last_b == first_r) and (first_b == first_r or first_b == last_r):
+            tokens_r = _dec_name_tokens(r.get("Deceased Owner", ""))
+            strict = (
+                (last_b == last_r or last_b == first_r)
+                and (first_b == first_r or first_b == last_r)
+            )
+            # Subset = blank name's tokens are all contained in named name's
+            # tokens, AND there's at least 2 tokens of overlap (so single
+            # 'WHITE' doesn't merge into 'WHITE, JANE DOE').
+            subset = (
+                tokens_b
+                and tokens_b.issubset(tokens_r)
+                and len(tokens_b & tokens_r) >= 2
+            )
+            if strict or subset:
                 # Match found — merge
                 for col in ("Mailing Address", "Mailing City", "Mailing State", "Mailing Zip",
                             "Property Address", "Property City", "Property Zip", "Property use",
@@ -985,11 +1042,12 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"  Merged dupes: {n_merged}  Remaining blank-case-no: {n_still_blank}")
 
     print("Step 0: validate existing parcel matches against new middle-name-aware matcher")
-    n_blanked = validate_existing_matches(rows)
-    print(f"  Blanked false-positive matches: {n_blanked}")
+    n_blanked, audit_rejected_pids = validate_existing_matches(rows)
+    print(f"  Blanked false-positive matches: {n_blanked}  "
+          f"(rejected PIDs blacklisted from re-search: {len(audit_rejected_pids)})")
 
     print("Step 0.5: re-search for correct parcel where audit blanked a wrong match")
-    n_refound = research_blank_parcels(rows)
+    n_refound = research_blank_parcels(rows, audit_rejected_pids=audit_rejected_pids)
     print(f"  Re-found correct parcels: {n_refound}")
 
     print("Step 1: repair property addresses + re-classify suspect Commercial rows")

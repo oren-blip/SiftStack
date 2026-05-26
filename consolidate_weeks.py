@@ -102,27 +102,39 @@ def week_from_csv(rows: list[dict]) -> tuple[int, int]:
 
 
 def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
-    """Pick the most recent DataSift CSV per (year, week) from output/.
+    """Pick the most recent CSV per (year, week) from output/.
 
-    Looks at the *_weekN_datasift.csv naming pattern produced by
-    fix_addresses_and_prep + prepare_for_datasift. Returns
-    {(year, week): newest_file_path}.
+    Considers BOTH naming patterns:
+      *_weekN_datasift.csv                 (Step 4 output)
+      *_weekN_<ts>_ecourts_backfilled.csv  (post-Step-5 eCourts name-search
+                                            backfill — has additional Case
+                                            No. fills that the datasift CSV
+                                            doesn't have yet)
+
+    The backfilled file is strictly more complete (it's built FROM the
+    datasift CSV by adding backfilled Case No. values), so when both
+    exist for the same week we prefer the latest backfilled file.
     """
-    candidates = sorted(Path("output").glob("nc_estates_ftm_*_week*_datasift.csv"))
-    by_week: dict[tuple[int, int], Path] = {}
-    for fp in candidates:
-        # Filename like ..._YYYY-MM-DD_HHMMSS_weekN_datasift.csv
-        m = re.search(r"_week(\d+)_datasift", fp.name)
-        if not m:
-            continue
-        # Year inferred from filename timestamp
-        ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
-        year = int(ym.group(1)) if ym else datetime.now().year
-        wk = int(m.group(1))
-        key = (year, wk)
-        # Newest file (last in sorted order) wins
-        by_week[key] = fp
-    return by_week
+    by_week: dict[tuple[int, int], tuple[Path, int]] = {}
+    # Priority 0 = datasift, 1 = ecourts_backfilled (higher wins)
+    for pattern, priority in [
+        ("nc_estates_ftm_*_week*_datasift.csv", 0),
+        ("nc_estates_ftm_*_week*_ecourts_backfilled.csv", 1),
+    ]:
+        for fp in sorted(Path("output").glob(pattern)):
+            m = re.search(r"_week(\d+)", fp.name)
+            if not m:
+                continue
+            ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
+            year = int(ym.group(1)) if ym else datetime.now().year
+            wk = int(m.group(1))
+            key = (year, wk)
+            existing = by_week.get(key)
+            # Pick higher priority. Within same priority, newest filename wins
+            # (sorted ascending, so later iterations overwrite earlier).
+            if existing is None or priority >= existing[1]:
+                by_week[key] = (fp, priority)
+    return {k: v[0] for k, v in by_week.items()}
 
 
 def add_tab(wb, title: str, rows: list[dict]) -> None:
