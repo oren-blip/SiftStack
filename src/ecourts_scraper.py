@@ -530,11 +530,29 @@ async def _click_next_page(page: Page) -> bool:
     )
 
 
+_DROP_CASE_STATUSES = {"DISPOSED", "CLOSED"}
+
+
 def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | None:
-    """Convert one raw grid row dict into a NoticeData, or None if not a real result row."""
+    """Convert one raw grid row dict into a NoticeData, or None if not a real result row.
+
+    Filters: only "Pending" / active cases are returned. Disposed and Closed
+    cases are skipped — per user rule, only active probate matters are
+    targets ("Disposed" means the estate is finalized; there's no mail
+    opportunity left).
+    """
     cells = row.get("cells", [])
     if not cells:
         return None
+
+    # Skip rows whose status column says the case is finished. The status
+    # column is unlabeled in our raw cells, so scan all cells for an exact
+    # match against the drop set. People-name cells will not match (they
+    # never equal "Disposed" / "Closed" verbatim).
+    for c in cells:
+        if c.strip().upper() in _DROP_CASE_STATUSES:
+            logger.debug("eCourts: dropping row with status=%r", c.strip())
+            return None
 
     case_no_re = re.compile(r"\d{2}[A-Z]{1,3}\d{3,6}-?\d{0,3}")
     # Find the cell that contains the case number (not always cells[0]
@@ -627,19 +645,27 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
 
     # Walk pages — first page is already visible. After each parse, try
     # to click "next page". Stop when next is disabled or no new rows.
+    dropped_status = 0
     for page_idx in range(1, 25):  # hard cap of 25 pages = up to 2500 results
         rows = await _extract_rows_from_grid(page)
         added_on_page = 0
         for row in rows:
+            had_drop_status = any(
+                c.strip().upper() in _DROP_CASE_STATUSES for c in row.get("cells", [])
+            )
             n = _row_to_notice(row, county, notice_type)
-            if not n or n.case_number in seen_case_nos:
+            if not n:
+                if had_drop_status:
+                    dropped_status += 1
+                continue
+            if n.case_number in seen_case_nos:
                 continue
             seen_case_nos.add(n.case_number)
             notices.append(n)
             added_on_page += 1
         logger.info(
-            "eCourts: page %d — %d raw rows, %d new notices (%d total)",
-            page_idx, len(rows), added_on_page, len(notices),
+            "eCourts: page %d — %d raw rows, %d new notices (%d total, %d dropped-status)",
+            page_idx, len(rows), added_on_page, len(notices), dropped_status,
         )
         if added_on_page == 0 and page_idx > 1:
             break  # next page returned no new rows — we're done

@@ -41,10 +41,8 @@ def _name_variations(decedent: str) -> list[str]:
     first, mid, last = split_decedent_name(decedent)
     raw = [
         f"{last} {first} {mid}".strip() if (last and first and mid) else None,
-        f"{last} {first}".strip() if (last and first) else None,
         decedent,
         f"{first} {mid} {last}".strip() if (first and mid and last) else None,
-        f"{first} {last}".strip() if (first and last) else None,
         last if last else None,
     ]
     seen: set[str] = set()
