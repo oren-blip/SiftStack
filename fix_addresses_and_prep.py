@@ -1107,21 +1107,31 @@ def run(src_path: Path, tag: str, ts: str) -> None:
 
 
 def main() -> None:
-    """Process all weeks. Auto-picks the latest *_weekN_merged.csv per week."""
+    """Process every week that has a merged file. Auto-picks the latest
+    *_weekN_merged.csv per ISO week — week-agnostic so new weeks (22, 23,
+    ...) are handled without code changes.
+    """
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    # Week 20 — no merged file exists (only one scrape was done), use the
-    # final original FTM output as source.
-    week20_merged = sorted(Path("output").glob("nc_estates_ftm_*_week20_merged.csv"))
-    if week20_merged:
-        run(week20_merged[-1], "week20", ts)
-    else:
-        run(Path("output/nc_estates_ftm_2026-05-18_223926.csv"), "week20", ts)
-    # Week 21 — uses the merged file (5/18 + 5/19 + 5/20-5/21 combined)
-    week21_merged = sorted(Path("output").glob("nc_estates_ftm_*_week21_merged.csv"))
-    if week21_merged:
-        run(week21_merged[-1], "week21", ts)
-    else:
-        run(Path("output/nc_estates_ftm_2026-05-19_081301.csv"), "week21", ts)
+
+    # Discover every week with a merged file; keep the most recent file per
+    # week. glob() sorted ascending puts older timestamps first, so the last
+    # assignment per week wins (newest scrape).
+    by_week: dict[int, Path] = {}
+    for fp in sorted(Path("output").glob("nc_estates_ftm_*_week*_merged.csv")):
+        m = re.search(r"_week(\d+)_merged\.csv$", fp.name)
+        if not m:
+            continue
+        by_week[int(m.group(1))] = fp
+
+    if not by_week:
+        print("No *_weekN_merged.csv files in output/. Run prepare_weekly_input.py first.")
+        return
+
+    for wk in sorted(by_week):
+        print(f"\n{'=' * 70}")
+        print(f"=== Week {wk}: {by_week[wk].name} ===")
+        print(f"{'=' * 70}")
+        run(by_week[wk], f"week{wk}", ts)
 
 
 if __name__ == "__main__":
