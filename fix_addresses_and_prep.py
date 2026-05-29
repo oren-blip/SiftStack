@@ -594,6 +594,69 @@ def soft_dedup_blank_case_no(rows: list[dict]) -> tuple[list[dict], int, int]:
     return kept, merged, remaining_blanks
 
 
+def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tuple[int, int]:
+    """For rows with a named PR/IP but no mailing address from the court
+    record, look up the PR's CURRENT residence via the people-search
+    waterfall (Serper + Firecrawl + LLM, then Tracerfy). Runs BEFORE the
+    property-address fallback so direct mail targets the PR's real address
+    when we can find one.
+
+    Builds the search name from the row's separate First Name / Last Name
+    columns — those are correctly ordered "First Last" (from Odyssey's
+    NameFirst/NameLast). Do NOT use "Personal Representative" raw — that may
+    carry Odyssey's "Last, First" comma form, which the people-search URL
+    builders mis-parse (they take token[0]=first, token[-1]=last).
+
+    Returns (found, attempted).
+    """
+    try:
+        import config as cfg
+        from obituary_enricher import _lookup_dm_address
+    except Exception as e:  # pragma: no cover
+        print(f"  people-search unavailable ({e}) — skipping, property fallback will apply")
+        return (0, 0)
+
+    api_key = cfg.ANTHROPIC_API_KEY
+    cache: dict[str, dict] = {}
+    found = attempted = 0
+    for r in rows:
+        if r.get("First Name") == "Heirs":
+            continue
+        first = (r.get("First Name") or "").strip()
+        last = (r.get("Last Name") or "").strip()
+        if not first or not last:
+            continue  # need a real PR name to search
+        if (r.get("Mailing Address") or "").strip():
+            continue  # already have a court-supplied mailing
+        name = f"{first} {last}"
+        # Property city is a soft locality hint — PRs are often local to the
+        # decedent. The lookup tolerates a wrong/empty city (national search).
+        city = (r.get("Property City") or "").strip()
+        attempted += 1
+        key = f"{name}|{city}".upper()
+        res = cache.get(key)
+        if res is None:
+            try:
+                # Free people-search path: Serper (find CyberBackgroundChecks
+                # URL) + Firecrawl (render) + LLM (extract address). Tracerfy
+                # skip-trace is NOT used here — it needs an address anchor
+                # (wrong shape for name->address) and the account has 0 credits.
+                res = _lookup_dm_address(name, city, api_key, state=state)
+            except Exception as e:
+                print(f"    people-search error for {name!r}: {e}")
+                res = {}
+            cache[key] = res
+        if res and res.get("street"):
+            r["Mailing Address"] = res["street"]
+            r["Mailing City"] = res.get("city") or city
+            r["Mailing State"] = res.get("state") or "NC"
+            r["Mailing Zip"] = res.get("zip") or ""
+            found += 1
+            print(f"    PR address: {name} -> {res['street']}, "
+                  f"{r['Mailing City']} {r['Mailing Zip']} [{res.get('source', '')}]")
+    return (found, attempted)
+
+
 def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
     """For rows where a Personal Rep / Executor / Interested Person is named
     but their mailing address was not in the court record, fall back to
@@ -1076,9 +1139,13 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_heir_occupied = drop_executor_at_property(rows)
     print(f"  Dropped heir-occupied: {n_heir_occupied}  Remaining: {len(rows)}")
 
+    print("Step 1.93: look up PR mailing via people search (Serper+Firecrawl, before property fallback)")
+    n_ps_found, n_ps_tried = fill_pr_mailing_via_people_search(rows, state="NC")
+    print(f"  PR addresses found via people search: {n_ps_found}/{n_ps_tried}")
+
     print("Step 1.95: fill missing PR mailing from property (so direct mail still goes out)")
     n_filled_pr = fill_missing_pr_mailing_from_property(rows)
-    print(f"  PR mailing fallback applied: {n_filled_pr}")
+    print(f"  PR mailing property fallback applied: {n_filled_pr}")
 
     print("Step 2: drop genuinely commercial rows")
     rows, n_commercial = drop_commercial(rows)
