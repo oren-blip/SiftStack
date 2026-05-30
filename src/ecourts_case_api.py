@@ -91,10 +91,27 @@ class CaseDetail:
     case_id: str = ""                 # Odyssey internal CaseId
     parties: list[CaseParty] = field(default_factory=list)
 
+    # Connection types Odyssey may use for the deceased person across NC
+    # counties. Mecklenburg uses "Decedent"; Cabarrus case 26E000566-120
+    # (Bonds, Bobby Ray) returned a party set with the PR (Voight) found
+    # but no party with literal "decedent" type, leaving the search-results
+    # caption name in place — proof at least one county uses a different label.
+    _DECEDENT_TYPES = {
+        "decedent",
+        "deceased",
+        "deceased person",
+        "estate",
+        "estate of",
+        "subject",
+    }
+
     # Convenience accessors — these are what the FTM-style output needs
     @property
     def decedent(self) -> CaseParty | None:
-        return next((p for p in self.parties if p.connection_type.lower() == "decedent"), None)
+        for p in self.parties:
+            if p.connection_type.lower() in self._DECEDENT_TYPES:
+                return p
+        return None
 
     # NC Estates connection types — verified against 10-case Mecklenburg sample (2026-05-17).
     # Affiant = small-estate affidavit petitioner

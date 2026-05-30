@@ -726,6 +726,14 @@ def _enrich_with_parties(
             )
             if looks_bad:
                 n.decedent_name = dec.full_name
+        else:
+            # Parties came back but none matched _DECEDENT_TYPES. Surface
+            # the actual connection types so we can extend the set.
+            types_seen = sorted({p.connection_type for p in detail.parties if p.connection_type})
+            logger.warning(
+                "eCourts API: no decedent in parties for %s — caption-name %r kept; types seen: %s",
+                n.case_number, n.decedent_name, types_seen,
+            )
 
         ex = detail.executor
         if ex:
