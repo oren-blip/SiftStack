@@ -69,9 +69,17 @@ def file_dominant_iso_week(rows: list[dict]) -> tuple[int, int] | None:
 
 
 def find_raw_scrapes(only_latest_days: int = 0) -> list[Path]:
-    """Return all raw scrape CSVs in output/ (no _weekN suffix)."""
+    """Return all raw scrape CSVs in output/ AND output/archive_pre_validation/.
+
+    Archived raws still hold valid case data that seen_ids skips on re-scrape;
+    the dedup below ((county, case_no), newer-file-wins) handles overlap safely.
+    """
     raws = [p for p in Path("output").glob("nc_estates_ftm_*.csv")
             if RAW_RE.match(p.name)]
+    archive_dir = Path("output") / "archive_pre_validation"
+    if archive_dir.is_dir():
+        raws += [p for p in archive_dir.glob("nc_estates_ftm_*.csv")
+                 if RAW_RE.match(p.name)]
     if only_latest_days:
         cutoff = datetime.now() - timedelta(days=only_latest_days)
         raws = [p for p in raws if datetime.fromtimestamp(p.stat().st_mtime) > cutoff]
