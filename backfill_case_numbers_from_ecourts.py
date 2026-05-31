@@ -48,6 +48,7 @@ from ecourts_scraper import (  # noqa: E402
     _open_advanced_filters,
     _parse_results,
     _select_only_county,
+    _set_case_status,
     _set_case_type,
     _set_date_range,
     _set_search_criteria,
@@ -118,6 +119,7 @@ async def search_case_for_decedent(
     try:
         await _set_search_criteria(page, query)
         await _set_case_type(page, CASE_TYPE_BY_NOTICE_TYPE["probate"])
+        await _set_case_status(page, "Pending")
         await _set_date_range(page, mdy_start, mdy_end)
         await _select_only_county(page, county)
         if not await _submit_search(page):

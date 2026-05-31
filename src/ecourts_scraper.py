@@ -292,6 +292,50 @@ async def _set_case_type(page: Page, value: str) -> None:
         raise
 
 
+async def _set_case_status(page: Page, value: str) -> None:
+    """Pick a value in the Kendo CaseStatus combobox/dropdown.
+
+    This is Odyssey's server-side status filter ("Filter by Case Status"
+    under Advanced Filtering Options → Case Search Criteria). Setting
+    it to "Pending" makes Odyssey return only active cases — way more
+    reliable than scanning grid cells client-side for status strings
+    (which misses any label variant we haven't hardcoded).
+
+    Mirrors _set_case_type's two-method approach: Kendo widget API first,
+    fall back to typing into the visible input.
+    """
+    try:
+        ok = await page.evaluate(
+            """(value) => {
+                if (!window.jQuery) return false;
+                const $el = window.jQuery('#caseCriteria_CaseStatus');
+                if (!$el.length) return false;
+                // Could be a ComboBox or a DropDownList depending on Odyssey build
+                const w = $el.data('kendoComboBox') || $el.data('kendoDropDownList');
+                if (!w) return false;
+                w.value(value);
+                w.trigger('change');
+                return true;
+            }""",
+            value,
+        )
+        if ok:
+            return
+    except Exception:
+        pass
+    # Method 2: type into the visible Kendo input
+    try:
+        loc = page.locator("input[name='caseCriteria.CaseStatus_input']").first
+        await loc.click(timeout=5_000)
+        await loc.fill("")
+        await loc.type(value, delay=30)
+        await page.wait_for_timeout(500)
+        await loc.press("Enter")
+    except Exception:
+        logger.exception("eCourts: failed to set case status %r", value)
+        raise
+
+
 async def _set_date_range(page: Page, start: str, end: str) -> None:
     """Set the file-date range via direct JS value + change event.
 
@@ -897,6 +941,7 @@ async def scrape_ecourts(
                     logger.info("eCourts: search criteria=%r", criteria)
                     await _set_search_criteria(page, criteria)
                     await _set_case_type(page, case_type_value)
+                    await _set_case_status(page, "Pending")
                     await _set_date_range(page, mdy_start, mdy_end)
                     await _select_only_county(page, county)
                     if not await _submit_search(page):
