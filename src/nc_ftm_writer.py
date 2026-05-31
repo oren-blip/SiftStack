@@ -35,6 +35,7 @@ FTM_COLUMNS = [
     "File Date",
     "County",
     "Case No.",
+    "Case Status",
     "Deceased Owner",
     "Personal Representative",
     "First Name",
@@ -67,6 +68,12 @@ FTM_COLUMNS = [
     "DM 3 Name",
     "DM 3 Relationship",
 ]
+
+# Columns that exist in the data but are hidden from the xlsx display.
+# Case Status is a silent guardrail — every kept row should be "Pending"
+# (polish drops Disposed/Closed). Hiding it removes visual noise but
+# preserves the field for audit / debugging / future use.
+HIDDEN_FROM_WORKBOOK = {"Case Status"}
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
@@ -213,6 +220,7 @@ def notice_to_ftm_row(
         "File Date":          _format_date(notice.date_added),
         "County":             notice.county,
         "Case No.":           notice.case_number,
+        "Case Status":        notice.case_status,
         "Deceased Owner":     _format_decedent(notice.decedent_name),
         "Personal Representative": exec_full,
         "First Name":         notice.executor_first_name,
@@ -410,7 +418,10 @@ def write_ftm_xlsx(
         "DM 3 Name": 22, "DM 3 Relationship": 14,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-        ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)
+        dim = ws.column_dimensions[get_column_letter(c_idx)]
+        dim.width = col_widths.get(col_name, 14)
+        if col_name in HIDDEN_FROM_WORKBOOK:
+            dim.hidden = True
 
     # Freeze the header row so it stays visible on scroll
     ws.freeze_panes = "A2"

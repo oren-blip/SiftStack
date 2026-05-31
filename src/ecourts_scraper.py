@@ -530,7 +530,10 @@ async def _click_next_page(page: Page) -> bool:
     )
 
 
-_DROP_CASE_STATUSES = {"DISPOSED", "CLOSED"}
+_DROP_CASE_STATUSES = {"DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED"}
+# Known status values that confirm an active case. Captured-but-not-dropped.
+_KEEP_CASE_STATUSES = {"PENDING", "ACTIVE", "OPEN", "REOPENED"}
+_KNOWN_CASE_STATUSES = _DROP_CASE_STATUSES | _KEEP_CASE_STATUSES
 
 
 def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | None:
@@ -545,14 +548,20 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
     if not cells:
         return None
 
-    # Skip rows whose status column says the case is finished. The status
-    # column is unlabeled in our raw cells, so scan all cells for an exact
-    # match against the drop set. People-name cells will not match (they
-    # never equal "Disposed" / "Closed" verbatim).
+    # Skip rows whose status column says the case is finished, AND capture
+    # the live status string for survivors. The status column is unlabeled
+    # in our raw cells, so scan all cells for an exact match against the
+    # known set. People-name cells will not match (they never equal
+    # "Disposed" / "Closed" / "Pending" verbatim).
+    detected_status = ""
     for c in cells:
-        if c.strip().upper() in _DROP_CASE_STATUSES:
-            logger.debug("eCourts: dropping row with status=%r", c.strip())
-            return None
+        cu = c.strip().upper()
+        if cu in _KNOWN_CASE_STATUSES:
+            detected_status = c.strip()
+            if cu in _DROP_CASE_STATUSES:
+                logger.debug("eCourts: dropping row with status=%r", c.strip())
+                return None
+            break  # captured a keep-status, stop scanning
 
     case_no_re = re.compile(r"\d{2}[A-Z]{1,3}\d{3,6}-?\d{0,3}")
     # Find the cell that contains the case number (not always cells[0]
@@ -619,6 +628,7 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
         raw_text=row.get("text", ""),
         source_url=href,
         case_number=case_no,
+        case_status=detected_status,
     )
     notice._roa_id = case_id_hex  # type: ignore[attr-defined]
     if notice_type == "probate":

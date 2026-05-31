@@ -20,6 +20,13 @@ REM   scripts\nc_weekly_run.bat 2026-05-18   ^<- from a specific date
 
 cd /d "D:\SiftStack"
 
+REM Acquire pipeline lock — refuses if another pipeline (daily or weekly) is running.
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py acquire weekly
+if errorlevel 1 (
+    echo === Weekly run aborted %DATE% %TIME% — pipeline lock held === >> "logs\nc_weekly_run.log"
+    exit /b 1
+)
+
 echo. >> "logs\nc_weekly_run.log"
 echo ====================================================== >> "logs\nc_weekly_run.log"
 echo === Weekly run started %DATE% %TIME% === >> "logs\nc_weekly_run.log"
@@ -41,6 +48,8 @@ echo [5/6] eCourts name-search backfill for remaining blank Case No....
 
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_weekly_run.log" 2>&1
+
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py release >> "logs\nc_weekly_run.log" 2>&1
 
 echo === Weekly run done %DATE% %TIME% === >> "logs\nc_weekly_run.log"
 echo. >> "logs\nc_weekly_run.log"

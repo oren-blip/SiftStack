@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from nc_ftm_writer import FTM_COLUMNS, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS  # noqa: E402
+from nc_ftm_writer import FTM_COLUMNS, HIDDEN_FROM_WORKBOOK, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,7 +186,10 @@ def add_tab(wb, title: str, rows: list[dict]) -> None:
     dv.add(f"{county_col_letter}2:{county_col_letter}1048576")
 
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-        ws.column_dimensions[get_column_letter(c_idx)].width = _COL_WIDTHS.get(col_name, 14)
+        dim = ws.column_dimensions[get_column_letter(c_idx)]
+        dim.width = _COL_WIDTHS.get(col_name, 14)
+        if col_name in HIDDEN_FROM_WORKBOOK:
+            dim.hidden = True
     ws.freeze_panes = "A2"
 
 

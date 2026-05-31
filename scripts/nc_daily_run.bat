@@ -21,6 +21,23 @@ REM   scripts\nc_daily_run.bat 2026-05-25   ^<- from a specific date
 
 cd /d "D:\SiftStack"
 
+REM Skip on weekends + NC court holidays. is_workday.py exits 1 if today
+REM is Sat/Sun or any holiday in the NC General Court of Justice calendar
+REM (see scripts\is_workday.py for the list).
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\is_workday.py >> "logs\nc_daily_run.log" 2>&1
+if errorlevel 1 (
+    echo === Daily run skipped %DATE% %TIME% — non-workday === >> "logs\nc_daily_run.log"
+    echo Skipping run: today is a weekend or NC court holiday.
+    exit /b 0
+)
+
+REM Acquire pipeline lock — refuses if another pipeline (daily or weekly) is running.
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py acquire daily
+if errorlevel 1 (
+    echo === Daily run aborted %DATE% %TIME% — pipeline lock held === >> "logs\nc_daily_run.log"
+    exit /b 1
+)
+
 set SINCE=%1
 if "%SINCE%"=="" (
     for /f %%i in ('powershell -NoProfile -Command "(Get-Date).AddDays(-2).ToString('yyyy-MM-dd')"') do set SINCE=%%i
@@ -47,6 +64,8 @@ echo [5/6] eCourts name-search backfill for remaining blank Case No....
 
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_daily_run.log" 2>&1
+
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py release >> "logs\nc_daily_run.log" 2>&1
 
 echo === Daily run done %DATE% %TIME% === >> "logs\nc_daily_run.log"
 echo. >> "logs\nc_daily_run.log"

@@ -30,21 +30,53 @@ _PARCEL_PROPERTY_FIELDS = (
 )
 
 
-def _name_variations(decedent: str) -> list[str]:
+# Counties whose GIS is so slow that we trim variations to just two
+# (the precise full-middle form + the middle-initial form). Cabarrus's
+# polaris3g endpoint averages 4-6 min per call; cutting from 4 to 2
+# variations saves ~50% of weekly polish time.
+_SLOW_GIS_COUNTIES = {"cabarrus"}
+
+
+def _name_variations(decedent: str, county: str = "") -> list[str]:
     """Variations to try when re-searching for the correct parcel.
 
     Order matters: the first variation that returns matches wins, and
-    every variation we try costs another GIS round-trip. User rule:
-    always try "LAST FIRST MIDDLE" first — that's the format the
-    county GIS owner-search indices return most reliably.
+    every variation we try costs another GIS round-trip. User rules
+    (matches Oren's manual search workflow):
+      1. "LAST FIRST MIDDLE" — county GIS indices return matches most
+         reliably in this form.
+      2. "LAST FIRST M" — many indices store owners with just the
+         middle initial.
+      3. decedent as-passed (usually "Last, First Middle" with comma)
+         — fast counties only.
+
+    Dropped 2026-05-30 per user: "FIRST MIDDLE LAST" and bare "LAST"
+    variations — user never uses them in manual pulls and bare-LAST
+    returns too many false hits to be worth the round-trip.
+
+    Slow-GIS counties stop after the first two; fast-GIS counties
+    also try the as-passed form.
     """
     first, mid, last = split_decedent_name(decedent)
-    raw = [
-        f"{last} {first} {mid}".strip() if (last and first and mid) else None,
-        decedent,
-        f"{first} {mid} {last}".strip() if (first and mid and last) else None,
-        last if last else None,
-    ]
+    mid_initial = mid[0] if mid else ""
+
+    if county.lower() in _SLOW_GIS_COUNTIES:
+        if last and first and mid:
+            raw = [
+                f"{last} {first} {mid}".strip(),
+                f"{last} {first} {mid_initial}".strip(),
+            ]
+        elif last and first:
+            # No middle name — single precise variation.
+            raw = [f"{last} {first}".strip()]
+        else:
+            raw = [decedent]
+    else:
+        raw = [
+            f"{last} {first} {mid}".strip() if (last and first and mid) else None,
+            f"{last} {first} {mid_initial}".strip() if (last and first and mid) else None,
+            decedent,
+        ]
     seen: set[str] = set()
     out: list[str] = []
     for v in raw:
@@ -87,7 +119,7 @@ def research_blank_parcels(
             continue
         found = None
         used_variation = ""
-        for v in _name_variations(dec):
+        for v in _name_variations(dec, county):
             try:
                 results = lookup_properties(v, county, min_score=min_score)
             except Exception:
@@ -345,6 +377,32 @@ def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], 
     kept = [r for r in rows if _money(r.get("Property Value")) <= cap or not (r.get("Property Value") or "").strip()]
     dropped = len(rows) - len(kept)
     return kept, dropped
+
+
+# Statuses that mark a probate case as finished — no mail opportunity left.
+# Belt-and-suspenders with the scrape-time filter in ecourts_scraper.
+_DROP_CASE_STATUSES_POLISH = {"DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED"}
+
+
+def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]:
+    """Drop rows whose Case Status is finished (Disposed/Closed/etc).
+
+    Blank Case Status passes through — pre-Case-Status-column raws don't
+    carry the field and we shouldn't drop those wholesale. Returns
+    (kept_rows, dropped_count, status_histogram) so the caller can log
+    what statuses were seen.
+    """
+    histo: dict[str, int] = {}
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        status = (r.get("Case Status") or "").strip()
+        histo[status or "(blank)"] = histo.get(status or "(blank)", 0) + 1
+        if status.upper() in _DROP_CASE_STATUSES_POLISH:
+            dropped += 1
+            continue
+        kept.append(r)
+    return kept, dropped, histo
 
 
 MANUAL_INDEX_PATH = Path("output") / ".manual_archive_index.json"
@@ -1101,6 +1159,11 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step -1: backfill blank Case No. from user's manual XLSX archive")
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
     print(f"  Archive-backfilled: {n_archive_hit}  No-match (still blank-case): {n_archive_miss}")
+
+    print("Step -0.9: drop non-Pending cases (Disposed/Closed/etc) per Case Status column")
+    rows, n_non_pending, status_histo = drop_non_pending(rows)
+    histo_pretty = ", ".join(f"{k}={v}" for k, v in sorted(status_histo.items(), key=lambda x: -x[1]))
+    print(f"  Dropped non-Pending: {n_non_pending}  Remaining: {len(rows)}  (status seen: {histo_pretty})")
 
     print("Step -0.8: drop archive duplicates (already in prior-week manual pipeline)")
     rows, n_dropped_archive = drop_archive_duplicates(rows)
