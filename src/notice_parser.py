@@ -139,6 +139,11 @@ class NoticeData:
     executor_last_name: str = ""       # Affiant/Executor/Administrator last name
     beneficiaries_json: str = ""       # JSON list of {name, street, city, state, zip}
     property_use_simple: str = ""      # Simplified use code: SFR / MH / Vacant Land / Condo / Commercial
+    # True when the parcel has multiple owners (e.g. decedent + spouse).
+    # Jointly-owned property typically transfers via right of survivorship
+    # and isn't in probate — solely-owned parcels are the real lead.
+    # Used by collapse_by_case to prefer sole-owned as the main parcel.
+    is_jointly_owned: bool = False
 
 
 # ── Known TN cities in Knox & Blount counties ─────────────────────────

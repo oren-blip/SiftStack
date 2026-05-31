@@ -56,6 +56,12 @@ class PropertyCandidate:
     is_residential: bool = False
     is_vacant_land: bool = False
     is_commercial: bool = False
+    # TRUE when parcel has multiple owners (e.g. AcctName1 + AcctName2 in
+    # Cabarrus, or "|" / "&" separator in single-field counties). Jointly-
+    # owned property typically transfers by right of survivorship and isn't
+    # part of the probate estate — solely-owned parcels are the real probate
+    # leads. Used by main-parcel selection to prefer sole over joint.
+    is_jointly_owned: bool = False
     # Score 0.0-1.0 — how confidently the parcel owner matches the decedent name
     match_score: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
@@ -434,6 +440,14 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
         return None
     primary = owners[0] or {}
 
+    # Joint ownership = parcel has multiple distinct owner records.
+    # Mecklenburg polaris3g returns owner[] as a list; len > 1 = joint.
+    distinct_owner_names = {
+        (o.get("fullname") or "").strip().upper()
+        for o in owners if (o.get("fullname") or "").strip()
+    }
+    is_jointly_owned = len(distinct_owner_names) > 1
+
     fullname = (primary.get("fullname") or "").strip()
     mailing = (primary.get("mailing_address") or "").strip()
     situs = ((rec.get("situs") or [""])[0] or "").strip()
@@ -469,6 +483,7 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
         is_residential=use_code.startswith(_POLARIS3G_RESIDENTIAL_PREFIXES),
         is_vacant_land=any(use_code.startswith(p) for p in _POLARIS3G_VACANT_PREFIXES),
         is_commercial=any(use_code.startswith(p) for p in _POLARIS3G_COMMERCIAL_PREFIXES),
+        is_jointly_owned=is_jointly_owned,
         match_score=score,
         raw=rec,
     )
@@ -580,7 +595,11 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         # LegalDesc (e.g. "112 ST MARY ST N W (LT 4 BLK P)") which loosely
         # contains the street. We surface it as the address.
         "situs_fields": ["LegalDesc"],
-        "parcel_field": "PIN",
+        # PIN14 is the human-readable 14-digit parcel ID matching what's
+        # printed on Cabarrus tax bills and deeds (e.g. "55076511870000").
+        # PIN is the GIS-internal float-formatted version of the same parcel
+        # ("5507651187.00000000") — avoid it in user-facing output.
+        "parcel_field": "PIN14",
         "use_field": "VacantOrImproved",  # 'V' or 'I'
         "use_desc_field": None,
     },
@@ -743,6 +762,12 @@ def _arcgis_to_candidate(
     if not owner_full:
         return None
 
+    # Joint ownership detection: either multiple owner fields populated
+    # (Cabarrus's AcctName1 + AcctName2), or "|"/"&" separators inside a
+    # single owner string (e.g. "BOB & ALICE SMITH").
+    joint_parts = [p for p in re.split(r"\s*[|&]\s*", owner_full) if p.strip()]
+    is_jointly_owned = len(joint_parts) > 1
+
     score = _name_match_score(decedent_name, owner_full.replace(" | ", " "))
     if score == 0.0:
         return None
@@ -818,6 +843,7 @@ def _arcgis_to_candidate(
         is_residential=is_residential,
         is_vacant_land=is_vacant,
         is_commercial=is_commercial,
+        is_jointly_owned=is_jointly_owned,
         match_score=score,
         raw=rec,
         situs_city_override=situs_city_override,
@@ -1268,6 +1294,7 @@ def expand_notices_with_gis(
             new_n.state = "NC"
             new_n.parcel_id = c.pid
             new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description, c.county)
+            new_n.is_jointly_owned = c.is_jointly_owned
             if c.market_value is not None:
                 new_n.estimated_value = f"{c.market_value:.0f}"
             if c.year_built is not None:

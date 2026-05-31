@@ -260,33 +260,42 @@ def _market_value_key(n: NoticeData) -> float:
         return 0.0
 
 
-def _main_parcel_priority(n: NoticeData) -> tuple[int, float]:
+def _main_parcel_priority(n: NoticeData) -> tuple[int, int, float]:
     """Sort key for picking the 'main' parcel per decedent.
 
     Priority (sorted DESCENDING, so highest tuple wins):
-      1. Residential beats vacant beats commercial — vacant lots and
-         commercial parcels should be NOTES, not the main lead. A
-         decedent who owned a house + 2 vacant lots: the house is the
-         lead.
-      2. Within same use-class, highest market value wins.
+      1. SOLELY-owned beats jointly-owned. Jointly-owned property
+         typically transfers via right of survivorship (e.g. decedent
+         + surviving spouse) and isn't part of probate — only solely-
+         owned parcels are actual probate assets. This is the most
+         important signal: even a vacant lot that's solely owned beats
+         a jointly-owned mansion.
+      2. Residential beats vacant beats commercial within same
+         ownership tier — vacant lots and commercial parcels should
+         be NOTES, not the main lead.
+      3. Within same use-class, highest market value wins.
 
-    Use-class tier (higher = preferred as main):
+    Sole/joint tier:
+      1 = solely owned (probate asset)
+      0 = jointly owned (transfers by survivorship — not in probate)
+    Use-class tier (higher = preferred):
       3 = SFR / Residential / Townhouse / Condo / MH
       2 = anything not classified (unknown — could be residential)
       1 = Vacant Land
       0 = Commercial / Industrial / Office
     """
+    sole_tier = 0 if getattr(n, "is_jointly_owned", False) else 1
     use = (getattr(n, "property_use_simple", "") or "").upper()
     if "COMMERCIAL" in use or "INDUSTRIAL" in use or "OFFICE" in use:
-        tier = 0
+        use_tier = 0
     elif "VACANT" in use or "LAND" in use:
-        tier = 1
+        use_tier = 1
     elif use in {"SFR", "RESIDENTIAL", "TOWNHOUSE", "CONDO", "MH",
                  "MULTI-FAMILY", "DUPLEX"}:
-        tier = 3
+        use_tier = 3
     else:
-        tier = 2
-    return (tier, _market_value_key(n))
+        use_tier = 2
+    return (sole_tier, use_tier, _market_value_key(n))
 
 
 def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[NoticeData]]]:
