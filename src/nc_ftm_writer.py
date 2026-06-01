@@ -267,34 +267,38 @@ def _main_parcel_priority(n: NoticeData) -> tuple[int, int, float]:
       1. SOLELY-owned beats jointly-owned. Jointly-owned property
          typically transfers via right of survivorship (e.g. decedent
          + surviving spouse) and isn't part of probate — only solely-
-         owned parcels are actual probate assets. This is the most
-         important signal: even a vacant lot that's solely owned beats
-         a jointly-owned mansion.
-      2. Residential beats vacant beats commercial within same
-         ownership tier — vacant lots and commercial parcels should
-         be NOTES, not the main lead.
+         owned parcels are actual probate assets. Even a vacant lot
+         that's solely owned beats a jointly-owned mansion.
+      2. Use-class preference depends on ownership:
+         - SOLE: residential > unknown > vacant > commercial (the
+           house is the obvious lead)
+         - JOINT: vacant > unknown > residential > commercial (the
+           residential is likely the surviving spouse's home; vacant
+           is more likely a Tenants-in-Common probate share)
       3. Within same use-class, highest market value wins.
 
-    Sole/joint tier:
+    Sole/joint tier (descending):
       1 = solely owned (probate asset)
       0 = jointly owned (transfers by survivorship — not in probate)
-    Use-class tier (higher = preferred):
-      3 = SFR / Residential / Townhouse / Condo / MH
-      2 = anything not classified (unknown — could be residential)
-      1 = Vacant Land
-      0 = Commercial / Industrial / Office
     """
-    sole_tier = 0 if getattr(n, "is_jointly_owned", False) else 1
+    is_joint = bool(getattr(n, "is_jointly_owned", False))
+    sole_tier = 0 if is_joint else 1
     use = (getattr(n, "property_use_simple", "") or "").upper()
     if "COMMERCIAL" in use or "INDUSTRIAL" in use or "OFFICE" in use:
-        use_tier = 0
+        use_class = "COMMERCIAL"
     elif "VACANT" in use or "LAND" in use:
-        use_tier = 1
+        use_class = "VACANT"
     elif use in {"SFR", "RESIDENTIAL", "TOWNHOUSE", "CONDO", "MH",
                  "MULTI-FAMILY", "DUPLEX"}:
-        use_tier = 3
+        use_class = "RESIDENTIAL"
     else:
-        use_tier = 2
+        use_class = "UNKNOWN"
+    if is_joint:
+        # Joint: prefer vacant (likely TIC inheritance share), demote residential
+        use_tier = {"VACANT": 3, "UNKNOWN": 2, "RESIDENTIAL": 1, "COMMERCIAL": 0}[use_class]
+    else:
+        # Sole: prefer residential (the obvious house lead)
+        use_tier = {"RESIDENTIAL": 3, "UNKNOWN": 2, "VACANT": 1, "COMMERCIAL": 0}[use_class]
     return (sole_tier, use_tier, _market_value_key(n))
 
 

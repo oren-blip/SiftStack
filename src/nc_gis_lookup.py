@@ -798,6 +798,22 @@ def _arcgis_to_candidate(
             # Blank it out so the FTM CSV doesn't show a fake address.
             situs = ""
 
+    # If situs is blank (vacant lots in Cabarrus / unimproved parcels in
+    # other counties often have no NG911 address), fall back to the
+    # owner's MailAddr — matches Oren's manual convention of using the
+    # owner's mailing address as the property reference when the parcel
+    # itself has no street number assigned.
+    if not situs:
+        # mailing_fields convention: [street, street2, city, state, zip]
+        mf = cfg.get("mailing_fields") or []
+        mail_street = str(rec.get(mf[0]) or "").strip() if mf and mf[0] else ""
+        if mail_street:
+            situs = mail_street
+            if not situs_city_override and len(mf) >= 3 and mf[2] and rec.get(mf[2]):
+                situs_city_override = str(rec.get(mf[2])).strip().title()
+            if not situs_zip_override and len(mf) >= 5 and mf[4] and rec.get(mf[4]):
+                situs_zip_override = str(rec.get(mf[4])).strip()
+
     # Use code + description
     use_code = str(rec.get(cfg["use_field"]) or "").strip().upper() if cfg.get("use_field") else ""
     use_desc = str(rec.get(cfg["use_desc_field"]) or "").strip() if cfg.get("use_desc_field") else ""
@@ -822,6 +838,17 @@ def _arcgis_to_candidate(
             or use_code.startswith("R") or "DWELL" in desc_upper
         )
         is_commercial = "COMMERCIAL" in desc_upper or "OFFICE" in desc_upper or "INDUSTRIAL" in desc_upper
+
+    # Vacant-by-address heuristic: when use codes aren't classified (common
+    # in Rowan / Catawba which don't expose detailed use codes in the layer
+    # we query), a situs address starting with "0 " is the strongest signal
+    # of a vacant lot — county GIS assigns "0 <STREET>" to unimproved parcels
+    # because no street number has been assigned yet. Only mark vacant when
+    # we couldn't classify any other way.
+    if not (is_vacant or is_residential or is_commercial):
+        situs_check = (situs or "").strip().upper()
+        if situs_check.startswith("0 ") or situs_check == "0":
+            is_vacant = True
 
     return PropertyCandidate(
         county=county,
