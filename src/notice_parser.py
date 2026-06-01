@@ -144,6 +144,20 @@ class NoticeData:
     # and isn't in probate — solely-owned parcels are the real lead.
     # Used by collapse_by_case to prefer sole-owned as the main parcel.
     is_jointly_owned: bool = False
+    # Co-owner names from the parcel (with decedent removed). Used to
+    # cross-reference against the case's beneficiary list — if a co-owner
+    # is NOT listed as a beneficiary, the deed is likely Tenants-in-Common
+    # (decedent's share goes through probate) rather than Joint with Right
+    # of Survivorship (transfers automatically). Empty string when sole-
+    # owned or co-owners couldn't be parsed.
+    joint_co_owners: str = ""
+    # True when a joint co-owner is also a court-recognized beneficiary
+    # of the estate — strong signal that the deed is JTWROS and the
+    # property transfers by survivorship (NOT in probate). False means
+    # either sole-owned OR joint-but-co-owner-isn't-a-beneficiary (likely
+    # TIC, IN probate). Default True for safety — if we can't determine,
+    # assume survivorship (safer to skip than to chase a non-probate lead).
+    is_likely_survivorship: bool = True
 
 
 # ── Known TN cities in Knox & Blount counties ─────────────────────────

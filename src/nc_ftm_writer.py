@@ -264,25 +264,27 @@ def _main_parcel_priority(n: NoticeData) -> tuple[int, int, float]:
     """Sort key for picking the 'main' parcel per decedent.
 
     Priority (sorted DESCENDING, so highest tuple wins):
-      1. SOLELY-owned beats jointly-owned. Jointly-owned property
-         typically transfers via right of survivorship (e.g. decedent
-         + surviving spouse) and isn't part of probate — only solely-
-         owned parcels are actual probate assets. Even a vacant lot
-         that's solely owned beats a jointly-owned mansion.
-      2. Use-class preference depends on ownership:
-         - SOLE: residential > unknown > vacant > commercial (the
-           house is the obvious lead)
-         - JOINT: vacant > unknown > residential > commercial (the
-           residential is likely the surviving spouse's home; vacant
-           is more likely a Tenants-in-Common probate share)
-      3. Within same use-class, highest market value wins.
+      1. IN-PROBATE beats transfers-by-survivorship. A parcel is "in
+         probate" when it's either solely owned OR jointly owned with
+         someone who ISN'T a beneficiary in the estate (likely Tenants-
+         in-Common, decedent's share goes through probate). A parcel
+         transfers by survivorship when it's jointly owned with someone
+         who IS a beneficiary (JTWROS, decedent's share auto-transfers).
+      2. Use-class preference depends on ownership profile:
+         - IN-PROBATE: residential > unknown > vacant > commercial
+         - SURVIVORSHIP: vacant > unknown > residential > commercial
+           (residential is likely surviving spouse's home)
+      3. Highest market value wins within same class.
 
-    Sole/joint tier (descending):
-      1 = solely owned (probate asset)
-      0 = jointly owned (transfers by survivorship — not in probate)
+    "In-probate" tier (descending):
+      1 = in probate (sole, or joint-with-non-beneficiary aka likely TIC)
+      0 = transfers by survivorship (joint with a beneficiary)
     """
     is_joint = bool(getattr(n, "is_jointly_owned", False))
-    sole_tier = 0 if is_joint else 1
+    is_survivorship = bool(getattr(n, "is_likely_survivorship", True))
+    # In-probate when sole (not joint) OR joint with non-beneficiary
+    in_probate = (not is_joint) or (is_joint and not is_survivorship)
+    probate_tier = 1 if in_probate else 0
     use = (getattr(n, "property_use_simple", "") or "").upper()
     if "COMMERCIAL" in use or "INDUSTRIAL" in use or "OFFICE" in use:
         use_class = "COMMERCIAL"
@@ -293,13 +295,15 @@ def _main_parcel_priority(n: NoticeData) -> tuple[int, int, float]:
         use_class = "RESIDENTIAL"
     else:
         use_class = "UNKNOWN"
-    if is_joint:
-        # Joint: prefer vacant (likely TIC inheritance share), demote residential
-        use_tier = {"VACANT": 3, "UNKNOWN": 2, "RESIDENTIAL": 1, "COMMERCIAL": 0}[use_class]
-    else:
-        # Sole: prefer residential (the obvious house lead)
+    if in_probate:
+        # The probate asset is most likely the residence (where the
+        # decedent lived); vacant lots are secondary.
         use_tier = {"RESIDENTIAL": 3, "UNKNOWN": 2, "VACANT": 1, "COMMERCIAL": 0}[use_class]
-    return (sole_tier, use_tier, _market_value_key(n))
+    else:
+        # Survivorship — residential is likely surviving spouse's home,
+        # demote it; vacant might still be a TIC fragment.
+        use_tier = {"VACANT": 3, "UNKNOWN": 2, "RESIDENTIAL": 1, "COMMERCIAL": 0}[use_class]
+    return (probate_tier, use_tier, _market_value_key(n))
 
 
 def collapse_by_case(notices: list[NoticeData]) -> list[tuple[NoticeData, list[NoticeData]]]:

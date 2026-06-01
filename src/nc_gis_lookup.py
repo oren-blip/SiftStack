@@ -17,6 +17,7 @@ keep / drop.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -238,6 +239,96 @@ def _name_match_score_one(decedent: str, owner_fullname: str) -> float:
     if first_full_match:
         return 1.0
     return 0.7
+
+
+# ── Co-owner vs beneficiary cross-reference ───────────────────────────
+
+
+def extract_co_owner_names(owner_full: str, decedent_name: str) -> list[str]:
+    """From a parcel's joined owner string (e.g. "BONDS BOBBY R | BONDS ELSIE WF"),
+    extract the OTHER owner names (not the decedent). Returns a list of
+    normalized name strings for downstream matching.
+
+    Drops obvious noise tokens ("WF" = wife, "HB" = husband, "ETUX",
+    "& WF", "TRUSTEE", etc.) that some county GIS systems append.
+    """
+    if not owner_full:
+        return []
+    parts = re.split(r"\s*[|&]\s*", owner_full)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) <= 1:
+        return []
+    # Decedent's last name — used to filter out the decedent's own entries
+    _f, _m, dec_last = split_decedent_name(decedent_name)
+    dec_first, _, _ = split_decedent_name(decedent_name)
+    co_owners: list[str] = []
+    for p in parts:
+        n = _normalize_name(p)
+        tokens = set(n.split()) - _MIDDLE_NOISE_TOKENS - {"WF", "HB", "ETUX", "ETAL", "TRUSTEE", "TR"}
+        # Skip empty after cleaning
+        if not tokens:
+            continue
+        # Skip if this is the decedent (same last AND first name)
+        if dec_last and dec_first and dec_last in tokens and dec_first in tokens:
+            continue
+        # Also skip "decedent's last name & WF" pattern — that's the spouse
+        # but rendered as "BONDS BOBBY R" (no separate spouse listing); the
+        # actual spouse name is in AcctName2, parsed as a separate part.
+        co_owners.append(n)
+    return co_owners
+
+
+def co_owner_is_beneficiary(co_owner_normalized: str, beneficiaries_json: str) -> bool:
+    """Return True when the co-owner's name overlaps a beneficiary in the
+    estate's Parties API output. Match logic: both must share the same
+    last name AND at least one other token (first name or middle).
+
+    Beneficiaries_json is a JSON list of {name, street, city, state, zip}
+    from ecourts_case_api.CaseParty.
+    """
+    if not co_owner_normalized or not beneficiaries_json:
+        return False
+    co_tokens = set(co_owner_normalized.split())
+    if len(co_tokens) < 2:
+        return False
+    try:
+        bens = json.loads(beneficiaries_json)
+    except (ValueError, TypeError):
+        return False
+    for b in bens:
+        bname = _normalize_name(b.get("name") or "")
+        if not bname:
+            continue
+        b_tokens = set(bname.split()) - _MIDDLE_NOISE_TOKENS
+        # Last name must appear in both
+        overlap = co_tokens & b_tokens
+        if len(overlap) >= 2:
+            return True
+    return False
+
+
+def is_likely_survivorship(
+    owner_full: str, decedent_name: str, beneficiaries_json: str,
+) -> bool:
+    """True when the parcel's joint co-owner(s) appear in the estate's
+    beneficiary list — strong signal the deed is JTWROS and the property
+    transfers by survivorship (NOT in probate).
+
+    Returns True (= NOT in probate) for sole-owned parcels too — sole means
+    no joint-survivorship concern; the main-parcel sorter treats this as
+    "already-in-probate" via the is_jointly_owned flag instead.
+
+    Defaults to True when we can't determine (e.g. blank beneficiary list).
+    """
+    co_owners = extract_co_owner_names(owner_full, decedent_name)
+    if not co_owners:
+        return True  # sole owned (no joint-survivorship concern)
+    if not beneficiaries_json:
+        return True  # can't verify — default to "transfers" (safer to skip)
+    for co in co_owners:
+        if co_owner_is_beneficiary(co, beneficiaries_json):
+            return True  # at least one co-owner IS a beneficiary → likely survivorship
+    return False  # no co-owner is a beneficiary → likely TIC, IN probate
 
 
 # ── Address comparison helpers ────────────────────────────────────────
@@ -1322,6 +1413,16 @@ def expand_notices_with_gis(
             new_n.parcel_id = c.pid
             new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description, c.county)
             new_n.is_jointly_owned = c.is_jointly_owned
+            # Cross-reference parcel co-owners against the case's beneficiary
+            # list. If a co-owner is also a court-recognized beneficiary, the
+            # deed is likely JTWROS (transfers automatically — not in probate).
+            # If no co-owner is in the case, it's likely TIC (decedent's share
+            # IS in probate). See is_likely_survivorship for details.
+            co_owners_list = extract_co_owner_names(c.owner_name, decedent)
+            new_n.joint_co_owners = " | ".join(co_owners_list)
+            new_n.is_likely_survivorship = is_likely_survivorship(
+                c.owner_name, decedent, getattr(n, "beneficiaries_json", "") or "",
+            )
             if c.market_value is not None:
                 new_n.estimated_value = f"{c.market_value:.0f}"
             if c.year_built is not None:

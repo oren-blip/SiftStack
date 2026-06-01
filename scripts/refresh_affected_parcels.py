@@ -22,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from nc_gis_lookup import (
+    extract_co_owner_names,
     filter_for_lead_quality,
+    is_likely_survivorship,
     lookup_properties,
     simplify_use_code,
 )
@@ -43,13 +45,17 @@ AFFECTED = [
 ]
 
 
-def _main_parcel_sort_key(c) -> tuple:
+def _main_parcel_sort_key(c, decedent: str, beneficiaries_json: str) -> tuple:
     """Mirror nc_ftm_writer._main_parcel_priority on PropertyCandidate.
-    (sole_tier, use_tier, market_value) — descending. Use-tier flips
-    between sole-owned (prefer SFR) and joint (prefer vacant).
+    (probate_tier, use_tier, market_value) — descending.
+
+    In-probate when sole OR joint-with-non-beneficiary (likely TIC).
+    Survivorship when joint with a court-recognized beneficiary.
     """
     is_joint = bool(c.is_jointly_owned)
-    sole_tier = 0 if is_joint else 1
+    is_survivorship = is_likely_survivorship(c.owner_name, decedent, beneficiaries_json)
+    in_probate = (not is_joint) or (is_joint and not is_survivorship)
+    probate_tier = 1 if in_probate else 0
     if c.is_commercial:
         use_class = "COMMERCIAL"
     elif c.is_vacant_land:
@@ -58,12 +64,12 @@ def _main_parcel_sort_key(c) -> tuple:
         use_class = "RESIDENTIAL"
     else:
         use_class = "UNKNOWN"
-    if is_joint:
-        use_tier = {"VACANT": 3, "UNKNOWN": 2, "RESIDENTIAL": 1, "COMMERCIAL": 0}[use_class]
-    else:
+    if in_probate:
         use_tier = {"RESIDENTIAL": 3, "UNKNOWN": 2, "VACANT": 1, "COMMERCIAL": 0}[use_class]
+    else:
+        use_tier = {"VACANT": 3, "UNKNOWN": 2, "RESIDENTIAL": 1, "COMMERCIAL": 0}[use_class]
     mv = float(c.market_value or 0)
-    return (sole_tier, use_tier, mv)
+    return (probate_tier, use_tier, mv)
 
 
 def _format_extras_note(extras: list) -> str:
@@ -98,7 +104,22 @@ def refresh_row(row: dict) -> tuple[bool, str]:
     if not kept:
         return False, f"no qualifying candidates after filter (raw={len(candidates)})"
 
-    kept.sort(key=_main_parcel_sort_key, reverse=True)
+    # Pull beneficiaries from the CSV row if available (added in build 1.0.30)
+    bens_json = (row.get("Beneficiaries") or "").strip()
+    # Note: row's Beneficiaries column is the rendered text, not the raw JSON.
+    # For the cross-reference we need json — fall back to text-based parsing.
+    # If it's plain text we treat it as a single JSON-encodable structure.
+    # The text format is one beneficiary per line like "Last, First — addr".
+    if bens_json and not bens_json.startswith("["):
+        import json as _json
+        synth = []
+        for line in bens_json.splitlines():
+            name = line.split("-")[0].split("—")[0].strip()
+            if name and name.lower() != "beneficiary":
+                synth.append({"name": name})
+        bens_json = _json.dumps(synth)
+
+    kept.sort(key=lambda c: _main_parcel_sort_key(c, dec, bens_json), reverse=True)
     main = kept[0]
     extras = kept[1:]
 
