@@ -679,19 +679,25 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "use_desc_field": "NEIGCLAS",
     },
     "cabarrus": {
-        "url": "https://location.cabarruscounty.us/arcgisservices/rest/services/Tax_Parcels_Full/MapServer/0",
+        # Switched from Tax_Parcels_Full -> Parcels (2026-05-31). Audit
+        # caught Tax_Parcels_Full as stale by ~4+ years for ownership
+        # (parcel 46928353840000 still showed previous owner "WHITE
+        # NELLIE S" instead of current "BAILEY JERRY ALLEN | JOHNSON
+        # TAMIKA FIELDS" who bought in 11/2021). The Parcels layer is
+        # the same one MapCabarrus (the public-facing viewer) uses and
+        # matches current tax/deed records.
+        # Tradeoff: Parcels lacks the VacantOrImproved V/I flag that
+        # Tax_Parcels_Full had — we now rely on the "0 STREET" address
+        # heuristic in _arcgis_to_candidate to detect vacant lots.
+        "url": "https://location.cabarruscounty.us/arcgisservices/rest/services/Parcels/MapServer/0",
         "owner_fields": ["AcctName1", "AcctName2"],
         "mailing_fields": ["MailAddr1", "MailAddr2", "MailCity", "MailState", "MailZipCode"],
-        # Cabarrus doesn't expose a situs/property address — best we have is
-        # LegalDesc (e.g. "112 ST MARY ST N W (LT 4 BLK P)") which loosely
-        # contains the street. We surface it as the address.
-        "situs_fields": ["LegalDesc"],
-        # PIN14 is the human-readable 14-digit parcel ID matching what's
-        # printed on Cabarrus tax bills and deeds (e.g. "55076511870000").
-        # PIN is the GIS-internal float-formatted version of the same parcel
-        # ("5507651187.00000000") — avoid it in user-facing output.
-        "parcel_field": "PIN14",
-        "use_field": "VacantOrImproved",  # 'V' or 'I'
+        # Parcels layer DOES expose situs addresses (the old layer only had
+        # LegalDesc and we had to second-hop through DataExplorerSearch).
+        # Use the real situs field directly — much faster and more accurate.
+        "situs_fields": ["PropAddr"],
+        "parcel_field": "PIN14",  # 14-digit human-friendly form (matches tax bills/deeds)
+        "use_field": "CODE",  # HB=Home Built, CO=Country/vacant, etc.
         "use_desc_field": None,
     },
     "gaston": {
@@ -873,21 +879,21 @@ def _arcgis_to_candidate(
     # Parcel ID
     pid = str(rec.get(cfg["parcel_field"]) or "").strip()
 
-    # Cabarrus situs override — Tax_Parcels_Full has only LegalDesc which is
-    # garbage as an address ("Lt 138" / "N/O Earnhardt Lake"). Replace with
-    # a real street address from the DataExplorerSearch address-points layer.
+    # Cabarrus situs enrichment — the Parcels layer's PropAddr has the
+    # street (e.g. "2626 BARR RD") but no city/zip. Use DataExplorerSearch
+    # to fill in city/zip from the NG911 address-points layer. Don't blank
+    # situs on lookup failure — PropAddr from the parcel layer is already
+    # accurate; the secondary lookup just adds city/zip metadata.
     situs_city_override = ""
     situs_zip_override = ""
     if county.lower() == "cabarrus" and pid:
         c_street, c_city, c_zip = _cabarrus_lookup_situs(pid)
         if c_street:
+            # Prefer the address-points street if available (more standardized)
             situs = c_street
             situs_city_override = c_city.title()
             situs_zip_override = c_zip
-        else:
-            # No address-point match — situs is LegalDesc-style garbage.
-            # Blank it out so the FTM CSV doesn't show a fake address.
-            situs = ""
+        # else: leave PropAddr as-is — it's valid in the new Parcels layer
 
     # If situs is blank (vacant lots in Cabarrus / unimproved parcels in
     # other counties often have no NG911 address), fall back to the
@@ -909,13 +915,18 @@ def _arcgis_to_candidate(
     use_code = str(rec.get(cfg["use_field"]) or "").strip().upper() if cfg.get("use_field") else ""
     use_desc = str(rec.get(cfg["use_desc_field"]) or "").strip() if cfg.get("use_desc_field") else ""
 
-    # Cabarrus special: VacantOrImproved is "V"/"I"
+    # Cabarrus: the new Parcels layer's CODE field hasn't been fully
+    # mapped yet (observed values include "HB" = Home Built). For now use
+    # an address heuristic: a real street number = residential, "0 STREET"
+    # = vacant (handled by the 0-prefix heuristic below). No commercial
+    # detection here — would need to discover the CODE values for that.
     is_vacant = False
     is_residential = False
     is_commercial = False
     if county.lower() == "cabarrus":
-        is_vacant = use_code == "V"
-        is_residential = use_code == "I"  # everything else is "improved" — assumed residential
+        situs_check = (situs or "").strip().upper()
+        if situs_check and not (situs_check.startswith("0 ") or situs_check == "0"):
+            is_residential = True
     elif county.lower() == "lincoln":
         # VACANT field is "YES"/"NO"
         is_vacant = use_desc.upper() == "YES"
