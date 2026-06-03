@@ -141,13 +141,34 @@ _MIDDLE_NOISE_TOKENS = {
 }
 
 
+_GENERATIONAL_SUFFIXES = {"SR", "JR", "II", "III", "IV", "V"}
+_HEIRS_MARKERS = {"HEIRS", "ESTATE", "ESTATEOF"}
+
+
+def _extract_suffix(name: str) -> str:
+    """Return the generational suffix (SR/JR/II/III/IV/V) in a name, or ''."""
+    if not name:
+        return ""
+    s = re.sub(r"[^\w\s'-]", " ", name.upper())
+    for token in s.split():
+        if token in _GENERATIONAL_SUFFIXES:
+            return token
+    return ""
+
+
 def _name_match_score(decedent: str, owner_fullname: str) -> float:
     """Score how confidently the owner name matches the decedent.
 
     CRITICAL: When BOTH decedent and owner have a middle name/initial,
     they MUST share at least the first letter — otherwise we treat it
     as a different person. This prevents homonym false positives like
-    "James Lee Osborne" matching "JAMES D OSBORNE".
+    "James Lee Osborne" matching "JAMES D OSBORNE". Exception: when
+    the owner string contains "HEIRS" or "ESTATE", relax middle-match
+    requirement (data inconsistencies in old probate-tagged records).
+
+    Suffix disambiguation: if decedent has "Sr" and owner has "Jr"
+    (or any generational mismatch), return 0 — they're different people
+    (Leonard Kinney Sr's parcel vs his son Leonard Jr's parcel).
 
     Owner strings often contain joint owners separated by "|" or "&"
     (e.g. "RUSSELL WILLIAM JR | RUSSELL SYLVANIA WF"). We score each
@@ -156,11 +177,12 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
     """
     if not decedent:
         return 0.0
+    dec_suffix = _extract_suffix(decedent)
     # Split joint-owner strings; score each sub-name and take the max
     sub_names = re.split(r"\s*[|&]\s*", owner_fullname or "")
     best = 0.0
     for sub in sub_names:
-        s = _name_match_score_one(decedent, sub)
+        s = _name_match_score_one(decedent, sub, dec_suffix=dec_suffix)
         if s > best:
             best = s
         if best >= 1.0:
@@ -168,8 +190,14 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
     return best
 
 
-def _name_match_score_one(decedent: str, owner_fullname: str) -> float:
+def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = "") -> float:
     """Score a single (non-joint) owner name against the decedent."""
+    # Suffix disambiguation: Sr vs Jr (or any generational difference)
+    # means different people, even if the rest of the name matches.
+    o_suffix = _extract_suffix(owner_fullname)
+    if dec_suffix and o_suffix and dec_suffix != o_suffix:
+        return 0.0
+
     d_first, d_middle, d_last = split_decedent_name(decedent)
     if not d_last:
         return 0.0
@@ -185,6 +213,20 @@ def _name_match_score_one(decedent: str, owner_fullname: str) -> float:
     first_full_match = d_first in o_set
     first_initial_match = False
     if not first_full_match:
+        # Guard against the "JOANIE D matches Doris J" false positive:
+        # if the owner has a LONGER alphabetic token that's clearly the
+        # actual first name (and it's not ours), the bare-initial match
+        # on a separate single-char token is meaningless.
+        competing_first_names = [
+            t for t in o_tokens
+            if t != d_last and len(t) > 2 and t.isalpha()
+            and t not in _MIDDLE_NOISE_TOKENS
+            and t not in _HEIRS_MARKERS
+            and t not in {"TRUST", "TRUSTEE", "LIVING", "REVOC", "REVOCABLE"}
+        ]
+        if competing_first_names:
+            return 0.4  # owner has its own first name, ours isn't it
+
         d_first_initial = d_first[0]
         for t in o_tokens:
             if t == d_first_initial or (len(t) <= 2 and t[0] == d_first_initial):
@@ -234,7 +276,15 @@ def _name_match_score_one(decedent: str, owner_fullname: str) -> float:
                     owner_middle_matches = True
                     break
             if not owner_middle_matches:
-                return 0.4
+                # HEIRS / ESTATE marker exception: when the owner string
+                # contains "HEIRS" or "ESTATE", the property is already
+                # attributed to the estate, so accept the match even if
+                # the middle initial doesn't line up (common with old
+                # records where the middle initial varies).
+                if o_set & _HEIRS_MARKERS:
+                    pass  # accept anyway, still a probate-tagged property
+                else:
+                    return 0.4
 
     if first_full_match:
         return 1.0
@@ -251,6 +301,10 @@ def extract_co_owner_names(owner_full: str, decedent_name: str) -> list[str]:
 
     Drops obvious noise tokens ("WF" = wife, "HB" = husband, "ETUX",
     "& WF", "TRUSTEE", etc.) that some county GIS systems append.
+
+    Suffix-aware: if the decedent is "Kinney, Leonard Sr." and the owner
+    string contains "KINNEY LEONARD JR", that entry is the SON (not the
+    decedent's own listing), so DON'T skip it — it's a real co-owner.
     """
     if not owner_full:
         return []
@@ -258,22 +312,25 @@ def extract_co_owner_names(owner_full: str, decedent_name: str) -> list[str]:
     parts = [p.strip() for p in parts if p.strip()]
     if len(parts) <= 1:
         return []
-    # Decedent's last name — used to filter out the decedent's own entries
     _f, _m, dec_last = split_decedent_name(decedent_name)
     dec_first, _, _ = split_decedent_name(decedent_name)
+    dec_suffix = _extract_suffix(decedent_name)
     co_owners: list[str] = []
     for p in parts:
+        p_suffix = _extract_suffix(p)
         n = _normalize_name(p)
         tokens = set(n.split()) - _MIDDLE_NOISE_TOKENS - {"WF", "HB", "ETUX", "ETAL", "TRUSTEE", "TR"}
-        # Skip empty after cleaning
         if not tokens:
             continue
-        # Skip if this is the decedent (same last AND first name)
-        if dec_last and dec_first and dec_last in tokens and dec_first in tokens:
+        # Skip if this is the decedent (same last+first AND same/empty suffix).
+        # A Jr/Sr suffix difference means it's a relative, NOT the decedent.
+        looks_like_decedent = (
+            dec_last and dec_first
+            and dec_last in tokens and dec_first in tokens
+            and (not dec_suffix or not p_suffix or dec_suffix == p_suffix)
+        )
+        if looks_like_decedent:
             continue
-        # Also skip "decedent's last name & WF" pattern — that's the spouse
-        # but rendered as "BONDS BOBBY R" (no separate spouse listing); the
-        # actual spouse name is in AcctName2, parsed as a separate part.
         co_owners.append(n)
     return co_owners
 
@@ -759,39 +816,57 @@ def _arcgis_query(
     owner_field: str,
     name_token: str,
     *,
-    record_limit: int = 100,
+    record_limit: int = 5000,
+    page_size: int = 1000,
 ) -> list[dict]:
-    """Run a single ArcGIS REST query and return the attribute dicts.
+    """Run an ArcGIS REST query and return all matching attribute dicts.
 
     Uses LIKE 'NAME%' to match owners whose names start with the token.
+    Paginates via resultOffset until either exhausted or record_limit
+    rows have been collected. This catches common last names like SMITH
+    or THOMPSON where the parcel we need is beyond the first 100 hits.
     """
     if not name_token:
         return []
     where = f"UPPER({owner_field}) LIKE '{name_token.upper()}%'"
-    params = {
-        "where": where,
-        "outFields": "*",
-        "returnGeometry": "false",
-        "f": "json",
-        "resultRecordCount": str(record_limit),
-    }
-    try:
-        r = requests.get(url + "/query", params=params, headers=_ARCGIS_HEADERS, timeout=30)
-    except requests.RequestException as e:
-        logger.warning("ArcGIS: query failed at %s: %s", url, e)
-        return []
-    if r.status_code != 200:
-        logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
-        return []
-    try:
-        data = r.json()
-    except ValueError:
-        logger.warning("ArcGIS: invalid JSON at %s", url)
-        return []
-    if "error" in data:
-        logger.warning("ArcGIS error at %s: %s", url, data["error"])
-        return []
-    return [f.get("attributes") or {} for f in (data.get("features") or [])]
+    all_rows: list[dict] = []
+    offset = 0
+    while len(all_rows) < record_limit:
+        params = {
+            "where": where,
+            "outFields": "*",
+            "returnGeometry": "false",
+            "f": "json",
+            "resultOffset": str(offset),
+            "resultRecordCount": str(page_size),
+        }
+        try:
+            r = requests.get(url + "/query", params=params, headers=_ARCGIS_HEADERS, timeout=30)
+        except requests.RequestException as e:
+            logger.warning("ArcGIS: query failed at %s: %s", url, e)
+            break
+        if r.status_code != 200:
+            logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
+            break
+        try:
+            data = r.json()
+        except ValueError:
+            logger.warning("ArcGIS: invalid JSON at %s", url)
+            break
+        if "error" in data:
+            logger.warning("ArcGIS error at %s: %s", url, data["error"])
+            break
+        feats = data.get("features") or []
+        if not feats:
+            break
+        all_rows.extend(a.get("attributes", {}) for a in feats)
+        # Stop if server says no more, or page was short
+        if not data.get("exceededTransferLimit") and len(feats) < page_size:
+            break
+        offset += len(feats)
+        if offset >= record_limit:
+            break
+    return all_rows[:record_limit]
 
 
 _CABARRUS_ADDR_URL = (
@@ -942,14 +1017,21 @@ def _arcgis_to_candidate(
         is_commercial = "COMMERCIAL" in desc_upper or "OFFICE" in desc_upper or "INDUSTRIAL" in desc_upper
 
     # Vacant-by-address heuristic: when use codes aren't classified (common
-    # in Rowan / Catawba which don't expose detailed use codes in the layer
-    # we query), a situs address starting with "0 " is the strongest signal
-    # of a vacant lot — county GIS assigns "0 <STREET>" to unimproved parcels
-    # because no street number has been assigned yet. Only mark vacant when
-    # we couldn't classify any other way.
+    # in Rowan / Catawba / Iredell which don't expose detailed use codes
+    # in the layer we query). Two signals indicate a vacant lot:
+    #   1. situs starts with "0 " or is just "0" — county assigns "0 STREET"
+    #      to unimproved parcels because no street number has been assigned
+    #   2. situs starts with a letter (e.g. "CARRIAGE RD" with no house
+    #      number prefix) — composed-address fields where the house-number
+    #      field was empty, also signals an unimproved parcel
+    # Only mark vacant when we couldn't classify any other way.
     if not (is_vacant or is_residential or is_commercial):
         situs_check = (situs or "").strip().upper()
-        if situs_check.startswith("0 ") or situs_check == "0":
+        if not situs_check:
+            pass  # blank, no signal
+        elif situs_check.startswith("0 ") or situs_check == "0":
+            is_vacant = True
+        elif situs_check[0].isalpha():
             is_vacant = True
 
     return PropertyCandidate(
@@ -1105,6 +1187,8 @@ def filter_for_lead_quality(
     drop_heir_occupied: bool = True,
     drop_commercial: bool = True,
     decedent_match_threshold: float = 0.9,
+    beneficiaries_json: str = "",
+    decedent_name: str = "",
 ) -> list[PropertyCandidate]:
     """Apply user's heir-occupancy + buy-box filters to a candidate list.
 
@@ -1125,6 +1209,10 @@ def filter_for_lead_quality(
           address — that someone is living in the property (likely heir
           who already inherited and moved in; they won't sell).
         - Commercial / office / industrial use codes (out of buy box).
+        - The parcel is SOLELY owned by someone listed as a beneficiary
+          in the estate (it's the beneficiary's OWN property — not in
+          probate). Catches cases like Kinney 145 Carriage owned by
+          Leonard Kinney Jr who's a beneficiary in his father's estate.
 
     Buy box note: vacant land IS kept (user's NC buy box includes land).
     """
@@ -1132,6 +1220,17 @@ def filter_for_lead_quality(
     for c in candidates:
         if drop_commercial and c.is_commercial:
             continue
+        # Beneficiary-owns-this-parcel check: when sole-owned by a person
+        # who's a beneficiary in the estate, the parcel is the beneficiary's
+        # own pre-existing property, not part of the probate estate.
+        if not c.is_jointly_owned and beneficiaries_json and decedent_name:
+            # AcctName1 is the primary owner. Normalize and check if it
+            # matches any beneficiary name (token overlap >= 2).
+            primary = c.owner_name.split("|")[0].strip()
+            primary_norm = _normalize_name(primary)
+            # Don't drop if the primary owner IS the decedent (high score)
+            if c.match_score < decedent_match_threshold and co_owner_is_beneficiary(primary_norm, beneficiaries_json):
+                continue
         # If GIS owner is still the decedent, this IS the probate lead — keep
         if c.match_score >= decedent_match_threshold:
             keep.append(c)
@@ -1403,7 +1502,11 @@ def expand_notices_with_gis(
             _LOOKUP_CACHE[cache_key] = candidates
 
         raw_count = len(candidates)
-        kept = filter_for_lead_quality(candidates)
+        kept = filter_for_lead_quality(
+            candidates,
+            beneficiaries_json=getattr(n, "beneficiaries_json", "") or "",
+            decedent_name=decedent,
+        )
         dropped = raw_count - len(kept)
         stats["dropped_heir_occupied"] += dropped
 
@@ -1423,6 +1526,13 @@ def expand_notices_with_gis(
             new_n.state = "NC"
             new_n.parcel_id = c.pid
             new_n.property_use_simple = simplify_use_code(c.use_code, c.use_description, c.county)
+            # Vacant-detection heuristic in _arcgis_to_candidate may flag a
+            # parcel as vacant via situs-prefix even when use_code maps to
+            # something else (e.g. Rowan defaults all parcels to "SFR").
+            # When the heuristic says vacant, that's stronger evidence than
+            # the default mapping — override.
+            if c.is_vacant_land and "VACANT" not in (new_n.property_use_simple or "").upper():
+                new_n.property_use_simple = "Vacant Land"
             new_n.is_jointly_owned = c.is_jointly_owned
             # Cross-reference parcel co-owners against the case's beneficiary
             # list. If a co-owner is also a court-recognized beneficiary, the
