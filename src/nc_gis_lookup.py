@@ -1112,8 +1112,153 @@ def _lookup_gaston(decedent_name: str, min_score: float = 0.7) -> list[PropertyC
     return _lookup_arcgis_county(decedent_name, "gaston", min_score)
 
 
+# Catawba uses its own PHP web service (Bitek IMS on top of GeoServer), NOT
+# standard Esri ArcGIS REST. The ArcGIS endpoint we previously queried was a
+# stale Q1 snapshot uploaded to ArcGIS Online — missing recent HEIRS entries
+# (e.g. Mauser Sarah K HEIRS, 9 parcels confirmed in 2026-06-03 audit). The
+# live owner-search endpoint is reverse-engineered from the public parcel
+# search at https://gis.catawbacountync.gov/parcel/_js/parcel_h.js (lines
+# 780-800). It uses LIKE 'PREFIX%' semantics and returns JSON.
+_CATAWBA_PHP_URL = "https://gis.catawbacountync.gov/_ws/v3/ws_ims_attribute_query.php"
+
+
+def _catawba_php_query(name_prefix: str) -> list[dict]:
+    """Live Catawba owner search. Returns list of dicts with fields
+    address, city, zip, pinc, owner, owner2, lrk, calcac.
+
+    Important: the `where` parameter has a TRAILING SPACE — the server
+    appends "'<PREFIX>%'" to it.
+    """
+    if not name_prefix:
+        return []
+    params = {
+        "table": "bitek_owner_all",
+        "fields": "distinct address,city,zip,pinc,owner,owner2,lrk,calcac",
+        "where": "where owner like ",
+        "parameters": name_prefix.upper(),
+        "orderby": "order by owner",
+    }
+    try:
+        r = requests.get(
+            _CATAWBA_PHP_URL, params=params, headers=_ARCGIS_HEADERS, timeout=30,
+        )
+    except requests.RequestException as e:
+        logger.warning("Catawba PHP: query failed: %s", e)
+        return []
+    if r.status_code != 200:
+        logger.warning("Catawba PHP: HTTP %d", r.status_code)
+        return []
+    try:
+        data = r.json()
+    except ValueError:
+        logger.warning("Catawba PHP: invalid JSON")
+        return []
+    if not isinstance(data, list):
+        return []
+    # The server returns a single "OWNER NOT FOUND" sentinel when nothing
+    # matches — filter it out.
+    out: list[dict] = []
+    for row in data:
+        if row.get("owner") == "" and row.get("pinc") == "000000000000":
+            continue
+        out.append(row)
+    return out
+
+
+def _catawba_php_to_candidate(
+    rec: dict, decedent_name: str,
+) -> PropertyCandidate | None:
+    """Convert one Catawba PHP attribute dict → PropertyCandidate."""
+    owner_parts = [
+        str(rec.get(f) or "").strip()
+        for f in ("owner", "owner2")
+    ]
+    owner_parts = [p for p in owner_parts if p]
+    owner_full = " | ".join(owner_parts)
+    if not owner_full:
+        return None
+
+    joint_parts = [p for p in re.split(r"\s*[|&]\s*", owner_full) if p.strip()]
+    is_jointly_owned = len(joint_parts) > 1
+
+    score = _name_match_score(decedent_name, owner_full.replace(" | ", " "))
+    if score == 0.0:
+        return None
+
+    pid = str(rec.get("pinc") or "").strip()
+    street = str(rec.get("address") or "").strip()
+    city = str(rec.get("city") or "").strip().title()
+    zipc = str(rec.get("zip") or "").strip()
+
+    # Catawba PHP endpoint exposes only the property address — no separate
+    # mailing address. Use property address as mailing fallback (matches the
+    # convention applied elsewhere when situs and mailing collapse).
+    situs = street
+    mailing_bits = [b for b in (street, city, "NC" if street or city else "", zipc) if b]
+    mailing = " ".join(mailing_bits).strip()
+
+    # Vacant detection: PHP returns empty `address` for parcels with no
+    # civic street number assigned (county convention for vacant lots).
+    # All 4 vacant Mauser HEIRS parcels in 2026-06-03 audit had address="".
+    is_vacant = not street
+    is_residential = bool(street)
+
+    return PropertyCandidate(
+        county="Catawba",
+        pid=pid,
+        owner_name=owner_full,
+        situs_address=situs,
+        mailing_address=mailing,
+        use_code="",
+        use_description="",
+        market_value=None,
+        year_built=None,
+        bedrooms=None,
+        bathrooms=None,
+        living_sqft=None,
+        lot_area=None,
+        sale_date=None,
+        sale_price=None,
+        owner_offsite=False,  # no separate mailing — can't compare
+        is_residential=is_residential,
+        is_vacant_land=is_vacant,
+        is_commercial=False,
+        is_jointly_owned=is_jointly_owned,
+        match_score=score,
+        raw=rec,
+        situs_city_override=city,
+        situs_zip_override=zipc,
+    )
+
+
 def _lookup_catawba(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
-    return _lookup_arcgis_county(decedent_name, "catawba", min_score)
+    """Catawba live PHP-endpoint lookup. See _catawba_php_query for the
+    endpoint details and why we don't use the ArcGIS path here."""
+    first, _middle, last = split_decedent_name(decedent_name)
+    if not last:
+        return []
+    rows = _catawba_php_query(last)
+    # The PHP endpoint returns one row per (parcel × historical owner)
+    # combination — a single parcel often shows up 4-6 times (Joel B, Joel B
+    # Trustee, Jonathan T, Robert Thomas Trust, Sarah K HEIRS, etc.). We
+    # must score EVERY row, then dedup by PID keeping the highest score per
+    # parcel — otherwise dedup-first would silently drop the Sarah K HEIRS
+    # row in favor of an alphabetically earlier non-decedent owner.
+    best_by_pid: dict[str, PropertyCandidate] = {}
+    for rec in rows:
+        c = _catawba_php_to_candidate(rec, decedent_name)
+        if not c or c.match_score < min_score:
+            continue
+        pid = c.pid or rec.get("pinc") or ""
+        existing = best_by_pid.get(pid)
+        if existing is None or c.match_score > existing.match_score:
+            best_by_pid[pid] = c
+    candidates = sorted(best_by_pid.values(), key=lambda c: -c.match_score)
+    logger.info(
+        "Catawba GIS (PHP): %r → %d raw rows → %d unique parcels matching (min_score=%.2f)",
+        decedent_name, len(rows), len(candidates), min_score,
+    )
+    return candidates
 
 
 def _lookup_iredell(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:

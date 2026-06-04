@@ -65,7 +65,8 @@ def evaluate_row(row: dict) -> list[str]:
     prop_zip = (row.get("Property Zip") or "").strip()
     parcel = (row.get("Parcel ID") or "").strip()
     prop_use = (row.get("Property use") or "").strip().upper()
-    val_str = (row.get("Property Value") or "").strip()
+    val_raw = row.get("Property Value") or ""
+    val_str = str(val_raw).strip()
 
     # 1. PR mailing equals property address (heir-occupied)
     if pr_mail and prop_addr and normalize_address(pr_mail) == normalize_address(prop_addr):
