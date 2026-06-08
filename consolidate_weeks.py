@@ -115,6 +115,11 @@ def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
     datasift CSV by adding backfilled Case No. values), so when both
     exist for the same week we prefer the latest backfilled file.
     """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from iso_week_archive import get_archived_weeks
+    archived = get_archived_weeks()
+
     by_week: dict[tuple[int, int], tuple[Path, int]] = {}
     # Priority 0 = datasift, 1 = ecourts_backfilled (higher wins)
     for pattern, priority in [
@@ -125,9 +130,11 @@ def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
             m = re.search(r"_week(\d+)", fp.name)
             if not m:
                 continue
+            wk = int(m.group(1))
+            if wk in archived:
+                continue  # Archived weeks are excluded from the workbook
             ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
             year = int(ym.group(1)) if ym else datetime.now().year
-            wk = int(m.group(1))
             key = (year, wk)
             existing = by_week.get(key)
             # Pick higher priority. Within same priority, newest filename wins

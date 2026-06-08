@@ -1257,7 +1257,17 @@ def main() -> None:
         print("No *_weekN_merged.csv files in output/. Run prepare_weekly_input.py first.")
         return
 
+    # Skip archived weeks (output/archive_week<N>_done/ exists)
+    sys.path.insert(0, str(Path(__file__).parent))
+    from iso_week_archive import get_archived_weeks
+    archived = get_archived_weeks()
+    if archived:
+        print(f"Archived ISO weeks (skipping): {sorted(archived)}")
+
     for wk in sorted(by_week):
+        if wk in archived:
+            print(f"\n=== Week {wk}: archived, skipping {by_week[wk].name} ===")
+            continue
         print(f"\n{'=' * 70}")
         print(f"=== Week {wk}: {by_week[wk].name} ===")
         print(f"{'=' * 70}")

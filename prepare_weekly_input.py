@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from reenrich_ftm_executors import write_csv  # noqa: E402
 
+from iso_week_archive import get_archived_weeks  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
 )
@@ -115,8 +117,16 @@ def main() -> None:
             added += 1
         logger.info("  %s -> week %d %d (%d rows)", fp.name, wk[1], wk[0], added)
 
+    archived = get_archived_weeks()
+    if archived:
+        logger.info("Archived ISO weeks (will skip): %s", sorted(archived))
+
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     for (year, week), keyed in sorted(by_week.items()):
+        if week in archived:
+            logger.info("  ISO week %d is archived, skipping (%d rows ignored)",
+                        week, len(keyed))
+            continue
         rows = list(keyed.values())
         out_path = Path("output") / f"nc_estates_ftm_{ts}_week{week}_merged.csv"
         write_csv(rows, out_path)
