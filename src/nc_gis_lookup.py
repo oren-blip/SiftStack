@@ -1216,7 +1216,7 @@ def _catawba_php_to_candidate(
         bedrooms=None,
         bathrooms=None,
         living_sqft=None,
-        lot_area=None,
+        lot_area=_safe_float(rec.get("calcac")),
         sale_date=None,
         sale_price=None,
         owner_offsite=False,  # no separate mailing — can't compare
@@ -1324,6 +1324,61 @@ def lookup_properties(
     if min_score <= 0.4:
         return list(candidates)
     return [c for c in candidates if c.match_score >= min_score]
+
+
+def _owner_has_suffix(owner_name: str, suffix: str) -> bool:
+    """True if the owner_name token list includes the suffix marker."""
+    if not suffix or not owner_name:
+        return False
+    tokens = re.sub(r"[^\w\s]", " ", owner_name.upper()).split()
+    return suffix in tokens
+
+
+def _use_tier(c: PropertyCandidate) -> int:
+    """Use-class rank for picker: RES > unknown > vacant > commercial."""
+    if c.is_commercial:
+        return 0
+    if c.is_residential and not c.is_vacant_land:
+        return 3
+    if c.is_vacant_land:
+        return 1
+    return 2  # unknown
+
+
+def pick_best_candidate(
+    candidates: list[PropertyCandidate],
+    decedent_name: str = "",
+) -> PropertyCandidate | None:
+    """Pick the best parcel for a decedent. Tiebreak order (descending):
+
+      1. Suffix match — if the decedent has SR/JR/II/III/IV/V, parcels whose
+         owner string explicitly carries that suffix marker win. Resolves the
+         Kinney case (decedent "Leonard Sr." → KINNEY LEONARD SR HEIRS wins
+         over KINNEY LEONARD HEIRS without suffix).
+      2. match_score (already filtered, but kept here for sort stability).
+      3. Use tier — residential > unknown > vacant > commercial. Resolves the
+         Keller case (3820 Mt Hope SFR wins over 0 Mt Hope vacant).
+      4. Market value — when both candidates have a value.
+      5. Lot area — when market_value is unset (most ArcGIS counties), the
+         bigger parcel wins. Resolves Mauser case (481-ac Rocky Ford wins
+         over 1.45-ac Hickory among the 5 addressed HEIRS parcels).
+
+    Returns None if candidates is empty.
+    """
+    if not candidates:
+        return None
+    suffix = _extract_suffix(decedent_name)
+
+    def sort_key(c: PropertyCandidate) -> tuple:
+        return (
+            _owner_has_suffix(c.owner_name, suffix),
+            c.match_score,
+            _use_tier(c),
+            float(c.market_value or 0),
+            float(c.lot_area or 0),
+        )
+
+    return max(candidates, key=sort_key)
 
 
 def filter_for_lead_quality(

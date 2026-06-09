@@ -41,6 +41,7 @@ from nc_gis_lookup import (  # noqa: E402
     _candidate_to_address_parts,
     filter_for_lead_quality,
     lookup_properties,
+    pick_best_candidate,
     simplify_use_code,
     split_decedent_name,
 )
@@ -170,9 +171,11 @@ def main() -> None:
             kept = filter_for_lead_quality(results)
             if not kept:
                 continue
-            # Pick the highest-value parcel — collapse_by_case will treat
-            # it as main and list extras in Notes if there are multiples
-            best = max(kept, key=lambda c: c.market_value or 0)
+            # Pick the best parcel (suffix > use_tier > value > acres) —
+            # collapse_by_case will treat it as main and list extras in Notes.
+            best = pick_best_candidate(kept, dec)
+            if not best:
+                continue
             found = best
             used_variation = v
             break

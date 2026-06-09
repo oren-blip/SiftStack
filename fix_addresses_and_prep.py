@@ -107,7 +107,7 @@ def research_blank_parcels(
     "Walker, Betty Louise" kept getting re-bound to the same Walker
     Family Trust parcel after the audit had explicitly rejected it.
     """
-    from nc_gis_lookup import filter_for_lead_quality
+    from nc_gis_lookup import filter_for_lead_quality, pick_best_candidate
     rejected = audit_rejected_pids or set()
     recovered = 0
     for r in rows:
@@ -131,7 +131,9 @@ def research_blank_parcels(
             kept = [c for c in kept if (county.lower(), c.pid or "") not in rejected]
             if not kept:
                 continue
-            best = max(kept, key=lambda c: c.market_value or 0)
+            best = pick_best_candidate(kept, dec)
+            if not best:
+                continue
             found = best
             used_variation = v
             break
@@ -207,6 +209,57 @@ def validate_existing_matches(
                     r[col] = ""
                 blanked += 1
                 rejected_pids.add((county.lower(), pid))
+                continue
+            # Re-pick: if a strictly-better candidate exists, swap to it.
+            # Catches the case where the original pick passes scoring but a
+            # better parcel exists (e.g. Kinney current = LEONARD HEIRS no
+            # suffix, better = LEONARD SR HEIRS with suffix; Keller current
+            # = 0 Mt Hope vacant, better = 3820 Mt Hope SFR).
+            from nc_gis_lookup import filter_for_lead_quality, pick_best_candidate
+            kept = filter_for_lead_quality(
+                [c for c in results if c.match_score >= min_score],
+                beneficiaries_json=r.get("Beneficiaries", "") or "",
+                decedent_name=dec,
+            )
+            best = pick_best_candidate(kept, dec)
+            if best is None or best.pid == pid:
+                continue
+            # Only swap if the rank really moved (don't churn on equal tuples)
+            from nc_gis_lookup import _owner_has_suffix, _use_tier, _extract_suffix
+            suffix = _extract_suffix(dec)
+            current_key = (
+                _owner_has_suffix(cand.owner_name, suffix),
+                cand.match_score,
+                _use_tier(cand),
+                float(cand.market_value or 0),
+                float(cand.lot_area or 0),
+            )
+            best_key = (
+                _owner_has_suffix(best.owner_name, suffix),
+                best.match_score,
+                _use_tier(best),
+                float(best.market_value or 0),
+                float(best.lot_area or 0),
+            )
+            if best_key <= current_key:
+                continue
+            print(f"  REPICK {county}/{dec}: {pid} -> {best.pid} "
+                  f"(was {cand.owner_name!r} use_tier={_use_tier(cand)}; "
+                  f"now {best.owner_name!r} use_tier={_use_tier(best)})")
+            street, city, zipc = _candidate_to_address_parts(best)
+            r["Parcel ID"] = best.pid or ""
+            r["Property Address"] = street
+            r["Property City"] = city
+            r["Property State"] = "NC"
+            r["Property Zip"] = zipc
+            if best.use_code:
+                new_use = simplify_use_code(best.use_code, best.use_description, best.county) or ""
+                if new_use:
+                    r["Property use"] = new_use
+            elif best.is_vacant_land:
+                r["Property use"] = "Vacant Land"
+            elif best.is_residential:
+                r["Property use"] = "SFR"
     return blanked, rejected_pids
 
 
