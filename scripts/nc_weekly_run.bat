@@ -1,5 +1,5 @@
 @echo off
-REM === NC probate weekly run — one-command end-to-end pipeline ===
+REM === NC probate weekly run -- one-command end-to-end pipeline ===
 REM
 REM Runs the full sequence:
 REM   1. Fresh NC scrape (last 7 days, --skip-obituary --no-skip-trace)
@@ -20,10 +20,10 @@ REM   scripts\nc_weekly_run.bat 2026-05-18   ^<- from a specific date
 
 cd /d "D:\SiftStack"
 
-REM Acquire pipeline lock — refuses if another pipeline (daily or weekly) is running.
+REM Acquire pipeline lock -- refuses if another pipeline (daily or weekly) is running.
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py acquire weekly
 if errorlevel 1 (
-    echo === Weekly run aborted %DATE% %TIME% — pipeline lock held === >> "logs\nc_weekly_run.log"
+    echo === Weekly run aborted %DATE% %TIME% -- pipeline lock held === >> "logs\nc_weekly_run.log"
     exit /b 1
 )
 

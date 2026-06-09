@@ -1,0 +1,19 @@
+* text=auto
+
+# Windows batch files MUST stay CRLF + ASCII, otherwise cmd.exe / PowerShell
+# invocations choke on REM lines with UTF-8 characters or LF endings.
+# Task Scheduler is more lenient, but manual / piped invocations break.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts stay LF
+*.sh text eol=lf
+
+# Python keeps platform-native line endings via core.autocrlf
+*.py text
+
+# CSVs and XLSX are data — leave alone
+*.csv -text
+*.xlsx -text
+*.xls -text
+*.pdf -text

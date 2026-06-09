@@ -1,11 +1,11 @@
 @echo off
-REM NC probate weekly scrape — manual or scheduled invocation.
+REM NC probate weekly scrape -- manual or scheduled invocation.
 REM
 REM Standard NC flags (different from TN):
 REM   --skip-obituary   obituary_enricher used to be hardcoded for TN; it is
 REM                     now state-aware. We keep --skip-obituary by default
 REM                     during the A/B rollout. To opt in for THIS run, set
-REM                     NC_OBITUARY=1 before invoking this script — it adds
+REM                     NC_OBITUARY=1 before invoking this script -- it adds
 REM                     --nc-obituary, which overrides --skip-obituary for
 REM                     NC notices and uses the Tier 2 Serper/Firecrawl path
 REM                     (no Knox Tax tier for NC). Example:

@@ -1,5 +1,5 @@
 @echo off
-REM === NC probate daily run — one-command end-to-end pipeline (2-day window) ===
+REM === NC probate daily run -- one-command end-to-end pipeline (2-day window) ===
 REM
 REM Same 6-step orchestration as nc_weekly_run.bat, but scrapes the last
 REM 2 days instead of 7. Intended for daily Task Scheduler invocation.
@@ -26,15 +26,15 @@ REM is Sat/Sun or any holiday in the NC General Court of Justice calendar
 REM (see scripts\is_workday.py for the list).
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\is_workday.py >> "logs\nc_daily_run.log" 2>&1
 if errorlevel 1 (
-    echo === Daily run skipped %DATE% %TIME% — non-workday === >> "logs\nc_daily_run.log"
+    echo === Daily run skipped %DATE% %TIME% -- non-workday === >> "logs\nc_daily_run.log"
     echo Skipping run: today is a weekend or NC court holiday.
     exit /b 0
 )
 
-REM Acquire pipeline lock — refuses if another pipeline (daily or weekly) is running.
+REM Acquire pipeline lock -- refuses if another pipeline (daily or weekly) is running.
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py acquire daily
 if errorlevel 1 (
-    echo === Daily run aborted %DATE% %TIME% — pipeline lock held === >> "logs\nc_daily_run.log"
+    echo === Daily run aborted %DATE% %TIME% -- pipeline lock held === >> "logs\nc_daily_run.log"
     exit /b 1
 )
 
