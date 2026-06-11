@@ -154,6 +154,86 @@ def research_blank_parcels(
     return recovered
 
 
+def collect_heir_transfer_candidates(rows: list[dict]) -> list[dict]:
+    """For each row whose Parcel ID is still blank after re-search, query the
+    county GIS for parcels whose NAME1/NAME2 ends in the decedent's surname
+    (married-name pattern). Returns a list of dicts:
+        {row: <source row>, candidates: [{pid, name1, name2, situs}, ...]}
+    Empty list if no candidates anywhere.
+
+    Only supports ArcGIS counties — Catawba PHP and Mecklenburg polaris3g
+    don't expose the same WHERE-clause API and would need separate paths.
+    """
+    from nc_gis_lookup import find_heir_transfer_candidates
+    out: list[dict] = []
+    for r in rows:
+        if (r.get("Parcel ID") or "").strip():
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = find_heir_transfer_candidates(dec, county)
+        except Exception as e:
+            print(f"  heir-transfer query failed for {county}/{dec}: {e}")
+            continue
+        if not cands:
+            continue
+        out.append({"row": r, "candidates": cands})
+    return out
+
+
+def write_heir_transfer_review(entries: list[dict], out_path: Path) -> None:
+    """Write a review-me XLSX flagging decedents with possible heir-transferred
+    parcels. One row per (decedent x candidate) so the user can sort/filter.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Heir Transfer Review"
+
+    headers = [
+        "Case No.", "County", "Deceased Owner", "Personal Representative",
+        "Beneficiaries",
+        "Candidate PIN", "Candidate NAME1", "Candidate NAME2", "Candidate Situs",
+    ]
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+    for c, name in enumerate(headers, start=1):
+        cell = ws.cell(1, c, name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 20
+
+    row_idx = 2
+    for entry in entries:
+        src = entry["row"]
+        cands = entry["candidates"]
+        for cand in cands:
+            ws.cell(row_idx, 1, src.get("Case No.", ""))
+            ws.cell(row_idx, 2, src.get("County", ""))
+            ws.cell(row_idx, 3, src.get("Deceased Owner", ""))
+            ws.cell(row_idx, 4, src.get("Personal Representative", ""))
+            ws.cell(row_idx, 5, (src.get("Beneficiaries") or "")[:300])
+            ws.cell(row_idx, 6, cand.get("pid", ""))
+            ws.cell(row_idx, 7, cand.get("name1", ""))
+            ws.cell(row_idx, 8, cand.get("name2", ""))
+            ws.cell(row_idx, 9, cand.get("situs", ""))
+            row_idx += 1
+
+    widths = {1: 18, 2: 12, 3: 28, 4: 22, 5: 40, 6: 16, 7: 28, 8: 28, 9: 32}
+    for c, w in widths.items():
+        ws.column_dimensions[get_column_letter(c)].width = w
+    ws.freeze_panes = "A2"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+
+
 def validate_existing_matches(
     rows: list[dict], min_score: float = 0.7,
 ) -> tuple[int, set[tuple[str, str]]]:
@@ -1234,6 +1314,16 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.5: re-search for correct parcel where audit blanked a wrong match")
     n_refound = research_blank_parcels(rows, audit_rejected_pids=audit_rejected_pids)
     print(f"  Re-found correct parcels: {n_refound}")
+
+    print("Step 0.6: scan blank-parcel rows for heir-transfer candidates (embedded surname)")
+    heir_transfer_rows = collect_heir_transfer_candidates(rows)
+    if heir_transfer_rows:
+        review_path = Path("output") / f"heir_transfer_review_{tag}_{ts}.xlsx"
+        write_heir_transfer_review(heir_transfer_rows, review_path)
+        print(f"  Wrote review-me: {review_path}  ({len(heir_transfer_rows)} decedents with "
+              f"{sum(len(r['candidates']) for r in heir_transfer_rows)} candidates)")
+    else:
+        print(f"  No heir-transfer candidates found.")
 
     print("Step 1: repair property addresses + re-classify suspect Commercial rows")
     n_repaired = repair_addresses(rows)

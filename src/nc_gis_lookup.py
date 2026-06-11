@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -1269,6 +1272,94 @@ def _lookup_lincoln(decedent_name: str, min_score: float = 0.7) -> list[Property
     return _lookup_arcgis_county(decedent_name, "lincoln", min_score)
 
 
+# ── Heir-transfer fallback ───────────────────────────────────────────
+# When a decedent's regular name search returns 0 high-score matches, the
+# property has often already transferred to heirs whose owner-of-record name
+# embeds the decedent's surname (e.g. "HOVIS SHARON SAIN" — Geraldine Sain's
+# married daughter). The regular query (LIKE 'SAIN%') won't find this because
+# the owner doesn't START with SAIN. The query below finds these cases by
+# matching the decedent's lastname as a non-prefix token in NAME1/NAME2.
+
+
+def find_heir_transfer_candidates(
+    decedent_name: str, county: str, *, max_per_field: int = 200,
+) -> list[dict]:
+    """Return raw parcel dicts where the decedent's lastname appears as the
+    LAST whitespace-token of NAME1 or NAME2 (married-name pattern).
+
+    This is intentionally narrower than the regular search — we only flag
+    the married-name pattern, which is the highest-precision signal of
+    "property transferred to a daughter/granddaughter who took her
+    husband's surname." Other patterns (lastname as middle token, lastname
+    elsewhere) generate too many false positives for surface-to-user.
+
+    Each returned dict has: pid, name1, name2, situs, county. Caller is
+    expected to write these to a review-me XLSX for manual audit.
+
+    Only supports ArcGIS counties (Cabarrus, Gaston, Iredell, Lincoln, Rowan).
+    Catawba (PHP) and Mecklenburg (polaris3g) return [].
+    """
+    _first, _middle, last = split_decedent_name(decedent_name)
+    if not last:
+        return []
+    county_key = county.lower()
+    # Catawba's ArcGIS endpoint is stale (we use PHP for regular lookups)
+    # and Mecklenburg uses polaris3g with a different API. Both bypass.
+    if county_key in {"catawba", "mecklenburg"}:
+        return []
+    cfg = _ARCGIS_CONFIG.get(county_key)
+    if not cfg:
+        return []
+    last_upper = last.upper()
+    results: list[dict] = []
+    seen_pids: set[str] = set()
+    for owner_field in cfg["owner_fields"]:
+        # Match "% <LASTNAME>" — last token is the decedent's surname.
+        # Single-token LIKE 'LASTNAME' is already covered by regular search.
+        where = f"UPPER({owner_field}) LIKE '% {last_upper}'"
+        offset = 0
+        while True:
+            try:
+                r = requests.get(cfg["url"] + "/query", params={
+                    "where": where, "outFields": "*", "returnGeometry": "false",
+                    "f": "json", "resultRecordCount": 1000, "resultOffset": offset,
+                }, headers=_ARCGIS_HEADERS, timeout=30)
+            except requests.RequestException as e:
+                logger.warning("heir-transfer: query failed at %s: %s", cfg["url"], e)
+                break
+            if r.status_code != 200:
+                break
+            try:
+                data = r.json()
+            except ValueError:
+                break
+            feats = data.get("features") or []
+            if not feats:
+                break
+            for f in feats:
+                a = f.get("attributes", {})
+                pid = str(a.get(cfg["parcel_field"]) or "")
+                if not pid or pid in seen_pids:
+                    continue
+                # Compose situs the same way the regular flow does
+                situs = _compose_address(a, cfg["situs_fields"])
+                results.append({
+                    "pid": pid,
+                    "name1": str(a.get(cfg["owner_fields"][0]) or "").strip(),
+                    "name2": str(a.get(cfg["owner_fields"][1]) or "").strip() if len(cfg["owner_fields"]) > 1 else "",
+                    "situs": situs,
+                    "matched_field": owner_field,
+                    "raw": a,
+                })
+                seen_pids.add(pid)
+                if len(seen_pids) >= max_per_field * len(cfg["owner_fields"]):
+                    break
+            if len(feats) < 1000:
+                break
+            offset += len(feats)
+    return results
+
+
 # ── Public entry ─────────────────────────────────────────────────────
 
 
@@ -1284,6 +1375,96 @@ _LOOKUP_BY_COUNTY = {
 }
 
 
+# ── Cross-run persistent cache ───────────────────────────────────────
+#
+# The in-memory _LOOKUP_CACHE (below) only lives for one Python process,
+# so a NEW process (e.g. the nightly daily-build run) re-hits the county
+# GIS for every decedent — including ones already looked up earlier in the
+# week. That makes Cabarrus (~1 min/call) the dominant cost when the same
+# in-progress week is rebuilt each day.
+#
+# This disk cache remembers SUCCESSFUL lookups across runs so repeat
+# decedents are served instantly. Not-yet-found decedents are deliberately
+# NOT persisted — they retry every run, which is what we want for cases
+# Odyssey/GIS indexes a day or two late. Bump _PERSIST_VERSION whenever a
+# county endpoint or the candidate schema changes (invalidates old entries).
+#
+# Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
+# To clear by hand, delete output/.nc_gis_cache.json.
+_PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
+_PERSIST_VERSION = 1
+_PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
+_PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
+_persist_store: dict[str, dict] | None = None  # None = not yet loaded
+
+
+def _persist_key(decedent_name: str, county: str) -> str:
+    return f"{county.strip().upper()}|{decedent_name.strip().upper()}"
+
+
+def _persist_load() -> dict[str, dict]:
+    """Load (once) the on-disk cache, pruning expired/foreign-version entries."""
+    global _persist_store
+    if _persist_store is not None:
+        return _persist_store
+    _persist_store = {}
+    if _PERSIST_DISABLED:
+        return _persist_store
+    try:
+        data = json.loads(_PERSIST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _persist_store
+    if not isinstance(data, dict) or data.get("_version") != _PERSIST_VERSION:
+        return _persist_store  # schema changed → start fresh
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return _persist_store
+    cutoff = datetime.now() - timedelta(days=_PERSIST_TTL_DAYS)
+    for k, v in entries.items():
+        try:
+            if datetime.fromisoformat(v.get("ts", "")) >= cutoff:
+                _persist_store[k] = v
+        except (ValueError, AttributeError):
+            continue
+    return _persist_store
+
+
+def _persist_get(decedent_name: str, county: str) -> list[PropertyCandidate] | None:
+    """Return cached candidates for a decedent, or None on miss/expired."""
+    if _PERSIST_DISABLED:
+        return None
+    entry = _persist_load().get(_persist_key(decedent_name, county))
+    if not entry:
+        return None
+    try:
+        if datetime.fromisoformat(entry.get("ts", "")) < datetime.now() - timedelta(days=_PERSIST_TTL_DAYS):
+            return None
+        return [PropertyCandidate(**c) for c in entry.get("candidates", [])]
+    except (ValueError, TypeError):
+        return None  # corrupt/old-schema entry → treat as miss, re-fetch
+
+
+def _persist_put(decedent_name: str, county: str, candidates: list[PropertyCandidate]) -> None:
+    """Persist a SUCCESSFUL lookup (write-through, crash-safe). Empties skipped."""
+    if _PERSIST_DISABLED or not candidates:
+        return
+    store = _persist_load()
+    store[_persist_key(decedent_name, county)] = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "candidates": [asdict(c) for c in candidates],
+    }
+    try:
+        _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PERSIST_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"_version": _PERSIST_VERSION, "entries": store}),
+            encoding="utf-8",
+        )
+        tmp.replace(_PERSIST_PATH)  # atomic on Windows + POSIX
+    except OSError as e:
+        logger.warning("nc_gis_lookup: could not write persistent cache: %s", e)
+
+
 def lookup_properties(
     decedent_name: str,
     county: str,
@@ -1295,14 +1476,15 @@ def lookup_properties(
     Returns [] when the county isn't yet supported (graceful no-op so the
     pipeline keeps moving while we roll out more counties).
 
-    Per-process cache: each unique (decedent, county) is fetched from the
-    county GIS ONCE per Python process (at the broadest min_score=0.4),
-    then in-memory filtered to the caller's requested threshold. This is
-    critical for the fix_addresses_and_prep pipeline which calls
-    lookup_properties multiple times per decedent across several steps
-    (validate / re-search / repair / re-collapse / populate-value).
-    Without the cache, Cabarrus's ~1-min-per-call GIS becomes the dominant
-    runtime bottleneck.
+    Two cache layers, both keyed on (decedent, county) and both holding the
+    broadest min_score=0.4 result so any caller's threshold is served by
+    in-memory filtering:
+      1. _LOOKUP_CACHE — per-process; collapses the many calls the
+         fix_addresses_and_prep pipeline makes per decedent across its steps.
+      2. _persist_* (output/.nc_gis_cache.json) — across processes; so the
+         nightly daily-build doesn't re-hit the slow county GIS (esp.
+         Cabarrus ~1 min/call) for decedents already resolved earlier in the
+         week. Only successful lookups are persisted; misses retry each run.
     """
     if not decedent_name or not county:
         return []
@@ -1313,13 +1495,16 @@ def lookup_properties(
     cache_key = (decedent_name.strip().upper(), county.strip().upper())
     candidates = _LOOKUP_CACHE.get(cache_key)
     if candidates is None:
-        try:
-            # Fetch at the broadest threshold so the cached result can serve
-            # any caller's min_score by in-memory filtering.
-            candidates = fn(decedent_name, min_score=0.4)
-        except Exception:
-            logger.exception("nc_gis_lookup: %s search for %r failed", county, decedent_name)
-            candidates = []
+        candidates = _persist_get(decedent_name, county)
+        if candidates is None:
+            try:
+                # Fetch at the broadest threshold so the cached result can serve
+                # any caller's min_score by in-memory filtering.
+                candidates = fn(decedent_name, min_score=0.4)
+            except Exception:
+                logger.exception("nc_gis_lookup: %s search for %r failed", county, decedent_name)
+                candidates = []
+            _persist_put(decedent_name, county, candidates)
         _LOOKUP_CACHE[cache_key] = candidates
     if min_score <= 0.4:
         return list(candidates)
