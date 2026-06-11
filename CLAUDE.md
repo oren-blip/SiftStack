@@ -217,6 +217,13 @@ scripts\nc_weekly_run.bat 2026-05-18       # from a specific date
 ```
 Steps it runs in sequence: scrape → merge by ISO week → manual archive index refresh → polish pipeline → eCourts name-search backfill → consolidate workbook. All output appends to `logs/nc_weekly_run.log`. Final workbook: `output/FTM_YYYY_NC_Estates_throughWeekN.xlsx`.
 
+**Scheduling model — daily workbook (build 1.0.33+).** One Windows Task Scheduler job:
+- **`SiftStack NC Daily Build`** → `scripts/nc_daily_run.bat`, daily 6 PM. Full pipeline: scrape last 2 days → merge by ISO week → archive index refresh → polish → eCourts backfill → consolidate workbook. Skips weekends + NC court holidays (`scripts/is_workday.py`) and takes the pipeline lock. Logs to `logs/nc_daily_run.log`.
+- The current (non-archived) week is re-polished each night until it's archived, so the workbook is fresh every morning. `scripts/nc_weekly_run.bat` remains as the manual full-week (7-day) catch-up build.
+- `scripts/nc_daily_scrape.bat` exists as an optional scrape-ONLY helper (accumulate raw cases without rebuilding) but is **not scheduled** — the daily build covers the normal case.
+
+**Persistent GIS cache** (build 1.0.33+) — because the daily build re-polishes the same in-progress week each night, `nc_gis_lookup.lookup_properties` now backs its per-process cache with a cross-run disk cache (`output/.nc_gis_cache.json`). Successful `(decedent, county)` lookups are remembered for 14 days so the slow county GIS (esp. Cabarrus ~1 min/call) isn't re-hit for decedents already resolved earlier in the week. Misses are NOT cached (they retry each run for late-indexed filings). Env knobs: `NC_GIS_CACHE_DISABLE=1` to bypass, `NC_GIS_CACHE_TTL_DAYS=N` to change lifetime; delete the JSON file to clear. Bump `_PERSIST_VERSION` in `nc_gis_lookup.py` when a county endpoint or the candidate schema changes (auto-invalidates old entries).
+
 **Standard NC weekly scrape command** (`scripts/nc_weekly_scrape.bat`):
 ```
 python src/main.py nc-daily \
@@ -261,7 +268,7 @@ python src/main.py nc-daily \
 
 **Per-session GIS cache** — `nc_gis_lookup.lookup_properties` caches by `(decedent, county)` so each unique decedent only hits the county GIS once per pipeline run. Critical for Cabarrus (~1 min/call API).
 
-**Daily 8am auto-rerun** (`scripts/daily_reenrich.bat` via Windows Task Scheduler) — POLISHES the latest weekly FTM CSV (runs `reenrich_ftm_executors.py` + `recover_parcels.py`). Does NOT scrape new data. To pull a new week, manually invoke `scripts/nc_weekly_scrape.bat`.
+**Optional polish helper** (`scripts/daily_reenrich.bat`) — POLISHES the latest weekly FTM CSV (runs `reenrich_ftm_executors.py` + `recover_parcels.py` to fill blank executors/parcels from the eCourts Parties API + county GIS). Does NOT scrape. Not currently scheduled — run by hand if a workbook has stubborn blanks; the weekly run already covers the normal case. (Scheduled automation is now the daily-scrape / weekly-organize split above.)
 
 **FTM-format output** (`src/nc_ftm_writer.py`):
 - 30 columns including Beneficiaries (from eCourts Parties API), Property Value, DM columns (DM Name / Relationship / Phone / Email / DM 2/3)
