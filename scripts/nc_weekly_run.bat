@@ -48,6 +48,9 @@ echo [5/6] eCourts name-search backfill for remaining blank Case No....
 
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_weekly_run.log" 2>&1
+echo [7/7] Daily report (file + email)...
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\daily_report.py >> "logs\nc_daily_run.log" 2>&1
+
 
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py release >> "logs\nc_weekly_run.log" 2>&1
 

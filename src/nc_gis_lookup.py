@@ -1307,6 +1307,14 @@ def find_heir_transfer_candidates(
     # and Mecklenburg uses polaris3g with a different API. Both bypass.
     if county_key in {"catawba", "mecklenburg"}:
         return []
+    # Skip non-person decedents — trust / IN THE MATTER / corporate names
+    # blow up the result set (e.g. "TRUST" as a surname token returns
+    # thousands of irrelevant parcels) and there's no human to match against.
+    upper = decedent_name.upper()
+    if last.upper() in {"TRUST", "ESTATE", "LLC", "INC", "CORP", "FUND", "BENEFIT"}:
+        return []
+    if any(marker in upper for marker in ("IN THE MATTER", "TRUSTEE", " TRUST ", "RETIREMENT", "BENEFIT TRUST", "F/B/O")):
+        return []
     cfg = _ARCGIS_CONFIG.get(county_key)
     if not cfg:
         return []
