@@ -517,6 +517,60 @@ def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], 
 _DROP_CASE_STATUSES_POLISH = {"DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED"}
 
 
+_ENTITY_DECEDENT_PATTERNS = (
+    # Whole-word matches in the Deceased Owner string. We're looking for
+    # trust / corporate-structure markers that indicate the "decedent"
+    # is actually an entity, not a person — so there's no probate lead
+    # and the existing matcher pipeline would just chase noise (see the
+    # 220-candidate Starnes Trust example in the 2026-06-11 audit).
+    "TRUST",
+    "TRUSTEE",
+    "LLC",
+    "INC",
+    "CORP",
+    "FBO",
+    "F/B/O",
+    "RETIREMENT",
+    "BENEFIT TRUST",
+    "FAMILY TRUST",
+    "REVOCABLE TRUST",
+    "IRREVOCABLE TRUST",
+)
+
+
+def _is_entity_decedent(name: str) -> bool:
+    """True when Deceased Owner looks like a trust / corporate entity
+    rather than a person. Conservative — we'd rather keep a quirky
+    person-name than chase a trust ghost."""
+    if not name:
+        return False
+    upper = name.upper()
+    # Whole-word check for the short tokens (TRUST/LLC/etc); substring is
+    # fine for multi-word phrases (F/B/O, BENEFIT TRUST).
+    tokens = set(re.findall(r"[A-Z]+", upper))
+    short_markers = {"TRUST", "TRUSTEE", "LLC", "INC", "CORP", "FBO", "RETIREMENT"}
+    if tokens & short_markers:
+        return True
+    return any(pat in upper for pat in ("F/B/O", "BENEFIT TRUST", "FAMILY TRUST",
+                                       "REVOCABLE TRUST", "IRREVOCABLE TRUST"))
+
+
+def drop_entity_decedents(rows: list[dict]) -> tuple[list[dict], int, list[str]]:
+    """Drop rows whose Deceased Owner is a trust or corporate entity rather
+    than a person. Returns (kept, dropped_count, sample_names) — caller
+    logs the first few dropped names so user can spot a false positive.
+    """
+    kept: list[dict] = []
+    dropped_names: list[str] = []
+    for r in rows:
+        dec = (r.get("Deceased Owner") or "").strip()
+        if _is_entity_decedent(dec):
+            dropped_names.append(dec)
+            continue
+        kept.append(r)
+    return kept, len(dropped_names), dropped_names
+
+
 def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]:
     """Drop rows whose Case Status is finished (Disposed/Closed/etc).
 
@@ -1297,6 +1351,14 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_non_pending, status_histo = drop_non_pending(rows)
     histo_pretty = ", ".join(f"{k}={v}" for k, v in sorted(status_histo.items(), key=lambda x: -x[1]))
     print(f"  Dropped non-Pending: {n_non_pending}  Remaining: {len(rows)}  (status seen: {histo_pretty})")
+
+    print("Step -0.85: drop trust / corporate-entity decedents (no probate lead)")
+    rows, n_entity, entity_samples = drop_entity_decedents(rows)
+    print(f"  Dropped entity decedents: {n_entity}  Remaining: {len(rows)}")
+    for sample in entity_samples[:5]:
+        print(f"    - {sample[:90]}")
+    if len(entity_samples) > 5:
+        print(f"    ... and {len(entity_samples) - 5} more")
 
     print("Step -0.8: drop archive duplicates (already in prior-week manual pipeline)")
     rows, n_dropped_archive = drop_archive_duplicates(rows)
