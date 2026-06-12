@@ -293,7 +293,57 @@ def render_report(
 # ── Email ────────────────────────────────────────────────────────────
 
 
-def send_email(subject: str, body: str, attachments: list[Path] | None = None) -> tuple[bool, str]:
+def _send_email_resend(
+    subject: str, body: str, attachments: list[Path] | None = None,
+) -> tuple[bool, str]:
+    """Send via Resend HTTP API. Used when RESEND_API_KEY is in .env."""
+    import base64
+    import requests
+
+    api_key = os.environ["RESEND_API_KEY"]
+    sender = os.environ.get("REPORT_FROM", "reports@remedihomesolutions.com")
+    recipients_raw = os.environ.get("REPORT_TO", "")
+    recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+    if not recipients:
+        return False, "REPORT_TO not set in .env"
+
+    payload: dict = {
+        "from": sender,
+        "to": recipients,
+        "subject": subject,
+        "text": body,
+    }
+
+    if attachments:
+        attached = []
+        for att in attachments:
+            if not att.exists():
+                continue
+            attached.append({
+                "filename": att.name,
+                "content": base64.b64encode(att.read_bytes()).decode("ascii"),
+            })
+        if attached:
+            payload["attachments"] = attached
+
+    try:
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        return False, f"Resend HTTP error: {type(e).__name__}: {e}"
+    if r.status_code >= 300:
+        return False, f"Resend rejected (HTTP {r.status_code}): {r.text[:300]}"
+    return True, f"Sent via Resend to {', '.join(recipients)} (id={r.json().get('id', '?')})"
+
+
+def _send_email_smtp(
+    subject: str, body: str, attachments: list[Path] | None = None,
+) -> tuple[bool, str]:
+    """Fallback: send via Gmail/Workspace SMTP using app password."""
     smtp_user = os.environ.get("SMTP_USER")
     smtp_pass = os.environ.get("SMTP_PASS")
     report_to = os.environ.get("REPORT_TO") or smtp_user
@@ -301,7 +351,7 @@ def send_email(subject: str, body: str, attachments: list[Path] | None = None) -
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
 
     if not smtp_user or not smtp_pass:
-        return False, "SMTP_USER or SMTP_PASS not set in .env — skipping email."
+        return False, "Neither RESEND_API_KEY nor SMTP_USER/SMTP_PASS set in .env — skipping email."
 
     msg = EmailMessage()
     msg["From"] = smtp_user
@@ -328,7 +378,22 @@ def send_email(subject: str, body: str, attachments: list[Path] | None = None) -
         return False, f"Gmail rejected the app password: {e}. Re-generate at https://myaccount.google.com/apppasswords"
     except Exception as e:
         return False, f"Email send failed: {type(e).__name__}: {e}"
-    return True, f"Sent to {report_to}"
+    return True, f"Sent via SMTP to {report_to}"
+
+
+def send_email(subject: str, body: str, attachments: list[Path] | None = None) -> tuple[bool, str]:
+    """Send via Resend if RESEND_API_KEY is set, else fall back to SMTP."""
+    if os.environ.get("RESEND_API_KEY"):
+        return _send_email_resend(subject, body, attachments=attachments)
+    return _send_email_smtp(subject, body, attachments=attachments)
+
+
+def _count_new_cases(today_rows: list[dict], yesterday_rows: list[dict]) -> int:
+    """Cases in today's polished CSV that weren't in yesterday's."""
+    def key(r):
+        return ((r.get("County") or "").strip(), (r.get("Case No.") or "").strip().upper())
+    yesterday = {key(r) for r in yesterday_rows}
+    return sum(1 for r in today_rows if key(r) not in yesterday)
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -384,7 +449,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.attach_workbook:
         attachments.append(wb_path)
 
-    subject = f"NC Probate Daily — Week {week_n} — {len([r for r in today_rows if (r.get('County'),(r.get('Case No.') or '').upper()) not in {((r2.get('County') or ''),(r2.get('Case No.') or '').upper()) for r2 in yesterday_rows}])} new"
+    new_count = _count_new_cases(today_rows, yesterday_rows)
+    subject = f"NC Probate Daily — Week {week_n} — {new_count} new"
     ok, msg = send_email(subject, report, attachments=attachments)
     print(f"\nEmail: {msg}")
     return 0 if ok else 0  # File was written; email is best-effort
