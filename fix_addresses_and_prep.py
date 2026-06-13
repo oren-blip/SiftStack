@@ -1017,6 +1017,29 @@ def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
     return filled
 
 
+_STREET_SUFFIX_NORMALIZE = {
+    # Map long form -> short form so "Drive" and "Dr" compare equal.
+    # (Court records use Drive/Avenue/Street/etc.; county GIS often
+    # abbreviates. Without this map, heir-occupancy comparison missed
+    # cases like Young 26E002125-590: mailing="8110 Gera Emma Drive"
+    # vs property="8110 Gera Emma Dr".)
+    "drive": "dr",
+    "avenue": "ave",
+    "street": "st",
+    "road": "rd",
+    "boulevard": "blvd",
+    "court": "ct",
+    "place": "pl",
+    "lane": "ln",
+    "circle": "cir",
+    "highway": "hwy",
+    "parkway": "pkwy",
+    "terrace": "ter",
+    "trail": "trl",
+    "way": "wy",
+}
+
+
 def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows where the executor's mailing address matches the property
     address — meaning the executor LIVES at the property. They almost
@@ -1025,8 +1048,16 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     Only applies to court-named-executor rows (NOT 'Heirs of ...' rows
     where we deliberately set mailing := property).
     """
-    def norm_addr(s):
-        return ''.join(c.lower() for c in (s or '') if c.isalnum())
+    def norm_addr(s: str | None) -> str:
+        # Lowercase, normalize Drive/Dr / Avenue/Ave / etc., then strip to
+        # alphanumeric for the equality check. The token rewrite has to
+        # happen BEFORE the alphanumeric strip — otherwise "drive" and "dr"
+        # both collapse to "dr" the wrong way around when only one side has
+        # the full form.
+        tokens = (s or "").lower().split()
+        norm_tokens = [_STREET_SUFFIX_NORMALIZE.get(t.rstrip("."), t.rstrip(".")) for t in tokens]
+        joined = " ".join(norm_tokens)
+        return ''.join(c for c in joined if c.isalnum())
     kept = []
     dropped = 0
     for r in rows:
