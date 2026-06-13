@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from playwright.async_api import (
@@ -579,33 +579,28 @@ _DROP_CASE_STATUSES = {"DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED"}
 _KEEP_CASE_STATUSES = {"PENDING", "ACTIVE", "OPEN", "REOPENED"}
 _KNOWN_CASE_STATUSES = _DROP_CASE_STATUSES | _KEEP_CASE_STATUSES
 
+# Recent-Disposed carve-out window (days). Small Estate Affidavits get
+# Filed and Disposed the same day — they don't go through full probate.
+# But the heir who filed the affidavit IS the new legal owner of the
+# property, so it's a real lead. Heuristic: any Disposed case with a
+# filing date within this many days is almost certainly a Small Estate
+# Affidavit (regular probate Disposes take months). Outside the window,
+# Disposed means it's been finalized and skip it as before.
+SMALL_ESTATE_RECENT_DAYS = 14
+
 
 def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | None:
     """Convert one raw grid row dict into a NoticeData, or None if not a real result row.
 
-    Filters: only "Pending" / active cases are returned. Disposed and Closed
-    cases are skipped — per user rule, only active probate matters are
-    targets ("Disposed" means the estate is finalized; there's no mail
-    opportunity left).
+    Filters: only Pending / active cases pass through, EXCEPT Disposed
+    cases filed within SMALL_ESTATE_RECENT_DAYS — those are typically
+    Small Estate Affidavits where the heir takes immediate legal
+    ownership of the property, which is a high-quality lead. Polish-
+    side filters honor the same carve-out (see drop_non_pending).
     """
     cells = row.get("cells", [])
     if not cells:
         return None
-
-    # Skip rows whose status column says the case is finished, AND capture
-    # the live status string for survivors. The status column is unlabeled
-    # in our raw cells, so scan all cells for an exact match against the
-    # known set. People-name cells will not match (they never equal
-    # "Disposed" / "Closed" / "Pending" verbatim).
-    detected_status = ""
-    for c in cells:
-        cu = c.strip().upper()
-        if cu in _KNOWN_CASE_STATUSES:
-            detected_status = c.strip()
-            if cu in _DROP_CASE_STATUSES:
-                logger.debug("eCourts: dropping row with status=%r", c.strip())
-                return None
-            break  # captured a keep-status, stop scanning
 
     case_no_re = re.compile(r"\d{2}[A-Z]{1,3}\d{3,6}-?\d{0,3}")
     # Find the cell that contains the case number (not always cells[0]
@@ -629,6 +624,36 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
         if m:
             filing_date = m.group(1)
             break
+
+    # Capture case status. Apply the Small-Estate carve-out: a Disposed
+    # row whose filing date is within SMALL_ESTATE_RECENT_DAYS is kept
+    # (it's the Small Estate Affidavit pattern — Filed and Disposed the
+    # same day with the heir as the new legal owner).
+    detected_status = ""
+    for c in cells:
+        cu = c.strip().upper()
+        if cu in _KNOWN_CASE_STATUSES:
+            detected_status = c.strip()
+            if cu in _DROP_CASE_STATUSES:
+                recent = False
+                if filing_date:
+                    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+                        try:
+                            d = datetime.strptime(filing_date, fmt).date()
+                            age = (date.today() - d).days
+                            if 0 <= age <= SMALL_ESTATE_RECENT_DAYS:
+                                recent = True
+                            break
+                        except ValueError:
+                            pass
+                if not recent:
+                    logger.debug("eCourts: dropping row with status=%r filed=%r", c.strip(), filing_date)
+                    return None
+                logger.info(
+                    "eCourts: KEEPING Disposed-recent (Small Estate candidate): %s filed=%s",
+                    case_no, filing_date,
+                )
+            break  # captured a status, stop scanning
 
     primary_name = style
     for prefix in [
@@ -941,7 +966,11 @@ async def scrape_ecourts(
                     logger.info("eCourts: search criteria=%r", criteria)
                     await _set_search_criteria(page, criteria)
                     await _set_case_type(page, case_type_value)
-                    await _set_case_status(page, "Pending")
+                    # NOTE: deliberately NOT setting Case Status to "Pending"
+                    # anymore. Small Estate Affidavits Dispose the same day
+                    # they're filed; pre-filtering by Pending hides them.
+                    # _row_to_notice does the carve-out client-side instead
+                    # (keep Pending + Disposed-within-SMALL_ESTATE_RECENT_DAYS).
                     await _set_date_range(page, mdy_start, mdy_end)
                     await _select_only_county(page, county)
                     if not await _submit_search(page):

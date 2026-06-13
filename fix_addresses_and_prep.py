@@ -493,6 +493,67 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
     return recovered
 
 
+def address_lookup_for_small_estate_disposed(rows: list[dict]) -> int:
+    """For Small Estate Disposed-recent rows with blank Parcel ID, look up
+    the row's Mailing Address (populated from the Interested Person on
+    the OData Parties response) in county GIS and accept the first hit.
+
+    No surname-on-owner check (unlike address_fallback_from_beneficiaries)
+    because Small Estate Affidavits often transfer title to the heir
+    immediately — the deed is in their name, not the decedent's. The
+    Disposed-recent + Small-Estate gate is the signal that this row is
+    a Small Estate Affidavit lead.
+    """
+    from nc_gis_lookup import (
+        lookup_by_address, _ARCGIS_CONFIG, _compose_address, simplify_use_code,
+    )
+    recovered = 0
+    for r in rows:
+        if (r.get("Parcel ID") or "").strip():
+            continue
+        if not _is_small_estate_disposed_recent(r):
+            continue
+        mailing = (r.get("Mailing Address") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not mailing or not county:
+            continue
+        cfg = _ARCGIS_CONFIG.get(county.lower())
+        if not cfg:
+            continue
+        try:
+            hits = lookup_by_address(mailing, county)
+        except Exception:
+            continue
+        if not hits:
+            continue
+        attrs = hits[0]
+        pid = str(attrs.get(cfg.get("parcel_field") or "PIN") or "")
+        if not pid:
+            continue
+        situs = _compose_address(attrs, cfg.get("situs_fields") or [])
+        r["Parcel ID"] = pid
+        if situs:
+            r["Property Address"] = situs
+        # Use code
+        uc = (cfg.get("use_field") or "")
+        ud = (cfg.get("use_desc_field") or "")
+        use = simplify_use_code(
+            str(attrs.get(uc) or "") if uc else "",
+            str(attrs.get(ud) or "") if ud else "",
+            county.lower(),
+        )
+        if use:
+            r["Property use"] = use
+        existing_notes = (r.get("Notes") or "").strip()
+        note_tag = f"[SMALL-ESTATE matched {pid} via Interested Person address]"
+        r["Notes"] = (existing_notes + ("\n" if existing_notes else "") + note_tag).strip()
+        tag_reason(r, "small-estate-address")
+        print(f"  SMALL-ESTATE {county}/{r.get('Deceased Owner','')}: matched {pid} at {situs!r} "
+              f"via mailing {mailing!r}")
+        recovered += 1
+    return recovered
+
+
 def collect_heir_transfer_candidates(rows: list[dict]) -> list[dict]:
     """For each row whose Parcel ID is still blank after re-search, query the
     county GIS for parcels whose NAME1/NAME2 ends in the decedent's surname
@@ -916,9 +977,13 @@ def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]
     """Drop rows whose Case Status is finished (Disposed/Closed/etc).
 
     Blank Case Status passes through — pre-Case-Status-column raws don't
-    carry the field and we shouldn't drop those wholesale. Returns
-    (kept_rows, dropped_count, status_histogram) so the caller can log
-    what statuses were seen.
+    carry the field and we shouldn't drop those wholesale. Small Estate
+    Affidavit carve-out: Disposed cases filed within
+    SMALL_ESTATE_RECENT_DAYS pass through (Disposed-same-day-as-filed
+    typically means the heir got immediate legal ownership via affidavit
+    — a real lead, NOT a finalized estate).
+
+    Returns (kept_rows, dropped_count, status_histogram).
     """
     histo: dict[str, int] = {}
     kept: list[dict] = []
@@ -927,10 +992,47 @@ def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]
         status = (r.get("Case Status") or "").strip()
         histo[status or "(blank)"] = histo.get(status or "(blank)", 0) + 1
         if status.upper() in _DROP_CASE_STATUSES_POLISH:
+            if _is_small_estate_disposed_recent(r):
+                tag_reason(r, "small-estate-disposed-recent")
+                kept.append(r)
+                continue
             dropped += 1
             continue
         kept.append(r)
     return kept, dropped, histo
+
+
+# Polish-side mirror of ecourts_scraper.SMALL_ESTATE_RECENT_DAYS — kept
+# in sync so both layers honor the same carve-out window.
+SMALL_ESTATE_RECENT_DAYS = 14
+
+
+def _is_small_estate_disposed_recent(r: dict) -> bool:
+    """True when the row is a Disposed case with a recent File Date —
+    the Small Estate Affidavit pattern (Filed and Disposed same day).
+    Same heuristic as ecourts_scraper._row_to_notice but applied to
+    polish-stage dict rows (File Date may be 'M/D/YYYY' or 'YYYY-MM-DD').
+    Requires Case Status to actually be Disposed (or a synonym) —
+    otherwise Pending rows would spuriously bypass downstream filters
+    that this helper gates.
+    """
+    status = (r.get("Case Status") or "").strip().upper()
+    if not any(s in status for s in ("DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED")):
+        return False
+    file_date = (r.get("File Date") or "").strip()
+    if not file_date:
+        return False
+    parsed = None
+    for fmt in ("%m/%d/%Y", "%-m/%-d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+        try:
+            parsed = datetime.strptime(file_date, fmt).date()
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return False
+    age = (datetime.now().date() - parsed).days
+    return 0 <= age <= SMALL_ESTATE_RECENT_DAYS
 
 
 MANUAL_INDEX_PATH = Path("output") / ".manual_archive_index.json"
@@ -1308,7 +1410,10 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     certainly inherit and stay (heir-occupied — bad probate lead).
 
     Only applies to court-named-executor rows (NOT 'Heirs of ...' rows
-    where we deliberately set mailing := property).
+    where we deliberately set mailing := property). ALSO skipped for
+    Small Estate Affidavit cases (Disposed-recent) — there the heir
+    living at the property IS the lead by design (they just claimed
+    legal ownership via affidavit and are the mail target).
     """
     def norm_addr(s: str | None) -> str:
         # Lowercase, normalize Drive/Dr / Avenue/Ave / etc., then strip to
@@ -1324,6 +1429,10 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     dropped = 0
     for r in rows:
         if r.get("First Name") == "Heirs":
+            kept.append(r)
+            continue
+        if _is_small_estate_disposed_recent(r):
+            # The heir IS the target; mailing==property is expected.
             kept.append(r)
             continue
         prop = norm_addr(r.get("Property Address"))
@@ -1775,6 +1884,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.65: address-fallback lookup using Beneficiaries column")
     n_addr_recovered = address_fallback_from_beneficiaries(rows)
     print(f"  Recovered via beneficiary-address GIS lookup: {n_addr_recovered}")
+
+    print("Step 0.66: Small Estate Disposed-recent — match parcel via Interested Person mailing")
+    n_se_recovered = address_lookup_for_small_estate_disposed(rows)
+    print(f"  Small Estate parcels recovered via Interested-Person address: {n_se_recovered}")
 
     print("Step 0.6: scan blank-parcel rows for heir-transfer candidates (embedded surname)")
     heir_transfer_rows = collect_heir_transfer_candidates(rows)
