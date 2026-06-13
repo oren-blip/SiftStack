@@ -154,6 +154,87 @@ def research_blank_parcels(
     return recovered
 
 
+def _candidate_to_address_parts(c) -> tuple[str, str, str]:
+    """Extract (street, city, zip) from a PropertyCandidate for Notes display."""
+    street = c.situs_address or ""
+    city = c.situs_city_override or ""
+    zipc = c.situs_zip_override or ""
+    return street, city, zipc
+
+
+def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) -> int:
+    """For each row with a Parcel ID, check if there are OTHER high-score
+    GIS candidates for the same decedent that aren't already mentioned in
+    Notes. Add them as 'PLUS N PARCELS' so the user sees the full estate.
+
+    The scrape's collapse_by_case (nc_ftm_writer) already does this at scrape
+    time, but only when the scrape's GIS lookup returned multiple candidates.
+    If the scrape only returned one (or the polish's matcher fix in
+    commit 331adda found extras), siblings get lost. This step is the
+    polish-time backstop.
+
+    Returns the number of rows where siblings were added.
+    """
+    from nc_gis_lookup import lookup_properties, filter_for_lead_quality
+    updated = 0
+    for r in rows:
+        current_pid = (r.get("Parcel ID") or "").strip()
+        if not current_pid:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=min_score)
+        except Exception:
+            continue
+        if len(cands) <= 1:
+            continue
+        kept = filter_for_lead_quality(
+            cands,
+            beneficiaries_json=r.get("Beneficiaries", "") or "",
+            decedent_name=dec,
+        )
+        siblings = [c for c in kept if (c.pid or "") and c.pid != current_pid]
+        if not siblings:
+            continue
+        existing_notes = (r.get("Notes") or "").strip()
+        # Skip if any sibling PID is already mentioned in Notes
+        siblings = [c for c in siblings if c.pid not in existing_notes]
+        if not siblings:
+            continue
+        # Build new sibling lines
+        lines: list[str] = []
+        if not existing_notes or "PLUS " not in existing_notes.upper() or "PARCEL" not in existing_notes.upper():
+            lines.append(f"PLUS {len(siblings)} PARCEL{'S' if len(siblings) > 1 else ''}")
+        for s in siblings:
+            street, city, zipc = _candidate_to_address_parts(s)
+            addr_bits = [b for b in (street, city, zipc) if b]
+            addr = " ".join(addr_bits).strip()
+            from nc_gis_lookup import simplify_use_code
+            use = simplify_use_code(s.use_code, s.use_description, s.county) or ""
+            if not use:
+                if s.is_vacant_land:
+                    use = "Vacant Land"
+                elif s.is_residential:
+                    use = "SFR"
+            bits = [s.pid or "?"]
+            if addr:
+                bits.append(addr)
+            if use:
+                bits.append(f"[{use}]")
+            lines.append(" | ".join(bits))
+        new_notes = existing_notes
+        if new_notes and lines:
+            new_notes = new_notes + "\n" + "\n".join(lines)
+        else:
+            new_notes = "\n".join(lines)
+        r["Notes"] = new_notes
+        updated += 1
+    return updated
+
+
 def collect_heir_transfer_candidates(rows: list[dict]) -> list[dict]:
     """For each row whose Parcel ID is still blank after re-search, query the
     county GIS for parcels whose NAME1/NAME2 ends in the decedent's surname
@@ -1386,6 +1467,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
               f"{sum(len(r['candidates']) for r in heir_transfer_rows)} candidates)")
     else:
         print(f"  No heir-transfer candidates found.")
+
+    print("Step 0.7: backfill sibling parcels into Notes (multi-parcel estates)")
+    n_siblings = backfill_sibling_parcels_to_notes(rows)
+    print(f"  Rows updated with sibling-parcel notes: {n_siblings}")
 
     print("Step 1: repair property addresses + re-classify suspect Commercial rows")
     n_repaired = repair_addresses(rows)

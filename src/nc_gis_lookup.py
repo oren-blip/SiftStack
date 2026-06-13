@@ -1193,18 +1193,32 @@ def _catawba_php_to_candidate(
     city = str(rec.get("city") or "").strip().title()
     zipc = str(rec.get("zip") or "").strip()
 
+    # Vacant detection (2026-06-12 audit fix): PHP returns empty `address`
+    # for fully-vacant parcels with no civic address at all (e.g. Mauser HEIRS
+    # forest tracts), but ALSO returns just-the-street for sibling lots that
+    # share a street with the primary house (e.g. Wilson Wilma T HEIRS had
+    # one parcel at "1688 17TH AVE CT NE" and a sibling at bare "17TH ST NE"
+    # with no house number). Both pattern-types are vacant — without a house
+    # number there's no occupancy. Detect both as vacant so the smart picker
+    # demotes them below true residential parcels.
+    first_token = street.split(maxsplit=1)[0] if street.strip() else ""
+    has_house_number = first_token.isdigit() and 1 <= len(first_token) <= 6
+    is_vacant = not has_house_number
+    is_residential = has_house_number
+
+    # Workbook display: vacant lots get "0 <street>" prefix per Oren's
+    # convention (see feedback_vacant_lot_zero_prefix memory). Iredell GIS
+    # uses this natively (e.g. "0 CARRIAGE RD"); Catawba PHP doesn't, so
+    # synthesize the prefix here when we have a street but no house number.
+    if is_vacant and street and not street.lstrip().startswith("0 "):
+        street = f"0 {street.lstrip()}"
+
     # Catawba PHP endpoint exposes only the property address — no separate
     # mailing address. Use property address as mailing fallback (matches the
     # convention applied elsewhere when situs and mailing collapse).
     situs = street
     mailing_bits = [b for b in (street, city, "NC" if street or city else "", zipc) if b]
     mailing = " ".join(mailing_bits).strip()
-
-    # Vacant detection: PHP returns empty `address` for parcels with no
-    # civic street number assigned (county convention for vacant lots).
-    # All 4 vacant Mauser HEIRS parcels in 2026-06-03 audit had address="".
-    is_vacant = not street
-    is_residential = bool(street)
 
     return PropertyCandidate(
         county="Catawba",
@@ -1400,7 +1414,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 1
+_PERSIST_VERSION = 2  # bumped 2026-06-12 to invalidate Catawba vacant-flag cache
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
