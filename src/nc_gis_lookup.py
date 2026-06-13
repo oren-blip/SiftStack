@@ -159,6 +159,47 @@ def _extract_suffix(name: str) -> str:
     return ""
 
 
+def _split_owner_segments(owner: str) -> list[tuple[str, bool]]:
+    """Split a multi-owner GIS string into individual person/entity segments.
+
+    Returns list of (segment, surname_inherited) tuples.
+    surname_inherited=True means we faked a surname on a short trailing
+    segment — caller should treat that segment with extra suspicion (the
+    deed only carried a bare first name and we can't be sure of the
+    surname; could be the spouse the surname implies, or someone else
+    entirely if the decedent shares a first name with a real co-owner).
+
+    Handles every joint-owner convention we have seen in the 7 NC county
+    GIS endpoints:
+      - "RUSSELL WILLIAM JR | RUSSELL SYLVANIA WF"   (Cabarrus, polaris3g)
+      - "FOX PRESTON R+MARY"                          (Gaston live endpoint)
+      - "SMITH JOHN A & SMITH JANE B"                 (most counties)
+      - "SMITH JOHN; SMITH JANE"                      (rare, but seen)
+      - "SMITH JOHN / SMITH JANE"                     (rare)
+
+    Comma is NOT a separator here — single-owner strings like "SMITH, JOHN
+    A" use comma. The decedent-name caller handles comma format separately.
+    """
+    if not owner:
+        return []
+    raw = [s.strip() for s in re.split(r"\s*[+&|/;]\s*", owner) if s.strip()]
+    if len(raw) < 2:
+        return [(r, False) for r in raw]
+    first_tokens = raw[0].split()
+    if not first_tokens:
+        return [(r, False) for r in raw]
+    presumed_surname = first_tokens[0].upper()
+    out: list[tuple[str, bool]] = [(raw[0], False)]
+    for seg in raw[1:]:
+        seg_tokens = seg.split()
+        has_surname = any(t.upper() == presumed_surname for t in seg_tokens)
+        if not has_surname and 1 <= len(seg_tokens) <= 3:
+            out.append((f"{first_tokens[0]} {seg}", True))
+        else:
+            out.append((seg, False))
+    return out
+
+
 def _name_match_score(decedent: str, owner_fullname: str) -> float:
     """Score how confidently the owner name matches the decedent.
 
@@ -173,19 +214,29 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
     (or any generational mismatch), return 0 — they're different people
     (Leonard Kinney Sr's parcel vs his son Leonard Jr's parcel).
 
-    Owner strings often contain joint owners separated by "|" or "&"
-    (e.g. "RUSSELL WILLIAM JR | RUSSELL SYLVANIA WF"). We score each
-    sub-name independently and take the BEST score — the decedent
-    matching ANY co-owner is a valid hit.
+    Owner strings often contain joint owners separated by "|", "&", "+",
+    "/", or ";". We split via _split_owner_segments (which also handles
+    surname inheritance for short trailing segments), then score each
+    segment independently and take the BEST score. The decedent matching
+    ANY individual co-owner is a valid hit; matching scattered tokens
+    across multiple co-owners is NOT.
     """
     if not decedent:
         return 0.0
     dec_suffix = _extract_suffix(decedent)
-    # Split joint-owner strings; score each sub-name and take the max
-    sub_names = re.split(r"\s*[|&]\s*", owner_fullname or "")
+    sub_names = _split_owner_segments(owner_fullname or "")
     best = 0.0
-    for sub in sub_names:
+    for sub, surname_inherited in sub_names:
         s = _name_match_score_one(decedent, sub, dec_suffix=dec_suffix)
+        # Surname-inheritance guard: when we faked a surname onto a bare
+        # first-name trailing segment (e.g. "+MARY" -> "FOX MARY"), the
+        # deed only actually said "MARY" — we don't truly know it's the
+        # surname. Cap at 0.6 (below typical min_score=0.7) so the match
+        # gets treated as "candidate worth a human look" rather than
+        # confirmed. Prevents the "Mary, Fox" -> "FOX PRESTON R+MARY"
+        # false-positive class flagged in the audit.
+        if surname_inherited and s >= 0.9:
+            s = 0.6
         if s > best:
             best = s
         if best >= 1.0:
@@ -974,8 +1025,28 @@ def _arcgis_to_candidate(
     # compositions like Iredell (HouseNumber + SDIR + STREET + STYPE), join with spaces.
     situs = _compose_address(rec, cfg["situs_fields"])
 
-    # Parcel ID
-    pid = str(rec.get(cfg["parcel_field"]) or "").strip()
+    # Parcel ID. Several counties (notably Iredell) return PIN as a JSON
+    # number — Python str() of those produces "4666780132.0" or
+    # "4666780132.000" depending on serialization, which then leaks into
+    # the CSV. Coerce to integer string when the value is whole-number-
+    # shaped; otherwise leave the string as-is (dashed PIDs like
+    # Gaston "3535-59-6052" must be preserved).
+    _pid_raw = rec.get(cfg["parcel_field"])
+    if isinstance(_pid_raw, (int, float)):
+        try:
+            if float(_pid_raw).is_integer():
+                pid = str(int(_pid_raw))
+            else:
+                pid = str(_pid_raw)
+        except (TypeError, ValueError):
+            pid = str(_pid_raw or "")
+    else:
+        pid = str(_pid_raw or "").strip()
+        # Strip trailing-zero-only decimal portion ("X.0", "X.000") on
+        # strings that pass through requests' JSON decoder as floats and
+        # then get str-cast upstream.
+        if re.fullmatch(r"\d+\.0+", pid):
+            pid = pid.split(".", 1)[0]
 
     # Cabarrus situs enrichment — the Parcels layer's PropAddr has the
     # street (e.g. "2626 BARR RD") but no city/zip. Use DataExplorerSearch

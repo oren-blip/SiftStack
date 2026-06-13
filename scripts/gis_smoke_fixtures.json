@@ -1,0 +1,28 @@
+{
+  "_doc": [
+    "Known-good GIS fixtures: cases we have manually verified against the live county GIS.",
+    "Used by gis_smoke_test.py to detect silent endpoint staleness or drift.",
+    "",
+    "How to add: after each weekly audit, pick 1-3 cases from the polished workbook where",
+    "you have HIGH confidence the GIS match is correct, and append below. Prefer cases from",
+    "the most recent 60 days so fixtures stay realistic. Once a fixture is > 6 months old,",
+    "the case may have transferred to an heir — re-verify or remove.",
+    "",
+    "Each fixture is checked via lookup_by_address(address, county). PASS = at least one hit",
+    "AND (owner_contains is present in any owner field OR pid matches expected_pid).",
+    "",
+    "verified_on YYYY-MM-DD — date a human last confirmed this answer is right.",
+    "expires_after_days — fixture skipped once age exceeds this (default 180)."
+  ],
+  "fixtures": [
+    {
+      "id": "young_carl_gaston",
+      "county": "Gaston",
+      "address": "2511 MARY AVE",
+      "owner_contains": "YOUNG",
+      "expected_pid": "3535-59-6052",
+      "verified_on": "2026-06-13",
+      "notes": "Decedent Young Carl Sr (case 26E000789-350). Replaced stale services6 snapshot with live publicgis endpoint."
+    }
+  ]
+}

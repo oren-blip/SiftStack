@@ -47,6 +47,13 @@ echo. >> "logs\nc_daily_run.log"
 echo ====================================================== >> "logs\nc_daily_run.log"
 echo === Daily run started %DATE% %TIME% (since %SINCE%) === >> "logs\nc_daily_run.log"
 
+echo [guard] GIS smoke test (stale-endpoint detection)...
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\gis_smoke_test.py >> "logs\nc_daily_run.log" 2>&1
+if errorlevel 1 (
+    echo *** WARNING: GIS smoke test FAILED -- one or more county endpoints may have drifted *** >> "logs\nc_daily_run.log"
+    echo *** WARNING: GIS smoke test FAILED -- continuing daily run, but inspect logs\nc_daily_run.log ***
+)
+
 echo [1/6] Fresh NC scrape (since %SINCE%)...
 call scripts\nc_weekly_scrape.bat %SINCE% >> "logs\nc_daily_run.log" 2>&1
 

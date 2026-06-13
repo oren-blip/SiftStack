@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from playwright.async_api import async_playwright  # noqa: E402
 
 from ecourts_case_api import CaseDetail, CaseDetailClient  # noqa: E402
+from nc_gis_lookup import lookup_by_address, split_decedent_name  # noqa: E402
 from ecourts_scraper import (  # noqa: E402
     CASE_TYPE_BY_NOTICE_TYPE,
     PORTAL_URL,
@@ -245,6 +246,56 @@ async def main_async(args) -> None:
                                 r["Mailing State"] = addr.state
                                 r["Mailing Zip"] = addr.zip
                             logger.info("     Upgraded Heirs-of -> %s @ %s", full, r.get("Mailing Address",""))
+
+                    # ── Decedent-address GIS fallback ───────────────────
+                    # When the row still has a blank Parcel ID, Odyssey
+                    # usually carries the decedent's last-known address in
+                    # the Decedent Party block. Look that address up in
+                    # county GIS — accept the hit if the parcel owner's
+                    # surname contains the decedent's lastname (same gate
+                    # as Step 0.65 beneficiary-address fallback).
+                    if not (r.get("Parcel ID") or "").strip():
+                        dec_party = detail.decedent
+                        if dec_party:
+                            dec_addr = dec_party.first_address
+                            if not dec_addr.is_blank() and dec_addr.line1:
+                                _, _, dec_last = split_decedent_name(dec or "")
+                                if dec_last:
+                                    try:
+                                        hits = lookup_by_address(dec_addr.line1, county)
+                                    except Exception as e:
+                                        logger.warning("     decedent-addr GIS lookup error: %s", e)
+                                        hits = []
+                                    for attrs in hits:
+                                        owner_str = " ".join(
+                                            str(v).upper() for k, v in attrs.items()
+                                            if isinstance(v, str) and "NAME" in k.upper()
+                                        )
+                                        if dec_last.upper() not in re.split(r"[^A-Z]+", owner_str):
+                                            continue
+                                        pid = next(
+                                            (str(attrs[k]) for k in attrs
+                                             if "PIN" in k.upper() or "PARCEL" in k.upper()),
+                                            "",
+                                        )
+                                        if not pid:
+                                            continue
+                                        r["Parcel ID"] = pid
+                                        r["Property Address"] = dec_addr.line1
+                                        r["Property City"] = dec_addr.city or ""
+                                        r["Property State"] = "NC"
+                                        r["Property Zip"] = dec_addr.zip or ""
+                                        existing = (r.get("Notes") or "").strip()
+                                        note_tag = f"[ODYSSEY-ADDR matched {pid} via decedent address {dec_addr.line1}]"
+                                        r["Notes"] = (existing + ("\n" if existing else "") + note_tag).strip()
+                                        existing_reason = (r.get("Match Reason") or "").strip()
+                                        if "odyssey-decedent-address" not in existing_reason:
+                                            r["Match Reason"] = (
+                                                f"{existing_reason} | odyssey-decedent-address"
+                                                if existing_reason else "odyssey-decedent-address"
+                                            )
+                                        logger.info("     ODYSSEY-ADDR matched: %s -> %s", dec_addr.line1, pid)
+                                        break
 
             # Tag the row
             tag = (r.get("Tags") or "").strip()

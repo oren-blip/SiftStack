@@ -3,14 +3,12 @@ REM NC probate weekly scrape -- manual or scheduled invocation.
 REM
 REM Standard NC flags (different from TN):
 REM   --skip-obituary   obituary_enricher used to be hardcoded for TN; it is
-REM                     now state-aware. We keep --skip-obituary by default
-REM                     during the A/B rollout. To opt in for THIS run, set
-REM                     NC_OBITUARY=1 before invoking this script -- it adds
-REM                     --nc-obituary, which overrides --skip-obituary for
-REM                     NC notices and uses the Tier 2 Serper/Firecrawl path
-REM                     (no Knox Tax tier for NC). Example:
-REM                       set NC_OBITUARY=1
-REM                       scripts\nc_weekly_scrape.bat
+REM                     now state-aware. --skip-obituary stays on as a safety
+REM                     gate for non-NC states; --nc-obituary (added below
+REM                     as DEFAULT-ON 2026-06-13) overrides it specifically
+REM                     for NC notices and runs the Tier 2 Serper/Firecrawl
+REM                     enricher. To DISABLE for a single run, set
+REM                     NC_OBITUARY=0 before invoking this script.
 REM   --no-skip-trace   DataSift's $97/mo unlimited skip-trace handles
 REM                     phones + emails post-upload (auto-tag
 REM                     skip_traced_YYYY-MM). Tracerfy ($0.02/contact) is
@@ -21,7 +19,7 @@ REM
 REM Usage:
 REM   scripts\nc_weekly_scrape.bat                     ^<- last 7 days
 REM   scripts\nc_weekly_scrape.bat 2026-05-18          ^<- from a specific date
-REM   set NC_OBITUARY=1 ^& scripts\nc_weekly_scrape.bat   ^<- A/B opt-in
+REM   set NC_OBITUARY=0 ^& scripts\nc_weekly_scrape.bat   ^<- A/B opt-OUT
 
 cd /d "D:\SiftStack"
 
@@ -30,6 +28,9 @@ if "%SINCE%"=="" (
     for /f %%i in ('powershell -NoProfile -Command "(Get-Date).AddDays(-7).ToString('yyyy-MM-dd')"') do set SINCE=%%i
 )
 
+REM NC obituary enrichment defaults to ON as of 2026-06-13 (A/B rollout flipped).
+REM Set NC_OBITUARY=0 in the shell env to opt OUT for a single run.
+if "%NC_OBITUARY%"=="" set NC_OBITUARY=1
 set NC_OBIT_FLAG=
 if "%NC_OBITUARY%"=="1" set NC_OBIT_FLAG=--nc-obituary
 

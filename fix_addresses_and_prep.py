@@ -30,6 +30,31 @@ _PARCEL_PROPERTY_FIELDS = (
 )
 
 
+def tag_reason(row: dict, code: str) -> None:
+    """Append a short audit code to row['Match Reason'].
+
+    Empty Match Reason after polish = parcel + PR came directly from the
+    scrape (the default happy path — high confidence). Anything tagged
+    here means a polish step mutated the row, and the code names which
+    step / what kind of fallback. Idempotent: skips duplicate codes so
+    re-running polish over the same rows doesn't grow the cell.
+
+    Convention: short kebab-case codes. Sort the column to triage low-
+    confidence rows fast.
+    """
+    if not code:
+        return
+    existing = (row.get("Match Reason") or "").strip()
+    if not existing:
+        row["Match Reason"] = code
+        return
+    parts = [p.strip() for p in existing.split("|") if p.strip()]
+    if code in parts:
+        return
+    parts.append(code)
+    row["Match Reason"] = " | ".join(parts)
+
+
 # Counties whose GIS is so slow that we trim variations to just two
 # (the precise full-middle form + the middle-initial form). Cabarrus's
 # polaris3g endpoint averages 4-6 min per call; cutting from 4 to 2
@@ -149,6 +174,7 @@ def research_blank_parcels(
             new_use = simplify_use_code(found.use_code, found.use_description, found.county)
             if new_use:
                 r["Property use"] = new_use
+        tag_reason(r, "name-research")
         print(f"  Re-found {county}/{dec} via {used_variation!r}: {found.pid} {street}, {city} NC {zipc}")
         recovered += 1
     return recovered
@@ -457,6 +483,7 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
                 existing_notes = (r.get("Notes") or "").strip()
                 tag = f"[ADDR-FALLBACK from beneficiary address {addr}]"
                 r["Notes"] = (existing_notes + ("\n" if existing_notes else "") + tag).strip()
+                tag_reason(r, "beneficiary-address")
                 print(f"  ADDR-FALLBACK {county}/{dec}: matched {pid} at {situs!r} "
                       f"via beneficiary address {addr!r}")
                 recovered += 1
@@ -599,6 +626,7 @@ def validate_existing_matches(
                 # treats this as a no-parcel row and drops it
                 for col in _PARCEL_PROPERTY_FIELDS:
                     r[col] = ""
+                tag_reason(r, "audit-blanked")
                 blanked += 1
                 rejected_pids.add((county.lower(), pid))
                 continue
@@ -638,6 +666,7 @@ def validate_existing_matches(
             print(f"  REPICK {county}/{dec}: {pid} -> {best.pid} "
                   f"(was {cand.owner_name!r} use_tier={_use_tier(cand)}; "
                   f"now {best.owner_name!r} use_tier={_use_tier(best)})")
+            tag_reason(r, "audit-repick")
             street, city, zipc = _candidate_to_address_parts(best)
             r["Parcel ID"] = best.pid or ""
             r["Property Address"] = street
@@ -1208,6 +1237,7 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
             r["Mailing City"] = res.get("city") or city
             r["Mailing State"] = res.get("state") or "NC"
             r["Mailing Zip"] = res.get("zip") or ""
+            tag_reason(r, "pr-people-search")
             found += 1
             print(f"    PR address: {name} -> {res['street']}, "
                   f"{r['Mailing City']} {r['Mailing Zip']} [{res.get('source', '')}]")
@@ -1244,6 +1274,7 @@ def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
         r["Mailing State"] = "NC"
         if (r.get("Property Zip") or "").strip():
             r["Mailing Zip"] = r["Property Zip"]
+        tag_reason(r, "mailing-from-property")
         filled += 1
     return filled
 
@@ -1659,6 +1690,7 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Mailing State"] = "NC"
             if (r.get("Property Zip") or "").strip():
                 r["Mailing Zip"] = r["Property Zip"]
+            tag_reason(r, "dm-promoted-pr")
             dm_promoted += 1
             continue
 
@@ -1673,6 +1705,7 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Mailing City"] = ben["city"]
             r["Mailing State"] = ben["state"]
             r["Mailing Zip"] = ben["zip"]
+            tag_reason(r, "beneficiary-promoted-pr")
             promoted += 1
             continue
 
@@ -1688,6 +1721,7 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
         r["Mailing State"] = "NC"
         if (r.get("Property Zip") or "").strip():
             r["Mailing Zip"] = r["Property Zip"]
+        tag_reason(r, "heirs-of-fallback")
         heirs += 1
     return kept, dropped, dm_promoted, promoted, heirs
 

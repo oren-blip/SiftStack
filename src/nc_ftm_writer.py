@@ -56,6 +56,11 @@ FTM_COLUMNS = [
     "Phone 1",
     "Tags",
     "List",
+    # Audit aid: how each row landed in its current state. Empty = parcel +
+    # PR came directly from the scrape (the default happy path). Polish-step
+    # tags are appended " | "-separated as the row mutates. Sort by this
+    # column to triage low-confidence rows fast.
+    "Match Reason",
     # Heir / Decision Maker columns — populated for rows that lack a
     # court-named executor, via heir_prospect_no_executor.py (obituary
     # survivors + multi-tier skip trace). Stays blank for executor rows.
@@ -429,6 +434,7 @@ def write_ftm_xlsx(
         "Property State": 8, "Property Zip": 8, "Property use": 14,
         "Property Value": 14,
         "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Match Reason": 24,
         # Heir / Decision Maker columns
         "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
         "DM 2 Name": 22, "DM 2 Relationship": 14,

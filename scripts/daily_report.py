@@ -187,6 +187,61 @@ def pipeline_runtime_min(log_path: Path) -> float | None:
 # ── Render ───────────────────────────────────────────────────────────
 
 
+def _row_key(r: dict) -> tuple[str, str]:
+    return ((r.get("County") or "").strip(), (r.get("Case No.") or "").strip().upper())
+
+
+def compute_diffs(today_rows: list[dict], yesterday_rows: list[dict]) -> dict:
+    """Compare two polished CSVs (same week, different runs).
+
+    Returns dict with: new, dropped, parcel_changed, reason_today.
+    - new:            rows in today but not yesterday
+    - dropped:        rows in yesterday but not today (regression signal —
+                      polish dropped something it had before)
+    - parcel_changed: rows present in both but with a different Parcel ID
+    - reason_today:   Counter of Match Reason tags from today's run
+    """
+    by_yest = {_row_key(r): r for r in yesterday_rows}
+    by_today = {_row_key(r): r for r in today_rows}
+
+    new = [r for k, r in by_today.items() if k not in by_yest]
+    dropped = [r for k, r in by_yest.items() if k not in by_today]
+
+    parcel_changed: list[dict] = []
+    for k, r_today in by_today.items():
+        r_yest = by_yest.get(k)
+        if r_yest is None:
+            continue
+        p_y = (r_yest.get("Parcel ID") or "").strip()
+        p_t = (r_today.get("Parcel ID") or "").strip()
+        if p_y and p_t and p_y != p_t:
+            parcel_changed.append({
+                "case_no": r_today.get("Case No.", ""),
+                "county":  r_today.get("County", ""),
+                "decedent": r_today.get("Deceased Owner", ""),
+                "parcel_yesterday": p_y,
+                "parcel_today":     p_t,
+                "addr_yesterday":   (r_yest.get("Property Address") or "").strip(),
+                "addr_today":       (r_today.get("Property Address") or "").strip(),
+            })
+
+    reason_today: Counter[str] = Counter()
+    for r in today_rows:
+        raw = (r.get("Match Reason") or "").strip()
+        if not raw:
+            reason_today["(scrape direct)"] += 1
+            continue
+        for tag in (t.strip() for t in raw.split("|") if t.strip()):
+            reason_today[tag] += 1
+
+    return {
+        "new": new,
+        "dropped": dropped,
+        "parcel_changed": parcel_changed,
+        "reason_today": reason_today,
+    }
+
+
 def render_report(
     workbook_path: Path | None,
     workbook_rows: list[dict],
@@ -198,12 +253,11 @@ def render_report(
     runtime_min: float | None,
 ) -> str:
     today_str = date.today().strftime("%a %b %d, %Y")
+    diffs = compute_diffs(today_csv_rows, yesterday_csv_rows)
+    new_today = diffs["new"]
 
     # Headlines
     total = len(workbook_rows)
-    yesterday_cases = {(r.get("County") or "", (r.get("Case No.") or "").upper()) for r in yesterday_csv_rows}
-    today_cases = {((r.get("County") or "").strip(), (r.get("Case No.") or "").strip().upper()) for r in today_csv_rows}
-    new_today = [r for r in today_csv_rows if ((r.get("County") or "").strip(), (r.get("Case No.") or "").strip().upper()) not in yesterday_cases]
 
     counties = Counter((r.get("County") or "").strip() for r in workbook_rows)
 
@@ -238,6 +292,40 @@ def render_report(
             lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
         if len(new_today) > 50:
             lines.append(f"  ... and {len(new_today) - 50} more")
+    lines.append("")
+
+    # Dropped since yesterday — regression signal. A case that was here
+    # yesterday and isn't now means a polish step removed it. Could be a
+    # legitimate drop (newly-failed audit, newly-detected heir-occupied)
+    # or a regression to investigate.
+    dropped = diffs["dropped"]
+    lines.append("DROPPED SINCE YESTERDAY")
+    if not dropped:
+        lines.append("  (none)")
+    else:
+        for r in dropped[:25]:
+            cn = (r.get("Case No.") or "").strip()
+            cty = (r.get("County") or "").strip()
+            dec = (r.get("Deceased Owner") or "").strip()
+            prop = (r.get("Property Address") or "(no parcel)").strip()
+            lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
+        if len(dropped) > 25:
+            lines.append(f"  ... and {len(dropped) - 25} more")
+    lines.append("")
+
+    # Parcel changed since yesterday — same case, different parcel now.
+    # Usually a smart-picker repick or a new sibling found a better main.
+    pc = diffs["parcel_changed"]
+    lines.append("PARCEL CHANGED SINCE YESTERDAY")
+    if not pc:
+        lines.append("  (none)")
+    else:
+        for e in pc[:15]:
+            lines.append(f"  {e['case_no']:18}  {e['county']:12}  {e['decedent'][:30]:30}")
+            lines.append(f"    was: {e['parcel_yesterday']:18}  {e['addr_yesterday']}")
+            lines.append(f"    now: {e['parcel_today']:18}  {e['addr_today']}")
+        if len(pc) > 15:
+            lines.append(f"  ... and {len(pc) - 15} more")
     lines.append("")
 
     # Heir-transfer
@@ -283,6 +371,18 @@ def render_report(
         lines.append(f"  Smart-picker REPICK events:               {polish_stats['repick']}")
     if polish_stats.get("refound"):
         lines.append(f"  Step 0.5 Re-found correct parcels:        {polish_stats['refound']}")
+    lines.append("")
+
+    # Match Reason distribution — how each kept row got to its current state.
+    # (scrape direct) = parcel + PR from court directly (high confidence,
+    # no polish-step fallback fired). Other tags name the fallback step.
+    reason_today = diffs["reason_today"]
+    lines.append("MATCH REASON DISTRIBUTION (today's polished output)")
+    if not reason_today:
+        lines.append("  (no rows in today's CSV)")
+    else:
+        for tag, n in reason_today.most_common():
+            lines.append(f"  {tag:30} {n}")
     lines.append("")
 
     lines.append("=" * 60)
