@@ -556,6 +556,20 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
         # NEIGCLAS isn't a use code; default residential when we have anything
         return "SFR" if (code or desc) else ""
     if cty == "gaston":
+        # Live endpoint (2026-06-13+) exposes property_use as a short code:
+        #   RES (residential), COM (commercial), IND (industrial),
+        #   EXEMPT, OTHER. DESC1_DESC carries the detailed text we
+        #   previously matched against.
+        if code == "RES":
+            if "MOBILE HOME" in desc or "MANUFACTURED" in desc:
+                return "MH"
+            return "SFR"
+        if code in ("COM", "IND"):
+            return "Commercial"
+        if code == "EXEMPT":
+            return ""  # churches, gov, etc — drop via use_desc
+        # Fall through to the legacy text-based matching for OTHER /
+        # missing code, and for any pre-switch cached candidates.
         if "MOBILE HOME" in desc or "MANUFACTURED" in desc:
             return "MH"
         if "RESIDENTIAL" in desc or "SINGLE FAMILY" in desc:
@@ -761,13 +775,19 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "use_desc_field": None,
     },
     "gaston": {
-        "url": "https://services6.arcgis.com/2mzSgEVuNJwBvEDM/arcgis/rest/services/Gaston_County_Parcels/FeatureServer/0",
+        # Switched 2026-06-13 from services6.arcgis.com/.../Gaston_County_Parcels
+        # snapshot to the live Gaston public GIS. The snapshot was stale by 13+
+        # months — owner of 2511 Mary Ave still showed pre-May-2024 owner
+        # HENSON BRENDA C; live endpoint correctly shows YOUNG CARL L (decedent
+        # in case 26E000789-350 Week 24). Field names align with the previous
+        # config except CURR_ZIPCO -> CURR_ZIPCODE. See project_gaston_gis_stale.
+        "url": "https://gis.gastoncountync.gov/publicgis/rest/services/PublicGIS/Parcels/MapServer/11",
         "owner_fields": ["CURR_NAME1", "CURR_NAME2"],
-        "mailing_fields": ["CURR_ADDR1", "CURR_ADDR2", "CURR_CITY", "CURR_STATE", "CURR_ZIPCO"],
+        "mailing_fields": ["CURR_ADDR1", "CURR_ADDR2", "CURR_CITY", "CURR_STATE", "CURR_ZIPCODE"],
         "situs_fields": ["PHYSSTRADD"],
         "parcel_field": "PIN",
-        "use_field": "DESC1_DESC",
-        "use_desc_field": None,
+        "use_field": "property_use",
+        "use_desc_field": "DESC1_DESC",
     },
     "catawba": {
         "url": "https://services1.arcgis.com/aT1T0pU1ZdpuDk1t/arcgis/rest/services/PP3_Q1_Map_WFL1/FeatureServer/5",
@@ -1414,7 +1434,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 2  # bumped 2026-06-12 to invalidate Catawba vacant-flag cache
+_PERSIST_VERSION = 3  # bumped 2026-06-13 — Gaston endpoint swap (live GIS)
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
