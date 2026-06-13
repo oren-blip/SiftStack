@@ -204,26 +204,45 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
         siblings = [c for c in siblings if c.pid not in existing_notes]
         if not siblings:
             continue
-        # Build new sibling lines
-        lines: list[str] = []
-        if not existing_notes or "PLUS " not in existing_notes.upper() or "PARCEL" not in existing_notes.upper():
-            lines.append(f"PLUS {len(siblings)} PARCEL{'S' if len(siblings) > 1 else ''}")
+
+        # Score + sort: best parcels first so scanning Notes is meaningful
+        from nc_gis_lookup import simplify_use_code, parcel_quality_score
+        scored: list[tuple[int, str, object]] = []
         for s in siblings:
-            street, city, zipc = _candidate_to_address_parts(s)
-            addr_bits = [b for b in (street, city, zipc) if b]
-            addr = " ".join(addr_bits).strip()
-            from nc_gis_lookup import simplify_use_code
             use = simplify_use_code(s.use_code, s.use_description, s.county) or ""
             if not use:
                 if s.is_vacant_land:
                     use = "Vacant Land"
                 elif s.is_residential:
                     use = "SFR"
-            bits = [s.pid or "?"]
+            score, tier = parcel_quality_score(s, simplified_use=use)
+            scored.append((score, tier, s))
+        scored.sort(key=lambda t: -t[0])
+
+        # Build new sibling lines
+        lines: list[str] = []
+        if not existing_notes or "PLUS " not in existing_notes.upper() or "PARCEL" not in existing_notes.upper():
+            lines.append(f"PLUS {len(siblings)} PARCELS (auto-ranked)")
+        for score, tier, s in scored:
+            street, city, zipc = _candidate_to_address_parts(s)
+            addr_bits = [b for b in (street, city, zipc) if b]
+            addr = " ".join(addr_bits).strip()
+            use = simplify_use_code(s.use_code, s.use_description, s.county) or ""
+            if not use:
+                if s.is_vacant_land:
+                    use = "Vacant Land"
+                elif s.is_residential:
+                    use = "SFR"
+            bits = [f"{tier}={score}", s.pid or "?"]
             if addr:
                 bits.append(addr)
+            tag_parts = []
             if use:
-                bits.append(f"[{use}]")
+                tag_parts.append(use)
+            if s.lot_area and s.lot_area > 0:
+                tag_parts.append(f"{s.lot_area:.2f}ac")
+            if tag_parts:
+                bits.append(f"[{', '.join(tag_parts)}]")
             lines.append(" | ".join(bits))
         new_notes = existing_notes
         if new_notes and lines:
@@ -233,6 +252,129 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
         r["Notes"] = new_notes
         updated += 1
     return updated
+
+
+def collect_multi_parcel_estates(rows: list[dict], threshold: int = 5) -> list[dict]:
+    """For each row whose decedent has `threshold`+ scoring parcels in GIS,
+    collect a per-parcel detail list. Returns:
+        [{row: <source>, parcels: [{pid, score, tier, use, situs, acres, owner}]}, ...]
+    Caller writes this to a side XLSX so Oren can audit complex estates.
+
+    Re-uses the same lookup that backfill_sibling_parcels_to_notes uses;
+    they're sequential steps and share the per-process cache.
+    """
+    from nc_gis_lookup import lookup_properties, filter_for_lead_quality, simplify_use_code, parcel_quality_score
+    out: list[dict] = []
+    for r in rows:
+        if not (r.get("Parcel ID") or "").strip():
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.7)
+        except Exception:
+            continue
+        if len(cands) < threshold:
+            continue
+        kept = filter_for_lead_quality(
+            cands,
+            beneficiaries_json=r.get("Beneficiaries", "") or "",
+            decedent_name=dec,
+        )
+        if len(kept) < threshold:
+            continue
+        scored = []
+        for c in kept:
+            use = simplify_use_code(c.use_code, c.use_description, c.county) or ""
+            if not use:
+                if c.is_vacant_land:
+                    use = "Vacant Land"
+                elif c.is_residential:
+                    use = "SFR"
+            score, tier = parcel_quality_score(c, simplified_use=use)
+            scored.append({
+                "pid": c.pid,
+                "score": score,
+                "tier": tier,
+                "use": use,
+                "owner": c.owner_name,
+                "situs": c.situs_address or "",
+                "city": c.situs_city_override or "",
+                "zip": c.situs_zip_override or "",
+                "acres": c.lot_area,
+                "value": c.market_value,
+            })
+        scored.sort(key=lambda x: -x["score"])
+        out.append({"row": r, "parcels": scored})
+    return out
+
+
+def write_multi_parcel_estates_review(entries: list[dict], out_path: Path) -> None:
+    """One row per (decedent x parcel), tier-labeled and sortable in Excel."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Multi-Parcel Estates"
+
+    headers = [
+        "Case No.", "County", "Deceased Owner", "Personal Representative",
+        "Parcel Count", "Tier", "Score",
+        "Parcel ID", "Property Use", "Situs", "City", "Zip", "Acres", "Market Value",
+        "Owner Name (GIS)",
+    ]
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+    for c, name in enumerate(headers, start=1):
+        cell = ws.cell(1, c, name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 20
+
+    # Tier color hints
+    tier_fills = {
+        "T1": PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid"),  # light green
+        "T2": PatternFill(start_color="FFF59D", end_color="FFF59D", fill_type="solid"),  # light yellow
+        "T3": PatternFill(start_color="FFCC80", end_color="FFCC80", fill_type="solid"),  # light orange
+        "T4": PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid"),  # light gray
+    }
+
+    row_idx = 2
+    for entry in entries:
+        src = entry["row"]
+        parcels = entry["parcels"]
+        for p in parcels:
+            ws.cell(row_idx, 1, src.get("Case No.", ""))
+            ws.cell(row_idx, 2, src.get("County", ""))
+            ws.cell(row_idx, 3, src.get("Deceased Owner", ""))
+            ws.cell(row_idx, 4, src.get("Personal Representative", ""))
+            ws.cell(row_idx, 5, len(parcels))
+            tier_cell = ws.cell(row_idx, 6, p["tier"])
+            if p["tier"] in tier_fills:
+                tier_cell.fill = tier_fills[p["tier"]]
+            ws.cell(row_idx, 7, p["score"])
+            ws.cell(row_idx, 8, p["pid"])
+            ws.cell(row_idx, 9, p["use"])
+            ws.cell(row_idx, 10, p["situs"])
+            ws.cell(row_idx, 11, p["city"])
+            ws.cell(row_idx, 12, p["zip"])
+            ws.cell(row_idx, 13, p["acres"])
+            ws.cell(row_idx, 14, p["value"])
+            ws.cell(row_idx, 15, p["owner"])
+            row_idx += 1
+
+    widths = {1: 18, 2: 12, 3: 28, 4: 22, 5: 6, 6: 5, 7: 6, 8: 16,
+              9: 14, 10: 28, 11: 14, 12: 8, 13: 8, 14: 12, 15: 32}
+    for c, w in widths.items():
+        ws.column_dimensions[get_column_letter(c)].width = w
+    ws.freeze_panes = "A2"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
 
 
 def collect_heir_transfer_candidates(rows: list[dict]) -> list[dict]:
@@ -1171,6 +1313,24 @@ def drop_commercial(rows: list[dict]) -> tuple[list[dict], int]:
     return kept, dropped
 
 
+_DROP_CONDO_TOWNHOUSE_USES = {"CONDO", "TOWNHOUSE", "CONDOMINIUM", "TOWN HOUSE"}
+
+
+def drop_condos_and_townhouses(rows: list[dict]) -> tuple[list[dict], int]:
+    """Drop rows whose Property use is Condo or Townhouse — per Oren's
+    investor buy-box, these don't pencil out (HOA constraints, thin margins).
+    """
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        use = (r.get("Property use") or "").strip().upper()
+        if use in _DROP_CONDO_TOWNHOUSE_USES:
+            dropped += 1
+            continue
+        kept.append(r)
+    return kept, dropped
+
+
 def collapse_duplicate_decedents(rows: list[dict]) -> tuple[list[dict], int]:
     """For rows with blank Case No. that share (County, Deceased Owner),
     collapse to one row + a 'PLUS N PARCELS' note. Mirrors the case-based
@@ -1503,6 +1663,16 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_siblings = backfill_sibling_parcels_to_notes(rows)
     print(f"  Rows updated with sibling-parcel notes: {n_siblings}")
 
+    print("Step 0.8: write Multi-Parcel Estates review-me XLSX (decedents with 5+ parcels)")
+    mpe_entries = collect_multi_parcel_estates(rows, threshold=5)
+    if mpe_entries:
+        mpe_path = Path("output") / f"multi_parcel_estates_{tag}_{ts}.xlsx"
+        write_multi_parcel_estates_review(mpe_entries, mpe_path)
+        print(f"  Wrote review-me: {mpe_path}  ({len(mpe_entries)} decedents with "
+              f"{sum(len(e['parcels']) for e in mpe_entries)} parcels)")
+    else:
+        print(f"  No decedents with 5+ parcels to review.")
+
     print("Step 1: repair property addresses + re-classify suspect Commercial rows")
     n_repaired = repair_addresses(rows)
     print(f"  Repaired: {n_repaired}")
@@ -1519,13 +1689,18 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_over_500k = drop_over_500k(rows, cap=500_000)
     print(f"  Dropped >$500K: {n_over_500k}  Remaining: {len(rows)}")
 
-    print("Step 1.9: drop heir-occupied (executor mailing == property address)")
-    rows, n_heir_occupied = drop_executor_at_property(rows)
-    print(f"  Dropped heir-occupied: {n_heir_occupied}  Remaining: {len(rows)}")
-
+    # Step order rationale: people search FIRST (fills legit PR mailing),
+    # THEN heir-occupied drop (now mailing is populated for the check),
+    # THEN property-as-mailing fallback last (the "no mailing found anywhere,
+    # mail to the property" backstop — this intentionally creates mail==property
+    # so it has to run AFTER the heir-occupancy drop to avoid false-dropping).
     print("Step 1.93: look up PR mailing via people search (Serper+Firecrawl, before property fallback)")
     n_ps_found, n_ps_tried = fill_pr_mailing_via_people_search(rows, state="NC")
     print(f"  PR addresses found via people search: {n_ps_found}/{n_ps_tried}")
+
+    print("Step 1.9: drop heir-occupied (executor mailing == property address)")
+    rows, n_heir_occupied = drop_executor_at_property(rows)
+    print(f"  Dropped heir-occupied: {n_heir_occupied}  Remaining: {len(rows)}")
 
     print("Step 1.95: fill missing PR mailing from property (so direct mail still goes out)")
     n_filled_pr = fill_missing_pr_mailing_from_property(rows)
@@ -1534,6 +1709,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 2: drop genuinely commercial rows")
     rows, n_commercial = drop_commercial(rows)
     print(f"  Dropped commercial: {n_commercial}  Remaining: {len(rows)}")
+
+    print("Step 2.1: drop Condo / Townhouse rows (not investor-friendly per buy-box)")
+    rows, n_condo_th = drop_condos_and_townhouses(rows)
+    print(f"  Dropped condos/townhouses: {n_condo_th}  Remaining: {len(rows)}")
 
     print("Step 3: collapse duplicate decedent rows (blank Case No.)")
     rows, n_collapsed = collapse_duplicate_decedents(rows)

@@ -1588,6 +1588,102 @@ def pick_best_candidate(
     return max(candidates, key=sort_key)
 
 
+def parcel_quality_score(
+    c: PropertyCandidate, simplified_use: str = "",
+) -> tuple[int, str]:
+    """Score a parcel 0-100 for probate-lead quality + return a tier label.
+
+    Lets the multi-parcel-collapse Notes column rank siblings so Oren
+    can scan a Stewart-Jimmy-Wayne-style 13-parcel estate and instantly
+    see which 2-3 to chase first.
+
+    Rubric (max 100):
+      - Property type (40):  SFR/Condo/Townhouse=40, MH=30, Vacant
+        depending on acreage, Commercial=0. (Condo/Townhouse get dropped
+        upstream — see feedback_drop_condos_townhouses memory — so the
+        40 they score here doesn't actually surface.)
+      - Property value (30): sweet spot $100-300K=30, $300-500K=20,
+        $50-100K=20, near-cap $500-700K=10, blank/unknown=15 (medium).
+      - Address quality (20): has civic # = 20, bare street = 10,
+        no address at all = 5.
+      - Probate signal (10): HEIRS/ESTATE marker in owner = 10, sole = 8,
+        joint = 5.
+
+    Returns (score, tier) where tier is "T1" (80-100), "T2" (50-79),
+    "T3" (30-49), or "T4" (0-29).
+    """
+    score = 0
+    use = (simplified_use or "").upper()
+
+    # 1. Property type
+    if use in {"SFR", "RESIDENTIAL"}:
+        score += 40
+    elif use in {"CONDO", "TOWNHOUSE"}:
+        score += 40  # will be dropped upstream
+    elif use == "MH":
+        score += 30
+    elif "VACANT" in use or "LAND" in use:
+        acres = float(c.lot_area or 0)
+        if acres == 0:
+            score += 15
+        elif acres < 0.5:
+            score += 10
+        elif acres <= 5:
+            score += 20
+        else:
+            score += 30  # development potential
+    elif "COMMERCIAL" in use or "INDUSTRIAL" in use or "OFFICE" in use:
+        score += 0
+    else:
+        score += 20  # unknown — give partial credit
+
+    # 2. Property value
+    mv = float(c.market_value or 0)
+    if mv == 0:
+        score += 15
+    elif 100_000 <= mv <= 300_000:
+        score += 30
+    elif 300_000 < mv <= 500_000:
+        score += 20
+    elif 50_000 <= mv < 100_000:
+        score += 20
+    elif 500_000 < mv <= 700_000:
+        score += 10
+    else:
+        score += 5
+
+    # 3. Address quality
+    situs = (c.situs_address or "").strip()
+    if situs:
+        first_token = situs.split(maxsplit=1)[0]
+        if first_token.isdigit() and not first_token.startswith("0"):
+            score += 20
+        else:
+            score += 10  # "0 Carriage Rd" or bare street
+    else:
+        score += 5
+
+    # 4. Probate signal
+    owner_upper = (c.owner_name or "").upper()
+    if any(m in owner_upper for m in ("HEIRS", "ESTATE")):
+        score += 10
+    elif not c.is_jointly_owned:
+        score += 8
+    else:
+        score += 5
+
+    score = max(0, min(100, score))
+    if score >= 80:
+        tier = "T1"
+    elif score >= 50:
+        tier = "T2"
+    elif score >= 30:
+        tier = "T3"
+    else:
+        tier = "T4"
+    return score, tier
+
+
 def filter_for_lead_quality(
     candidates: list[PropertyCandidate],
     *,
