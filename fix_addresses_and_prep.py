@@ -377,6 +377,95 @@ def write_multi_parcel_estates_review(entries: list[dict], out_path: Path) -> No
     wb.save(out_path)
 
 
+_BENEFICIARY_ADDR_RE = re.compile(
+    # Pulls "<housenum> <street name> ..." lines from the Beneficiaries
+    # blob the scraper writes. The column is multi-line — each beneficiary
+    # is name + address + city/state/zip. We just want the street line.
+    r"\b(\d{1,6}\s+[A-Z][A-Z\s\-\.]+(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|LN|LANE|"
+    r"CT|COURT|PL|PLACE|HWY|HIGHWAY|WAY|BLVD|BOULEVARD|CIR|CIRCLE|TRL|TRAIL|"
+    r"PKWY|TER|TERRACE)\b)",
+    re.IGNORECASE,
+)
+
+
+def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7) -> int:
+    """For rows with blank Parcel ID, scan the Beneficiaries column for
+    addresses + look them up in county GIS. If we find a parcel where the
+    owner's surname matches the decedent's, populate the row.
+
+    Catches cases like Young Carl Sr. (Gaston) where the actual property
+    address appears in the Beneficiaries column (an heir lives at the
+    inherited property) and our regular name search missed the parcel
+    because of a name-variation gap or stale endpoint.
+    """
+    from nc_gis_lookup import (
+        lookup_by_address, split_decedent_name, _ARCGIS_CONFIG, _compose_address,
+        simplify_use_code,
+    )
+    recovered = 0
+    for r in rows:
+        if (r.get("Parcel ID") or "").strip():
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        beneficiaries = (r.get("Beneficiaries") or "").strip()
+        if not dec or not county or not beneficiaries:
+            continue
+        if "IN THE MATTER" in dec.upper():
+            continue
+        # Extract candidate addresses from the beneficiaries blob
+        addresses = list({m.strip() for m in _BENEFICIARY_ADDR_RE.findall(beneficiaries)})
+        if not addresses:
+            continue
+        _, _, dec_last = split_decedent_name(dec)
+        if not dec_last:
+            continue
+        cfg = _ARCGIS_CONFIG.get(county.lower())
+        if not cfg:
+            continue
+        owner_fields = cfg.get("owner_fields") or []
+        for addr in addresses:
+            try:
+                hits = lookup_by_address(addr, county)
+            except Exception:
+                continue
+            for attrs in hits:
+                # Verify owner's surname matches the decedent's lastname token
+                owner_str = " ".join(
+                    str(attrs.get(of) or "") for of in owner_fields
+                ).upper()
+                if dec_last.upper() not in re.split(r"[^A-Z]+", owner_str):
+                    continue
+                # Populate the row
+                pid = str(attrs.get(cfg.get("parcel_field") or "PIN") or "")
+                if not pid:
+                    continue
+                situs = _compose_address(attrs, cfg.get("situs_fields") or [])
+                r["Parcel ID"] = pid
+                if situs:
+                    r["Property Address"] = situs
+                # Use code
+                uc = (cfg.get("use_field") or "")
+                ud = (cfg.get("use_desc_field") or "")
+                use = simplify_use_code(
+                    str(attrs.get(uc) or "") if uc else "",
+                    str(attrs.get(ud) or "") if ud else "",
+                    county.lower(),
+                )
+                if use:
+                    r["Property use"] = use
+                existing_notes = (r.get("Notes") or "").strip()
+                tag = f"[ADDR-FALLBACK from beneficiary address {addr}]"
+                r["Notes"] = (existing_notes + ("\n" if existing_notes else "") + tag).strip()
+                print(f"  ADDR-FALLBACK {county}/{dec}: matched {pid} at {situs!r} "
+                      f"via beneficiary address {addr!r}")
+                recovered += 1
+                break  # one address per row is enough
+            if (r.get("Parcel ID") or "").strip():
+                break
+    return recovered
+
+
 def collect_heir_transfer_candidates(rows: list[dict]) -> list[dict]:
     """For each row whose Parcel ID is still blank after re-search, query the
     county GIS for parcels whose NAME1/NAME2 ends in the decedent's surname
@@ -1648,6 +1737,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.5: re-search for correct parcel where audit blanked a wrong match")
     n_refound = research_blank_parcels(rows, audit_rejected_pids=audit_rejected_pids)
     print(f"  Re-found correct parcels: {n_refound}")
+
+    print("Step 0.65: address-fallback lookup using Beneficiaries column")
+    n_addr_recovered = address_fallback_from_beneficiaries(rows)
+    print(f"  Recovered via beneficiary-address GIS lookup: {n_addr_recovered}")
 
     print("Step 0.6: scan blank-parcel rows for heir-transfer candidates (embedded surname)")
     heir_transfer_rows = collect_heir_transfer_candidates(rows)

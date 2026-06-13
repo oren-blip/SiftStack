@@ -1315,6 +1315,96 @@ def _lookup_lincoln(decedent_name: str, min_score: float = 0.7) -> list[Property
 # matching the decedent's lastname as a non-prefix token in NAME1/NAME2.
 
 
+# Field names where each ArcGIS county stores the property's street address.
+# These are the situs fields we already declared in _ARCGIS_CONFIG, just
+# flattened here so lookup_by_address can scan all of them per county.
+_ADDRESS_FIELDS_BY_COUNTY: dict[str, list[str]] = {
+    "cabarrus":  ["PropAddr", "PHYSSTRADD", "WHOLE_ADDRESS"],
+    "catawba":   [],  # PHP path — handled separately if we extend later
+    "gaston":    ["PHYSSTRADD", "WHOLE_ADDRESS"],
+    "iredell":   ["ADD1", "PHYSADDR"],
+    "lincoln":   ["PHYSICALADDR"],
+    "rowan":     ["PHYSADDR", "PROP_ADDRESS"],
+}
+
+
+def _normalize_address_for_query(addr: str) -> str:
+    """Strip to upper + alphanumeric + spaces (collapsed). Lets us send
+    cleaner LIKE patterns to ArcGIS WHERE-clauses without breaking on
+    apostrophes, periods, multiple spaces, etc."""
+    if not addr:
+        return ""
+    s = re.sub(r"[^\w\s]", " ", addr.upper())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _street_token_pattern(addr: str) -> str | None:
+    """Build a LIKE-friendly substring pattern from an address. Pulls the
+    house number + first 1-2 street words so '1234 OAK CHURCH HILL RD'
+    becomes '1234 OAK CHURCH%' — restrictive enough to avoid spurious
+    matches but tolerant of trailing variation (street suffix abbreviation,
+    direction, unit number)."""
+    parts = _normalize_address_for_query(addr).split()
+    if not parts:
+        return None
+    # Need at least: house# + 1 street word
+    if not parts[0].isdigit():
+        return None
+    take = min(3, len(parts))
+    return " ".join(parts[:take])
+
+
+def lookup_by_address(address: str, county: str) -> list[dict]:
+    """Find parcels in `county` whose situs starts with the given address
+    prefix. Useful as a fallback when name-search fails — e.g. a beneficiary
+    in the case data lives at the inherited property, or the user has the
+    decedent's last-known address from Odyssey Party Information.
+
+    Returns raw attribute dicts (caller chooses how to score / present).
+    Only supports ArcGIS counties for now; Catawba PHP / Mecklenburg
+    polaris3g would need separate paths.
+    """
+    if not address:
+        return []
+    county_key = county.lower()
+    cfg = _ARCGIS_CONFIG.get(county_key)
+    if not cfg or county_key in {"catawba", "mecklenburg"}:
+        return []
+    pattern = _street_token_pattern(address)
+    if not pattern:
+        return []
+    fields = _ADDRESS_FIELDS_BY_COUNTY.get(county_key) or cfg.get("situs_fields") or []
+    if not fields:
+        return []
+    out: list[dict] = []
+    seen_pids: set[str] = set()
+    pid_field = cfg.get("parcel_field") or "PIN"
+    for f in fields:
+        where = f"UPPER({f}) LIKE '{pattern}%'"
+        try:
+            r = requests.get(cfg["url"] + "/query", params={
+                "where": where, "outFields": "*", "returnGeometry": "false",
+                "f": "json", "resultRecordCount": 50,
+            }, headers=_ARCGIS_HEADERS, timeout=30)
+        except requests.RequestException as e:
+            logger.warning("lookup_by_address: query failed at %s: %s", cfg["url"], e)
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            data = r.json()
+        except ValueError:
+            continue
+        for feat in data.get("features", []):
+            attrs = feat.get("attributes", {})
+            pid = str(attrs.get(pid_field) or "")
+            if pid and pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            out.append(attrs)
+    return out
+
+
 def find_heir_transfer_candidates(
     decedent_name: str, county: str, *, max_per_field: int = 200,
 ) -> list[dict]:
