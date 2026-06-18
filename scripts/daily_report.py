@@ -373,6 +373,19 @@ def render_report(
         lines.append(f"  Step 0.5 Re-found correct parcels:        {polish_stats['refound']}")
     lines.append("")
 
+    # Tracerfy spend (when funded). One-line summary of this week's burn
+    # vs cap — useful for catching runaway costs before they hit the cap.
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from tracerfy_budget import budget_summary  # noqa: E402
+        ts_line = budget_summary()
+        if ts_line:
+            lines.append("TRACERFY BUDGET")
+            lines.append(f"  {ts_line}")
+            lines.append("")
+    except Exception:
+        pass
+
     # Match Reason distribution — how each kept row got to its current state.
     # (scrape direct) = parcel + PR from court directly (high confidence,
     # no polish-step fallback fired). Other tags name the fallback step.

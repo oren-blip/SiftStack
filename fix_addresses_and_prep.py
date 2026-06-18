@@ -1299,12 +1299,14 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
     """
     try:
         import config as cfg
-        from obituary_enricher import _lookup_dm_address
+        from obituary_enricher import _lookup_dm_address, _lookup_dm_address_tracerfy
+        import tracerfy_budget
     except Exception as e:  # pragma: no cover
         print(f"  people-search unavailable ({e}) — skipping, property fallback will apply")
         return (0, 0)
 
     api_key = cfg.ANTHROPIC_API_KEY
+    tracerfy_ok = bool(getattr(cfg, "TRACERFY_API_KEY", ""))
     cache: dict[str, dict] = {}
     found = attempted = 0
     for r in rows:
@@ -1325,21 +1327,41 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
         res = cache.get(key)
         if res is None:
             try:
-                # Free people-search path: Serper (find CyberBackgroundChecks
-                # URL) + Firecrawl (render) + LLM (extract address). Tracerfy
-                # skip-trace is NOT used here — it needs an address anchor
-                # (wrong shape for name->address) and the account has 0 credits.
+                # Tier 1: free Serper + Firecrawl + LLM via CyberBackgroundChecks.
                 res = _lookup_dm_address(name, city, api_key, state=state)
             except Exception as e:
                 print(f"    people-search error for {name!r}: {e}")
                 res = {}
+            # Tier 2: Tracerfy paid skip-trace (5 credits / $0.10 per hit, 0
+            # on miss). Anchors on the property address to disambiguate the
+            # PR — most PRs are heirs whose former address is the property.
+            if (not res or not res.get("street")) and tracerfy_ok and tracerfy_budget.can_spend():
+                try:
+                    tf = _lookup_dm_address_tracerfy(
+                        name, city,
+                        address=r.get("Property Address", "") or "",
+                        zip_code=r.get("Property Zip", "") or "",
+                        state=state,
+                    )
+                except Exception:
+                    tf = None
+                if tf and tf.get("street"):
+                    tf["source"] = "tracerfy"
+                    res = tf
+                    warn_now, msg = tracerfy_budget.record_hit()
+                    if warn_now:
+                        print(f"  {msg}")
             cache[key] = res
         if res and res.get("street"):
             r["Mailing Address"] = res["street"]
             r["Mailing City"] = res.get("city") or city
             r["Mailing State"] = res.get("state") or "NC"
             r["Mailing Zip"] = res.get("zip") or ""
-            tag_reason(r, "pr-people-search")
+            source = (res.get("source") or "").lower()
+            if "tracerfy" in source:
+                tag_reason(r, "pr-tracerfy")
+            else:
+                tag_reason(r, "pr-people-search")
             found += 1
             print(f"    PR address: {name} -> {res['street']}, "
                   f"{r['Mailing City']} {r['Mailing Zip']} [{res.get('source', '')}]")
@@ -1799,13 +1821,15 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
         from obituary_enricher import (
             _search_obituary, _fetch_cached_text,
             _parse_obituary_with_llm, identify_decision_maker,
-            _lookup_dm_address,
+            _lookup_dm_address, _lookup_dm_address_tracerfy,
         )
+        import tracerfy_budget
     except Exception as e:  # pragma: no cover - import-time guards only
         print(f"  Second-pass obituary unavailable ({e}) — skipping")
         return (0, 0, 0)
 
     api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    tracerfy_ok = bool(getattr(cfg, "TRACERFY_API_KEY", ""))
     full_hits = name_only_hits = attempted = 0
 
     for r in rows:
@@ -1867,12 +1891,31 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
         if not dm_name:
             continue
 
-        # Try people-search waterfall for the heir's current address.
+        # Tier 1: free people-search waterfall (Serper + Firecrawl + LLM).
         addr = None
         try:
             addr = _lookup_dm_address(dm_name, property_city, api_key, state="NC")
         except Exception:
             addr = None
+        # Tier 2: Tracerfy paid skip-trace, only if Tier 1 whiffed AND we
+        # have budget headroom. 5 credits ($0.10) per hit, 0 on miss.
+        # Tracerfy needs an address anchor — use the property address.
+        if (not addr or not addr.get("street")) and tracerfy_ok and tracerfy_budget.can_spend():
+            try:
+                addr = _lookup_dm_address_tracerfy(
+                    dm_name,
+                    property_city,
+                    address=r.get("Property Address", "") or "",
+                    zip_code=r.get("Property Zip", "") or "",
+                    state="NC",
+                )
+            except Exception:
+                addr = None
+            if addr and addr.get("street"):
+                warn_now, msg = tracerfy_budget.record_hit()
+                if warn_now:
+                    print(f"  {msg}")
+                tag_reason(r, "tracerfy")
 
         tokens = dm_name.split()
         first = tokens[0] if tokens else "Heir"
