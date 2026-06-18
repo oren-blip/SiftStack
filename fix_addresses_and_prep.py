@@ -1409,11 +1409,16 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     address — meaning the executor LIVES at the property. They almost
     certainly inherit and stay (heir-occupied — bad probate lead).
 
-    Only applies to court-named-executor rows (NOT 'Heirs of ...' rows
-    where we deliberately set mailing := property). ALSO skipped for
-    Small Estate Affidavit cases (Disposed-recent) — there the heir
-    living at the property IS the lead by design (they just claimed
-    legal ownership via affidavit and are the mail target).
+    ALSO drops rows where ANY beneficiary's address (from the
+    Beneficiaries column) matches the property address — same signal,
+    just from a different person in the court file. Catches Lima Heidi,
+    Mathis Lillie, DAVIDGE Edward Charles class.
+
+    Only EXEMPTION: 'Heirs of ...' rows where we deliberately set
+    mailing := property as the no-PR-found backstop. Even Small Estate
+    Affidavit cases are subject to this filter — if the applicant
+    lives at the property, the lead is dead by Oren's policy regardless
+    of case type (per user feedback Week 25 audit).
     """
     def norm_addr(s: str | None) -> str:
         # Lowercase, normalize Drive/Dr / Avenue/Ave / etc., then strip to
@@ -1431,14 +1436,28 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         if r.get("First Name") == "Heirs":
             kept.append(r)
             continue
-        if _is_small_estate_disposed_recent(r):
-            # The heir IS the target; mailing==property is expected.
+        prop = norm_addr(r.get("Property Address"))
+        if not prop:
             kept.append(r)
             continue
-        prop = norm_addr(r.get("Property Address"))
+        # Executor mailing matches property → heir-occupied DQ.
         mail = norm_addr(r.get("Mailing Address"))
-        if prop and mail and prop == mail:
+        if mail and prop == mail:
             dropped += 1
+            continue
+        # ANY beneficiary's street address matches property → heir-occupied DQ.
+        # Beneficiaries column contains lines like "Lima, Maria Theresa
+        # Garcia 5915 Statesville Rd Charlotte NC 28269". Extract candidate
+        # street addresses with the same regex Step 0.65 uses.
+        ben_block = (r.get("Beneficiaries") or "")
+        if ben_block:
+            for ben_addr in _BENEFICIARY_ADDR_RE.findall(ben_block):
+                if norm_addr(ben_addr) == prop:
+                    tag_reason(r, "dq-beneficiary-at-property")
+                    dropped += 1
+                    break
+            else:
+                kept.append(r)
             continue
         kept.append(r)
     return kept, dropped
@@ -1757,6 +1776,140 @@ def promote_dm_to_pr(row: dict) -> dict | None:
     }
 
 
+def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
+    """For rows that fell through to "Heirs of [Decedent]" (no PR found,
+    no usable beneficiary), do an aggressive second-pass obituary search.
+    If we find a survivor we can name AND find their current mailing
+    address, promote them to the PR slot — turning a dead-end
+    heirs-of-fallback into a real person we can mail and skip-trace.
+
+    Why this matters: DataSift skip-trace operates on real-person
+    first/last names + mailing addresses. "Heirs of John Smith" at the
+    property address cannot be skip-traced and burns an upload slot.
+
+    Differences from the first-pass obituary enricher (which ran at
+    scrape time): broader keyword variations, multiple URL candidates
+    per row, NC state forced, ignores DOD recency gate.
+
+    Returns (full_hits, name_only_hits, attempted) — full = name + address,
+    name_only = heir name found but no address.
+    """
+    try:
+        import config as cfg
+        from obituary_enricher import (
+            _search_obituary, _fetch_cached_text,
+            _parse_obituary_with_llm, identify_decision_maker,
+            _lookup_dm_address,
+        )
+    except Exception as e:  # pragma: no cover - import-time guards only
+        print(f"  Second-pass obituary unavailable ({e}) — skipping")
+        return (0, 0, 0)
+
+    api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    full_hits = name_only_hits = attempted = 0
+
+    for r in rows:
+        if r.get("First Name") != "Heirs":
+            continue
+        decedent = (r.get("Deceased Owner") or "").strip()
+        if not decedent or "IN THE MATTER" in decedent.upper():
+            continue
+        attempted += 1
+        property_city = (r.get("Property City") or "").strip()
+
+        # Broader search than first-pass: multiple keyword variants.
+        seen_urls: set[str] = set()
+        obit_results: list[dict] = []
+        for terms in ("obituary", '"death notice"', '"passed away"', "funeral memorial"):
+            try:
+                rs = _search_obituary(decedent, property_city, extra_terms=terms, state="NC")
+            except Exception:
+                continue
+            for o in rs:
+                u = (o.get("url") or "").strip()
+                if not u or u in seen_urls:
+                    continue
+                seen_urls.add(u)
+                obit_results.append(o)
+        if not obit_results:
+            continue
+
+        # Try up to 6 URLs, stop on first that yields survivors.
+        parsed = None
+        for obit in obit_results[:6]:
+            url = obit["url"]
+            try:
+                text = _fetch_cached_text(url)
+            except Exception:
+                continue
+            if not text:
+                continue
+            try:
+                cand = _parse_obituary_with_llm(
+                    obituary_text=text,
+                    owner_name=decedent,
+                    city=property_city,
+                    address=r.get("Property Address", ""),
+                    api_key=api_key,
+                    state="NC",
+                )
+            except Exception:
+                continue
+            if cand and cand.get("survivors"):
+                parsed = cand
+                parsed["_url"] = url
+                break
+
+        if not parsed:
+            continue
+
+        dm_name, dm_rel = identify_decision_maker(parsed["survivors"])
+        if not dm_name:
+            continue
+
+        # Try people-search waterfall for the heir's current address.
+        addr = None
+        try:
+            addr = _lookup_dm_address(dm_name, property_city, api_key, state="NC")
+        except Exception:
+            addr = None
+
+        tokens = dm_name.split()
+        first = tokens[0] if tokens else "Heir"
+        last = tokens[-1] if len(tokens) > 1 else ""
+
+        if addr and addr.get("street"):
+            r["Personal Representative"] = dm_name
+            r["First Name"] = first
+            r["Last Name"] = last
+            r["DM Name"] = dm_name
+            r["DM Relationship"] = dm_rel or "heir"
+            r["Mailing Address"] = addr["street"]
+            r["Mailing City"] = addr.get("city") or property_city
+            r["Mailing State"] = addr.get("state") or "NC"
+            r["Mailing Zip"] = addr.get("zip") or ""
+            existing_notes = (r.get("Notes") or "").strip()
+            tag = f"[2ND-PASS-OBIT from {parsed.get('_url','')}]"
+            r["Notes"] = (existing_notes + ("\n" if existing_notes else "") + tag).strip()
+            tag_reason(r, "second-pass-obit-full")
+            full_hits += 1
+            print(f"  2ND-PASS-OBIT FULL {r.get('County')}/{decedent}: heir={dm_name} ({dm_rel}) at {addr['street']}")
+        else:
+            # Name-only: keep property as mailing (already set by heirs-of-fallback)
+            # but at least replace the "Heirs of X" with a real name. DataSift
+            # skip-trace post-upload may still surface phone/email for this person.
+            r["Personal Representative"] = dm_name
+            r["First Name"] = first
+            r["Last Name"] = last
+            r["DM Name"] = dm_name
+            r["DM Relationship"] = dm_rel or "heir"
+            tag_reason(r, "second-pass-obit-name-only")
+            name_only_hits += 1
+            print(f"  2ND-PASS-OBIT NAME-ONLY {r.get('County')}/{decedent}: heir={dm_name} ({dm_rel})")
+
+    return (full_hits, name_only_hits, attempted)
+
+
 def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]:
     """For rows with a parcel + no court-named executor:
       1. If an obituary-verified DM exists (DM Name populated by the
@@ -1967,6 +2120,11 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"  Rows in: {len(rows)}  Dropped (no parcel): {dropped}  "
           f"DM-promoted: {dm_promoted}  Beneficiary-promoted: {promoted}  "
           f"Generic Heirs-of: {heirs}  Out: {len(kept)}")
+
+    print("Step 4.5: second-pass aggressive obituary search for 'Heirs of' rows "
+          "(replace with real heir name + address when found)")
+    n_full, n_name, n_tried = second_pass_obituary_for_heirs_of(kept)
+    print(f"  Tried: {n_tried}  Promoted with address: {n_full}  Promoted name-only: {n_name}")
 
     out_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.csv"
     out_xlsx = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.xlsx"
