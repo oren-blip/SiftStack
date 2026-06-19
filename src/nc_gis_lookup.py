@@ -279,6 +279,23 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
             and t not in {"TRUST", "TRUSTEE", "LIVING", "REVOC", "REVOCABLE"}
         ]
         if competing_first_names:
+            # Estate-marker escape: when owner is clearly the decedent's
+            # estate (contains HEIRS/ESTATE) AND a competing token shares
+            # the 4-char prefix of d_first, treat as a spelling variant
+            # of the decedent. Catches Cabarrus 26E000656-120 / Sega
+            # Paulene: owner "HUNTER VERNICE SR | SEGA PAULINE E ESTATE"
+            # — Paulene vs Pauline is a deed-spelling drift on the same
+            # person. Accept with confidence 0.7 (above min_score, below
+            # exact-match 1.0).
+            if (
+                o_set & _HEIRS_MARKERS
+                and d_first
+                and len(d_first) >= 4
+            ):
+                d_prefix = d_first[:4]
+                for cf in competing_first_names:
+                    if len(cf) >= 4 and cf[:4] == d_prefix:
+                        return 0.7
             return 0.4  # owner has its own first name, ours isn't it
 
         d_first_initial = d_first[0]
