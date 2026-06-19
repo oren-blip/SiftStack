@@ -175,6 +175,15 @@ def research_blank_parcels(
             if new_use:
                 r["Property use"] = new_use
         tag_reason(r, "name-research")
+        if getattr(found, "is_heir_transferred", False):
+            # The deed already moved to the next-generation heir
+            # (decedent Jr -> deed III). Still a real lead but flag it
+            # so the operator knows post-probate transfer already
+            # happened — the heir is the legal owner now.
+            tag_reason(r, "heir-transferred-deed")
+            existing_notes = (r.get("Notes") or "").strip()
+            xfer_note = f"[HEIR-TRANSFERRED-DEED owner={found.owner_name}]"
+            r["Notes"] = (existing_notes + ("\n" if existing_notes else "") + xfer_note).strip()
         print(f"  Re-found {county}/{dec} via {used_variation!r}: {found.pid} {street}, {city} NC {zipc}")
         recovered += 1
     return recovered
@@ -1468,6 +1477,22 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         norm_tokens = [_STREET_SUFFIX_NORMALIZE.get(t.rstrip("."), t.rstrip(".")) for t in tokens]
         joined = " ".join(norm_tokens)
         return ''.join(c for c in joined if c.isalnum())
+
+    def _row_dq_signals(r: dict, prop_norm: str) -> tuple[bool, str]:
+        """Return (is_dq, reason_code). Heir-occupied DQ fires when either
+        the executor's mailing or any listed beneficiary's address matches
+        the property address (all normalized via norm_addr).
+        """
+        mail = norm_addr(r.get("Mailing Address"))
+        if mail and prop_norm == mail:
+            return (True, "dq-executor-at-property")
+        ben_block = (r.get("Beneficiaries") or "")
+        if ben_block:
+            for ben_addr in _BENEFICIARY_ADDR_RE.findall(ben_block):
+                if norm_addr(ben_addr) == prop_norm:
+                    return (True, "dq-beneficiary-at-property")
+        return (False, "")
+
     kept = []
     dropped = 0
     for r in rows:
@@ -1478,27 +1503,119 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         if not prop:
             kept.append(r)
             continue
-        # Executor mailing matches property → heir-occupied DQ.
-        mail = norm_addr(r.get("Mailing Address"))
-        if mail and prop == mail:
-            dropped += 1
-            continue
-        # ANY beneficiary's street address matches property → heir-occupied DQ.
-        # Beneficiaries column contains lines like "Lima, Maria Theresa
-        # Garcia 5915 Statesville Rd Charlotte NC 28269". Extract candidate
-        # street addresses with the same regex Step 0.65 uses.
-        ben_block = (r.get("Beneficiaries") or "")
-        if ben_block:
-            for ben_addr in _BENEFICIARY_ADDR_RE.findall(ben_block):
-                if norm_addr(ben_addr) == prop:
-                    tag_reason(r, "dq-beneficiary-at-property")
-                    dropped += 1
-                    break
-            else:
+        is_dq, _reason = _row_dq_signals(r, prop)
+        if is_dq:
+            # Before dropping, try to swap to a non-DQ sibling parcel from
+            # the same decedent's estate. Catches multi-parcel cases like
+            # Queen 26E000714-170 where decedent owns residence (heir-
+            # occupied) + vacant lot next door — vacant lot is the real
+            # lead the residence DQ would otherwise kill.
+            if _try_swap_to_non_dq_sibling(r, norm_addr, _row_dq_signals):
                 kept.append(r)
+                continue
+            tag_reason(r, _reason)
+            dropped += 1
             continue
         kept.append(r)
     return kept, dropped
+
+
+def _try_swap_to_non_dq_sibling(
+    row: dict,
+    norm_addr,
+    dq_check,
+) -> bool:
+    """For a row whose currently-selected main parcel is heir-occupied,
+    look up the decedent's full estate via GIS and try to swap in a
+    non-DQ sibling (vacant lot, rental, or other property whose situs
+    doesn't match the executor mailing OR any beneficiary address).
+
+    Preference order for swap candidate: non-DQ vacant land first (most
+    likely to sell), then non-DQ residential/other. Mutates `row` in
+    place and returns True on swap; returns False (no swap) when no
+    sibling is acceptable.
+
+    `norm_addr` and `dq_check` are passed in to keep the heir-occupied
+    semantics identical to the caller (same address-normalization map,
+    same DQ predicate that considers executor AND beneficiaries).
+    """
+    from nc_gis_lookup import lookup_properties, filter_for_lead_quality
+    dec = (row.get("Deceased Owner") or "").strip()
+    county = (row.get("County") or "").strip()
+    if not dec or not county or "IN THE MATTER" in dec.upper():
+        return False
+    try:
+        cands = lookup_properties(dec, county, min_score=0.7)
+    except Exception:
+        return False
+    if not cands:
+        return False
+    kept_cands = filter_for_lead_quality(
+        cands,
+        beneficiaries_json=row.get("Beneficiaries", "") or "",
+        decedent_name=dec,
+    )
+    current_pid = (row.get("Parcel ID") or "").strip()
+    siblings = [c for c in kept_cands if (c.pid or "") and c.pid != current_pid]
+    if not siblings:
+        return False
+
+    def rank(c) -> tuple[int, int]:
+        """Lower tuple = better. First tier: 0 = non-DQ vacant, 1 = non-DQ
+        other, 99 = DQ (skip)."""
+        # Build a temp row-shape so dq_check can use the same predicate
+        temp_situs = c.situs_address or ""
+        if not temp_situs:
+            # Vacant parcels often have no situs in GIS — fall back to
+            # the owner mailing as a proxy, same as scrape-time logic.
+            temp_situs = c.mailing_address or ""
+        temp_norm = norm_addr(temp_situs)
+        if not temp_norm:
+            # No comparable address — risky to swap to; treat as DQ.
+            return (99, 0)
+        # Build a synthetic row preserving the original row's mailing +
+        # beneficiaries (those are what we're comparing against) but with
+        # the sibling's situs as the property.
+        synth = {
+            "Mailing Address": row.get("Mailing Address", ""),
+            "Beneficiaries": row.get("Beneficiaries", ""),
+            "Property Address": temp_situs,
+        }
+        is_dq, _ = dq_check(synth, temp_norm)
+        if is_dq:
+            return (99, 0)
+        use_desc = (c.use_description or "").upper()
+        is_vacant = "VACANT" in use_desc or "LAND" in use_desc or bool(c.is_vacant_land)
+        return (0 if is_vacant else 1, -int((c.market_value or 0)))
+
+    siblings.sort(key=rank)
+    best = siblings[0]
+    if rank(best)[0] >= 99:
+        return False  # every sibling also heir-occupied
+
+    street, city, zipc = _candidate_to_address_parts(best)
+    if not street:
+        street = best.mailing_address or ""
+    old_pid = current_pid
+    row["Parcel ID"] = best.pid or ""
+    row["Property Address"] = street
+    row["Property City"] = city
+    row["Property State"] = "NC"
+    row["Property Zip"] = zipc
+    new_use = simplify_use_code(best.use_code, best.use_description, best.county) or ""
+    if not new_use:
+        if best.is_vacant_land:
+            new_use = "Vacant Land"
+        elif best.is_residential:
+            new_use = "SFR"
+    if new_use:
+        row["Property use"] = new_use
+    existing_notes = (row.get("Notes") or "").strip()
+    swap_marker = f"[SWAPPED-ON-HEIR-OCCUPIED from {old_pid}]"
+    row["Notes"] = (existing_notes + ("\n" if existing_notes else "") + swap_marker).strip()
+    tag_reason(row, "swap-on-dq")
+    print(f"  SWAP-ON-DQ {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
+    return True
 
 
 def _parcel_use_tier(use: str) -> int:

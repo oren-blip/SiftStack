@@ -68,6 +68,13 @@ class PropertyCandidate:
     is_jointly_owned: bool = False
     # Score 0.0-1.0 — how confidently the parcel owner matches the decedent name
     match_score: float = 0.0
+    # TRUE when the GIS owner shares first+middle+last with the decedent but
+    # uses a LATER generational suffix (decedent JR -> deed III, etc.). This
+    # is the post-probate transfer pattern: father died, deed updated to the
+    # son with the same name + next generation marker. Polish flags these
+    # so the user knows the deed already moved to the heir but the property
+    # is still a real lead (the heir owns it, may or may not live there).
+    is_heir_transferred: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
     # Optional explicit overrides for situs city/zip when the situs string
     # itself doesn't contain them (e.g. Cabarrus DataExplorerSearch returns
@@ -244,12 +251,70 @@ def _name_match_score(decedent: str, owner_fullname: str) -> float:
     return best
 
 
+_GENERATIONAL_ORDER = {"SR": 0, "JR": 1, "II": 2, "III": 3, "IV": 4, "V": 5}
+
+
+def is_generational_heir_transfer(decedent: str, owner_fullname: str) -> bool:
+    """True when the owner name matches the decedent's first+last but uses
+    a STRICTLY LATER generational suffix (decedent JR -> deed III). Per-
+    segment aware: splits joint-owner strings the same way the matcher
+    does, returns True if any segment qualifies.
+    """
+    if not decedent or not owner_fullname:
+        return False
+    dec_suffix = _extract_suffix(decedent)
+    if not dec_suffix:
+        return False
+    d_first, _d_middle, d_last = split_decedent_name(decedent)
+    if not (d_first and d_last):
+        return False
+    for sub, _surname_inherited in _split_owner_segments(owner_fullname):
+        o_suffix = _extract_suffix(sub)
+        if not _is_later_generation(dec_suffix, o_suffix):
+            continue
+        o_tokens = _normalize_name(sub).split()
+        if d_first in o_tokens and d_last in o_tokens:
+            return True
+    return False
+
+
+def _is_later_generation(dec_suffix: str, owner_suffix: str) -> bool:
+    """True when owner_suffix is strictly LATER in the generational chain
+    than dec_suffix (e.g. dec=JR + owner=III = son inherited from father).
+    Used by the generational heir-transfer matcher path.
+    """
+    if not dec_suffix or not owner_suffix:
+        return False
+    d = _GENERATIONAL_ORDER.get(dec_suffix.upper())
+    o = _GENERATIONAL_ORDER.get(owner_suffix.upper())
+    if d is None or o is None:
+        return False
+    return o > d
+
+
 def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = "") -> float:
     """Score a single (non-joint) owner name against the decedent."""
     # Suffix disambiguation: Sr vs Jr (or any generational difference)
     # means different people, even if the rest of the name matches.
     o_suffix = _extract_suffix(owner_fullname)
     if dec_suffix and o_suffix and dec_suffix != o_suffix:
+        # Generational heir-transfer escape: when the owner is strictly
+        # LATER in the generational chain (decedent JR, deed III; or
+        # decedent SR, deed JR) AND first + last names match exactly,
+        # treat as a post-probate transfer to the next-generation heir.
+        # Score 0.75 so it passes min_score=0.7 but stays below an exact
+        # match. The caller is expected to set is_heir_transferred=True
+        # on the resulting PropertyCandidate via _name_match_score's
+        # heir-transfer companion helper.
+        if _is_later_generation(dec_suffix, o_suffix):
+            d_first, _d_middle, d_last = split_decedent_name(decedent)
+            o_tokens = _normalize_name(owner_fullname).split()
+            if (
+                d_first and d_last
+                and d_last in o_tokens
+                and d_first in o_tokens
+            ):
+                return 0.75
         return 0.0
 
     d_first, d_middle, d_last = split_decedent_name(decedent)
@@ -695,6 +760,7 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
     bldg = (rec.get("bldg") or [{}])[0] or {}
 
     score = _name_match_score(decedent_name, fullname)
+    heir_xfer = is_generational_heir_transfer(decedent_name, fullname)
 
     return PropertyCandidate(
         county=county,
@@ -718,6 +784,7 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
         is_commercial=any(use_code.startswith(p) for p in _POLARIS3G_COMMERCIAL_PREFIXES),
         is_jointly_owned=is_jointly_owned,
         match_score=score,
+        is_heir_transferred=heir_xfer,
         raw=rec,
     )
 
@@ -1167,6 +1234,7 @@ def _arcgis_to_candidate(
         is_commercial=is_commercial,
         is_jointly_owned=is_jointly_owned,
         match_score=score,
+        is_heir_transferred=is_generational_heir_transfer(decedent_name, owner_full),
         raw=rec,
         situs_city_override=situs_city_override,
         situs_zip_override=situs_zip_override,
@@ -1350,6 +1418,7 @@ def _catawba_php_to_candidate(
         is_commercial=False,
         is_jointly_owned=is_jointly_owned,
         match_score=score,
+        is_heir_transferred=is_generational_heir_transfer(decedent_name, owner_full),
         raw=rec,
         situs_city_override=city,
         situs_zip_override=zipc,
