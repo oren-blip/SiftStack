@@ -1418,11 +1418,27 @@ _STREET_SUFFIX_NORMALIZE = {
     "place": "pl",
     "lane": "ln",
     "circle": "cir",
+    # Some counties (incl. Mecklenburg) abbreviate Circle as "Cr". Collapse
+    # both Cr and Circle to the same canonical "cir" so they compare equal.
+    # Without this, VEIT 26E002255-590 leaked through heir-occupied:
+    # mailing="8631 KNOLLWOOD CIRCLE" vs property="8631 Knollwood Cr".
+    "cr": "cir",
     "highway": "hwy",
     "parkway": "pkwy",
     "terrace": "ter",
     "trail": "trl",
     "way": "wy",
+    # Compass directions — county GIS abbreviates ("19827 N Ferry St"),
+    # court records spell out ("19827 NORTH FERRY STREET"). Without these,
+    # BURTON 26E002256-590 leaked through heir-occupied.
+    "north": "n",
+    "south": "s",
+    "east": "e",
+    "west": "w",
+    "northeast": "ne",
+    "northwest": "nw",
+    "southeast": "se",
+    "southwest": "sw",
 }
 
 
