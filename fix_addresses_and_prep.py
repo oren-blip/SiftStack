@@ -90,10 +90,17 @@ def _name_variations(decedent: str, county: str = "") -> list[str]:
             raw = [
                 f"{last} {first} {mid}".strip(),
                 f"{last} {first} {mid_initial}".strip(),
+                decedent,
             ]
         elif last and first:
-            # No middle name — single precise variation.
-            raw = [f"{last} {first}".strip()]
+            # No middle name — try LAST FIRST then the as-passed comma form
+            # as fallback. The space-separated form maps to a strict LIKE
+            # query in some county GIS layers (e.g. Cabarrus) and misses
+            # deed-spelling variants; the as-passed form takes a different
+            # search path that's more spelling-tolerant. Cost is one extra
+            # GIS call when LAST FIRST returns 0, which is the case we
+            # actually want to recover (e.g. Sega Paulene -> deed PAULINE).
+            raw = [f"{last} {first}".strip(), decedent]
         else:
             raw = [decedent]
     else:
