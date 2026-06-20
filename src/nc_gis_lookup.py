@@ -1681,7 +1681,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 3  # bumped 2026-06-13 — Gaston endpoint swap (live GIS)
+_PERSIST_VERSION = 4  # bumped 2026-06-19 — matcher updates (ESTATE-spelling escape + generational heir-transfer); cached PropertyCandidates carry match_score and is_heir_transferred fields that change under the new logic
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
