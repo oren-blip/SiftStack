@@ -933,12 +933,51 @@ def populate_property_values(rows: list[dict]) -> int:
     return filled
 
 
+# Per-use-type buy-box value caps. Vacant land has a higher cap because
+# raw land is harder to price + heirs more willing to sell at higher $.
+# Per Oren 2026-06-20: "Residential SFR parcels would still keep the 500k
+# limit, but vacant parcels up to 1M."
+_VALUE_CAP_BY_USE = {
+    "VACANT LAND": 1_000_000,
+    "VACANT":      1_000_000,
+    "LAND":        1_000_000,
+    "SFR":         500_000,
+    "MH":          500_000,
+    "RESIDENTIAL": 500_000,
+    "MULTI-FAMILY": 500_000,
+    "DUPLEX":      500_000,
+}
+_DEFAULT_VALUE_CAP = 500_000
+
+
+def _cap_for_use(use: str) -> float:
+    u = (use or "").upper().strip()
+    if not u:
+        return _DEFAULT_VALUE_CAP
+    if "VACANT" in u or u == "LAND":
+        return _VALUE_CAP_BY_USE["VACANT LAND"]
+    return _VALUE_CAP_BY_USE.get(u, _DEFAULT_VALUE_CAP)
+
+
 def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], int]:
-    """Drop rows whose Property Value exceeds the cap. Skips rows without
-    a populated value (we don't want to drop rows we couldn't price).
+    """Drop rows whose Property Value exceeds the per-use buy-box cap.
+    SFR/MH/Residential get the default $500K cap; Vacant Land gets $1M
+    (per Oren's buy-box: vacant land sells at higher $ — wider net).
+    Skips rows without a populated value (we don't want to drop rows we
+    couldn't price). `cap` arg kept for back-compat but per-use map wins.
     """
-    kept = [r for r in rows if _money(r.get("Property Value")) <= cap or not (r.get("Property Value") or "").strip()]
-    dropped = len(rows) - len(kept)
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        v_str = (r.get("Property Value") or "").strip()
+        if not v_str:
+            kept.append(r)
+            continue
+        use_cap = _cap_for_use(r.get("Property use", ""))
+        if _money(v_str) <= use_cap:
+            kept.append(r)
+        else:
+            dropped += 1
     return kept, dropped
 
 
@@ -2273,9 +2312,9 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_priced = populate_property_values(rows)
     print(f"  Filled Property Value: {n_priced}")
 
-    print("Step 1.8: drop properties valued over $500K (user's buy-box cap)")
+    print("Step 1.8: drop properties over buy-box cap (SFR/MH/Residential $500K, Vacant Land $1M)")
     rows, n_over_500k = drop_over_500k(rows, cap=500_000)
-    print(f"  Dropped >$500K: {n_over_500k}  Remaining: {len(rows)}")
+    print(f"  Dropped over-cap: {n_over_500k}  Remaining: {len(rows)}")
 
     # Step order rationale: people search FIRST (fills legit PR mailing),
     # THEN heir-occupied drop (now mailing is populated for the check),
