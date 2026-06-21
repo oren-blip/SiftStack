@@ -395,6 +395,13 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
                     continue
             if t in _MIDDLE_NOISE_TOKENS:
                 continue
+            # HEIRS/ESTATE/ESTATEOF aren't middle names — they're trust-
+            # status markers. Skip so they don't get scored as a
+            # competing middle (e.g. "SMITH JOHN HEIRS" for decedent
+            # "Smith, John A" should NOT treat "HEIRS" as a clashing
+            # middle and downgrade the match).
+            if t in _HEIRS_MARKERS:
+                continue
             owner_middle_tokens.append(t)
         if owner_middle_tokens:
             owner_middle_matches = False
@@ -412,15 +419,22 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
                     owner_middle_matches = True
                     break
             if not owner_middle_matches:
-                # HEIRS / ESTATE marker exception: when the owner string
-                # contains "HEIRS" or "ESTATE", the property is already
-                # attributed to the estate, so accept the match even if
-                # the middle initial doesn't line up (common with old
-                # records where the middle initial varies).
+                # HEIRS / ESTATE marker partial-accept: when the owner
+                # string contains HEIRS/ESTATE the parcel is held in
+                # an estate, but the middle name we have for the
+                # current decedent doesn't match the deed -- could be
+                # the right family (e.g. deed never updated after a
+                # prior generation's probate) OR a different "John
+                # Cowan" in the same county. Score below min_score so
+                # the polish step drops the row. Per Oren's audit of
+                # Cowan 26E000686-170 (Catawba: COWAN JOHN B HEIRS vs
+                # court decedent "Cowan, John Williams Jr."), the
+                # false-positive risk on these is high enough that
+                # auto-dropping is the right call. Loses ~5% of real
+                # deed-never-updated inheritance cases.
                 if o_set & _HEIRS_MARKERS:
-                    pass  # accept anyway, still a probate-tagged property
-                else:
-                    return 0.4
+                    return 0.6
+                return 0.4
 
     if first_full_match:
         return 1.0
@@ -1700,7 +1714,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 5  # bumped 2026-06-20 — ArcGIS market_value read (MarketValue/TotalValue/AssessedValue fields). Cached candidates have market_value=None; without invalidation the $500K cap (Step 1.8) keeps missing commercial parcels like Watts Mitchell W's $1.7M estate
+_PERSIST_VERSION = 6  # bumped 2026-06-20 — matcher tightening: HEIRS-marker escape now scores 0.6 (below min_score) when middle name doesn't match, instead of accepting at 1.0. Catches Cowan-class false positives (COWAN JOHN B HEIRS vs court "Cowan John Williams Jr.")
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
