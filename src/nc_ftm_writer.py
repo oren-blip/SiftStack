@@ -127,26 +127,108 @@ def _format_decedent(name: str) -> str:
     return f"{last}, {rest}"
 
 
-def _format_extra_parcels(extras: list[NoticeData]) -> str:
-    """Format a 'PLUS N PARCELS' note for additional properties of a decedent.
+def _fmt_money(v) -> str:
+    """Compact dollar formatter: $1,698,570 -> '$1.7M', $77,170 -> '$77K'."""
+    if v in (None, "", 0, 0.0):
+        return ""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n >= 1_000_000:
+        return f"${n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"${n/1_000:.0f}K"
+    return f"${int(n)}"
 
-    Each extra is rendered as: 'parcel_id  property_address, city zip [USE]'
-    so the user can see what's been collapsed off the main row.
+
+def format_extra_parcels_vertical(parcels: list[dict]) -> str:
+    """Build a vertically-laid-out 'PLUS N PARCELS' note from a list of
+    parcel dicts. Each parcel dict accepts these keys (all optional):
+      address, value, use, lot, pid, tier, score, suffix
+
+    Output shape (one blank line between parcels):
+
+      PLUS 14 PARCELS (auto-ranked)
+
+      830 Florence St NW Concord 28027
+        $1.7M  Commercial  2.1ac
+        PID 56210485720000
+
+      1015 Central Dr NW Concord 28027
+        $136K  SFR
+        PID 56118667130000
+
+    The vertical format reads much faster than the prior pipe-separated
+    single-line format when scanning a multi-parcel estate for
+    commercial-portfolio patterns (Watts Mitchell W class).
+    """
+    if not parcels:
+        return ""
+    suffix = ""
+    # Allow caller to pass a header suffix like "(auto-ranked)"
+    if parcels and isinstance(parcels[0], dict) and parcels[0].get("_header_suffix"):
+        suffix = " " + parcels[0]["_header_suffix"]
+    header = f"PLUS {len(parcels)} PARCEL{'S' if len(parcels) > 1 else ''}{suffix}"
+    blocks: list[str] = [header]
+    for p in parcels:
+        addr = (p.get("address") or "").strip()
+        if not addr:
+            addr = "(no address)"
+        lines = [addr]
+
+        # Line 2: value + use + lot, space-separated; skip blanks
+        meta_bits = []
+        v = _fmt_money(p.get("value"))
+        if v:
+            meta_bits.append(v)
+        use = (p.get("use") or "").strip()
+        if use:
+            meta_bits.append(use)
+        lot = p.get("lot")
+        if lot is not None:
+            try:
+                f = float(lot)
+                if f > 0:
+                    meta_bits.append(f"{f:.2f}ac")
+            except (TypeError, ValueError):
+                pass
+        # Optional ranking-tier prefix (e.g. "T1=85") for the smart-picker
+        tier = p.get("tier")
+        score = p.get("score")
+        if tier and score is not None:
+            meta_bits.insert(0, f"{tier}={score}")
+        if meta_bits:
+            lines.append("  " + "  ".join(meta_bits))
+
+        # Line 3: PID
+        pid = (p.get("pid") or "").strip()
+        if pid:
+            lines.append(f"  PID {pid}")
+
+        blocks.append("\n".join(lines))
+    # Join blocks with a blank line separator for visual scanning
+    return "\n\n".join(blocks)
+
+
+def _format_extra_parcels(extras: list[NoticeData]) -> str:
+    """Scrape-time wrapper: converts NoticeData extras into the dict
+    shape that format_extra_parcels_vertical expects, then delegates.
     """
     if not extras:
         return ""
-    lines = [f"PLUS {len(extras)} PARCEL{'S' if len(extras) > 1 else ''}"]
+    items: list[dict] = []
     for e in extras:
-        bits = []
-        if e.parcel_id:
-            bits.append(e.parcel_id)
         addr = " ".join(filter(None, [e.address, e.city, e.zip])).strip()
-        if addr:
-            bits.append(addr)
-        if e.property_use_simple:
-            bits.append(f"[{e.property_use_simple}]")
-        lines.append("  " + " | ".join(bits))
-    return "\n".join(lines)
+        items.append({
+            "address": addr,
+            "use": e.property_use_simple,
+            "pid": e.parcel_id,
+            # NoticeData doesn't carry market_value -- left blank.
+        })
+    return format_extra_parcels_vertical(items)
 
 
 def _build_notes(extra_parcels: list[NoticeData] | None = None) -> str:

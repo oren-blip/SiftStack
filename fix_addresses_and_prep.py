@@ -261,49 +261,38 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
             scored.append((score, tier, s))
         scored.sort(key=lambda t: -t[0])
 
-        # Build new sibling lines
-        lines: list[str] = []
-        if not existing_notes or "PLUS " not in existing_notes.upper() or "PARCEL" not in existing_notes.upper():
-            lines.append(f"PLUS {len(siblings)} PARCELS (auto-ranked)")
-        for score, tier, s in scored:
+        # Build vertical sibling block via shared formatter
+        from nc_ftm_writer import format_extra_parcels_vertical
+        items: list[dict] = []
+        for i, (score, tier, s) in enumerate(scored):
             street, city, zipc = _candidate_to_address_parts(s)
-            addr_bits = [b for b in (street, city, zipc) if b]
-            addr = " ".join(addr_bits).strip()
+            addr = " ".join(filter(None, [street, city, zipc])).strip()
             use = simplify_use_code(s.use_code, s.use_description, s.county) or ""
             if not use:
                 if s.is_vacant_land:
                     use = "Vacant Land"
                 elif s.is_residential:
                     use = "SFR"
-            bits = [f"{tier}={score}", s.pid or "?"]
-            if addr:
-                bits.append(addr)
-            tag_parts = []
-            if use:
-                tag_parts.append(use)
-            if s.lot_area and s.lot_area > 0:
-                tag_parts.append(f"{s.lot_area:.2f}ac")
-            # Show market value when known — lets the user eyeball a multi-
-            # parcel estate for commercial-portfolio patterns (Watts Mitchell
-            # W's $1.7M Florence St building, etc.) without a per-parcel
-            # GIS click-through. "$1.7M" reads faster than "$1,698,570".
-            if s.market_value and s.market_value > 0:
-                v = float(s.market_value)
-                if v >= 1_000_000:
-                    tag_parts.append(f"${v/1_000_000:.1f}M")
-                elif v >= 1_000:
-                    tag_parts.append(f"${v/1_000:.0f}K")
-                else:
-                    tag_parts.append(f"${int(v)}")
-            if tag_parts:
-                bits.append(f"[{', '.join(tag_parts)}]")
-            lines.append(" | ".join(bits))
-        new_notes = existing_notes
-        if new_notes and lines:
-            new_notes = new_notes + "\n" + "\n".join(lines)
+            item = {
+                "address": addr,
+                "use": use,
+                "lot": s.lot_area,
+                "value": s.market_value,
+                "pid": s.pid,
+                "tier": tier,
+                "score": score,
+            }
+            if i == 0:
+                item["_header_suffix"] = "(auto-ranked)"
+            items.append(item)
+        new_block = format_extra_parcels_vertical(items)
+        if existing_notes and "PLUS " in existing_notes.upper() and "PARCEL" in existing_notes.upper():
+            # Already has PLUS-N-PARCELS — append fresh block separated by blank line
+            r["Notes"] = (existing_notes + "\n\n" + new_block).strip()
+        elif existing_notes:
+            r["Notes"] = (existing_notes + "\n\n" + new_block).strip()
         else:
-            new_notes = "\n".join(lines)
-        r["Notes"] = new_notes
+            r["Notes"] = new_block
         updated += 1
     return updated
 
@@ -1739,21 +1728,24 @@ def re_collapse_multi_parcel(rows: list[dict]) -> int:
         r["Property State"] = "NC"
         r["Property Zip"] = zipc
         r["Property use"] = new_use
-        # Rebuild the PLUS-N-PARCELS note with the remaining parcels
+        # Rebuild the PLUS-N-PARCELS note (vertical format) with the
+        # remaining parcels
         extras = sorted_kept[1:]
         if extras:
-            lines = [f"PLUS {len(extras)} PARCEL{'S' if len(extras) > 1 else ''}"]
+            from nc_ftm_writer import format_extra_parcels_vertical
+            items: list[dict] = []
             for e in extras:
-                bits = [e.pid or ""]
                 es, ec, ez = _candidate_to_address_parts(e)
                 addr = " ".join(filter(None, [es, ec, ez])).strip()
-                if addr:
-                    bits.append(addr)
                 eu = simplify_use_code(e.use_code, e.use_description, e.county) or ""
-                if eu:
-                    bits.append(f"[{eu}]")
-                lines.append("  " + " | ".join(bits))
-            r["Notes"] = "\n".join(lines)
+                items.append({
+                    "address": addr,
+                    "use": eu,
+                    "lot": e.lot_area,
+                    "value": e.market_value,
+                    "pid": e.pid,
+                })
+            r["Notes"] = format_extra_parcels_vertical(items)
         else:
             r["Notes"] = ""
         print(f"  Re-collapsed {county}/{dec}: {current_use!r} -> {new_use!r}, "
@@ -1818,24 +1810,24 @@ def collapse_duplicate_decedents(rows: list[dict]) -> tuple[list[dict], int]:
         # Pick main = first (already sorted by scrape order)
         main = items[0]
         extras = items[1:]
-        # Build a PLUS N PARCELS note appended to existing Notes
-        lines = [f"PLUS {len(extras)} PARCEL{'S' if len(extras) > 1 else ''}"]
+        # Build a vertical-format PLUS-N-PARCELS note appended to existing Notes
+        from nc_ftm_writer import format_extra_parcels_vertical
+        items: list[dict] = []
         for e in extras:
-            bits = []
-            if (e.get("Parcel ID") or "").strip():
-                bits.append(e["Parcel ID"])
             addr = " ".join(filter(None, [e.get("Property Address", ""),
                                           e.get("Property City", ""),
                                           e.get("Property Zip", "")])).strip()
-            if addr:
-                bits.append(addr)
-            if (e.get("Property use") or "").strip():
-                bits.append(f"[{e['Property use']}]")
-            lines.append("  " + " | ".join(bits))
-        extra_note = "\n".join(lines)
+            items.append({
+                "address": addr,
+                "use": (e.get("Property use") or "").strip(),
+                "pid": (e.get("Parcel ID") or "").strip(),
+                # collapse_duplicate_decedents works at the polish-row layer
+                # and doesn't carry market_value -- left blank
+            })
+        extra_note = format_extra_parcels_vertical(items)
         existing_notes = (main.get("Notes") or "").strip()
         if existing_notes:
-            main["Notes"] = existing_notes + "\n" + extra_note
+            main["Notes"] = existing_notes + "\n\n" + extra_note
         else:
             main["Notes"] = extra_note
         keep_individually.append(main)
