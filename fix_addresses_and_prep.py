@@ -948,6 +948,66 @@ def _cap_for_use(use: str) -> float:
     return _VALUE_CAP_BY_USE.get(u, _DEFAULT_VALUE_CAP)
 
 
+def drop_recently_sold(rows: list[dict], months: int = 24, min_price: float = 50_000) -> tuple[list[dict], int]:
+    """Drop rows whose parcel sold within the last `months` for at
+    least `min_price`. Catches the Conners 26E000691-170 class: deed
+    transferred to a new owner January 2026, no equity for an heir to
+    sell. Per Oren's pre-mail workflow ("I typically check the property
+    to see if it has been listed, sold, under contract, etc."), these
+    are dead leads -- the property is already in market or just changed
+    hands, mail to the dead decedent's heir is wasted.
+
+    Window: 24 months (configurable). Threshold: $50K (filters out
+    intra-family deed transfers stamped as a sale for $0/$10/$100;
+    those aren't real sales and shouldn't trigger the filter).
+
+    Looks up each row's parcel in GIS (cache-hot after Step 1.7
+    Property Value backfill) and reads PropertyCandidate.sale_date.
+    Returns (kept_rows, dropped_count).
+    """
+    from datetime import datetime
+    from nc_gis_lookup import lookup_properties
+    kept: list[dict] = []
+    dropped = 0
+    today = datetime.now().date()
+    cutoff_days = months * 30  # approximate; 24mo ≈ 720 days
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not (pid and dec and county) or "IN THE MATTER" in dec.upper():
+            kept.append(r)
+            continue
+        try:
+            results = lookup_properties(dec, county, min_score=0.5)
+        except Exception:
+            kept.append(r)
+            continue
+        match = next((c for c in results if c.pid == pid), None)
+        if not match or not match.sale_date:
+            kept.append(r)
+            continue
+        try:
+            sold = datetime.strptime(match.sale_date[:10], "%Y-%m-%d").date()
+        except ValueError:
+            kept.append(r)
+            continue
+        age_days = (today - sold).days
+        if age_days < 0 or age_days > cutoff_days:
+            kept.append(r)
+            continue
+        # Within the window — verify it was a real sale, not an intra-
+        # family $0/$10/$100 deed stamp
+        if match.sale_price and float(match.sale_price) < min_price:
+            kept.append(r)
+            continue
+        tag_reason(r, "dq-recently-sold")
+        price_str = f"${int(float(match.sale_price)):,}" if match.sale_price else "?"
+        print(f"  RECENTLY-SOLD {county}/{dec}: pid={pid} sold {match.sale_date} for {price_str} ({age_days//30}mo ago)")
+        dropped += 1
+    return kept, dropped
+
+
 def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], int]:
     """Drop rows whose Property Value exceeds the per-use buy-box cap.
     SFR/MH/Residential get the default $500K cap; Vacant Land gets $1M
@@ -2307,6 +2367,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.8: drop properties over buy-box cap (SFR/MH/Residential $500K, Vacant Land $1M)")
     rows, n_over_500k = drop_over_500k(rows, cap=500_000)
     print(f"  Dropped over-cap: {n_over_500k}  Remaining: {len(rows)}")
+
+    print("Step 1.85: drop properties sold within last 24 months for $50K+ (already-in-market filter)")
+    rows, n_recently_sold = drop_recently_sold(rows, months=24, min_price=50_000)
+    print(f"  Dropped recently-sold: {n_recently_sold}  Remaining: {len(rows)}")
 
     # Step order rationale: people search FIRST (fills legit PR mailing),
     # THEN heir-occupied drop (now mailing is populated for the check),

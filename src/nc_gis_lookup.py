@@ -1245,6 +1245,14 @@ def _arcgis_to_candidate(
             except (TypeError, ValueError):
                 continue
 
+    # Sale date + price: each county uses its own field names and date
+    # format. Helpers below normalize into ISO 'YYYY-MM-DD' + float.
+    # Used by drop_recently_sold polish step (24-month window) to filter
+    # out properties already sold post-decedent's death (or pre-listed/
+    # under-contract via county records).
+    sale_date = _parse_arcgis_sale_date(rec)
+    sale_price = _parse_arcgis_sale_price(rec)
+
     return PropertyCandidate(
         county=county,
         pid=pid,
@@ -1259,8 +1267,8 @@ def _arcgis_to_candidate(
         bathrooms=None,
         living_sqft=None,
         lot_area=None,
-        sale_date=None,
-        sale_price=None,
+        sale_date=sale_date,
+        sale_price=sale_price,
         owner_offsite=not _addresses_match(situs, mailing),
         is_residential=is_residential,
         is_vacant_land=is_vacant,
@@ -1272,6 +1280,75 @@ def _arcgis_to_candidate(
         situs_city_override=situs_city_override,
         situs_zip_override=situs_zip_override,
     )
+
+
+def _parse_arcgis_sale_date(rec: dict) -> str | None:
+    """Normalize ArcGIS sale-date variants into ISO 'YYYY-MM-DD' or None.
+
+    Counties expose sale dates in 3 distinct formats:
+      - Epoch milliseconds (Gaston SALEDATE = 1730782800000)
+      - 'MM/DD/YYYY' strings (Iredell Sale_Date = '05/13/2014')
+      - ISO 'YYYY-MM-DD' strings (Catawba deed_date = '2021-09-30')
+
+    For year-only fields (Lincoln DEEDYR=1997, Rowan DEEDYEAR=2010.0),
+    we synthesize 'YYYY-01-01' so the 24-month cutoff has SOMETHING to
+    work with — slightly pessimistic (treats sales as Jan 1) which
+    means a property sold late in 2024 reads as 2024-01-01, but for
+    the 24-month-cutoff use case that's safer than dropping the field.
+    """
+    from datetime import datetime, timezone
+    # Priority 1: full date fields
+    for field in ("SaleDate", "SALEDATE", "Sale_Date", "sale_date",
+                  "DeedDate", "deed_date", "LastSaleDate", "SaleDt"):
+        v = rec.get(field)
+        if v in (None, "", " ", 0):
+            continue
+        # Epoch ms (integer or float)
+        if isinstance(v, (int, float)):
+            try:
+                dt = datetime.fromtimestamp(float(v) / 1000.0, tz=timezone.utc)
+                return dt.strftime("%Y-%m-%d")
+            except (OSError, ValueError, OverflowError):
+                continue
+        s = str(v).strip()
+        if not s:
+            continue
+        # ISO format already?
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            return s[:10]
+        # MM/DD/YYYY
+        if "/" in s:
+            for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+                try:
+                    return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+    # Priority 2: year-only fallback — synthesize Jan 1
+    for field in ("Sale_Yr", "SALE_YEAR", "DEEDYR", "DEEDYEAR"):
+        v = rec.get(field)
+        if v in (None, "", 0, 0.0):
+            continue
+        try:
+            yr = int(float(v))
+            if 1900 <= yr <= 2100:
+                return f"{yr:04d}-01-01"
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _parse_arcgis_sale_price(rec: dict) -> float | None:
+    """Read sale price from any of the variant ArcGIS field names."""
+    for field in ("SalePrice", "SALEPRICE", "Sales_Price", "sale_amoun",
+                  "SALESAMT", "SALE_AMT", "Sale_Price", "LastSalePrice"):
+        v = rec.get(field)
+        if v in (None, "", 0, 0.0):
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _lookup_arcgis_county(
@@ -1714,7 +1791,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 6  # bumped 2026-06-20 — matcher tightening: HEIRS-marker escape now scores 0.6 (below min_score) when middle name doesn't match, instead of accepting at 1.0. Catches Cowan-class false positives (COWAN JOHN B HEIRS vs court "Cowan John Williams Jr.")
+_PERSIST_VERSION = 7  # bumped 2026-06-20 — ArcGIS sale_date + sale_price now populated for Catawba/Iredell/Gaston/Lincoln/Rowan (previously hardcoded None). Required for drop_recently_sold (24-month window) polish step
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
