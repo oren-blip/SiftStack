@@ -2196,6 +2196,32 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
     return (full_hits, name_only_hits, attempted)
 
 
+def populate_zillow_urls(rows: list[dict]) -> int:
+    """Build a Zillow search URL for each row's Property Address and
+    write it to the 'Zillow URL' column. Skips rows with no usable
+    address (blank, or vacant lots prefixed with "0 ").
+
+    User clicks the URL from the workbook (or from DataSift after
+    upload — the column rides along) before calling/texting/mailing
+    to confirm the property isn't already listed / under contract.
+    Catches the MLS-only cases the recently-sold filter (Step 1.85)
+    can't see in county GIS.
+    """
+    from nc_ftm_writer import build_zillow_url
+    n = 0
+    for r in rows:
+        url = build_zillow_url(
+            r.get("Property Address", ""),
+            r.get("Property City", ""),
+            r.get("Property State", "") or "NC",
+            r.get("Property Zip", ""),
+        )
+        if url:
+            r["Zillow URL"] = url
+            n += 1
+    return n
+
+
 def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]:
     """For rows with a parcel + no court-named executor:
       1. If an obituary-verified DM exists (DM Name populated by the
@@ -2415,6 +2441,11 @@ def run(src_path: Path, tag: str, ts: str) -> None:
           "(replace with real heir name + address when found)")
     n_full, n_name, n_tried = second_pass_obituary_for_heirs_of(kept)
     print(f"  Tried: {n_tried}  Promoted with address: {n_full}  Promoted name-only: {n_name}")
+
+    print("Step 4.7: populate Zillow URL column for each kept row "
+          "(listing-status manual-check link)")
+    n_zillow = populate_zillow_urls(kept)
+    print(f"  Zillow URLs populated: {n_zillow}")
 
     out_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.csv"
     out_xlsx = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.xlsx"

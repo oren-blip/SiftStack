@@ -61,6 +61,12 @@ FTM_COLUMNS = [
     # tags are appended " | "-separated as the row mutates. Sort by this
     # column to triage low-confidence rows fast.
     "Match Reason",
+    # Clickable Zillow search URL for the property — operator checks
+    # listing status (active / under contract / sold) before calling/
+    # texting/mailing. Built from Property Address+City+State+Zip via
+    # build_zillow_url(). Catches the cases Step 1.85 recently-sold
+    # filter can't (MLS-only listing data isn't in county GIS).
+    "Zillow URL",
     # Heir / Decision Maker columns — populated for rows that lack a
     # court-named executor, via heir_prospect_no_executor.py (obituary
     # survivors + multi-tier skip trace). Stays blank for executor rows.
@@ -125,6 +131,42 @@ def _format_decedent(name: str) -> str:
     last = tokens[-1]
     rest = " ".join(tokens[:-1])
     return f"{last}, {rest}"
+
+
+def build_zillow_url(address: str, city: str = "", state: str = "NC", zip_code: str = "") -> str:
+    """Build a Zillow search URL for the given property address.
+
+    Zillow's stable URL pattern is `/homes/{slug}_rb/` which lands on
+    a search page filtered to that address. The slug is the address
+    components joined by hyphens, with spaces and most punctuation
+    converted to hyphens, and runs of hyphens collapsed.
+
+    Example: 830 Florence St NW + Concord + NC + 28027 ->
+      https://www.zillow.com/homes/830-Florence-St-NW-Concord-NC-28027_rb/
+
+    Returns empty string when address is blank — vacant lots with no
+    house number ("0 Carriage Rd") aren't meaningfully searchable on
+    Zillow so we don't generate a URL for them.
+    """
+    if not address or not address.strip():
+        return ""
+    # Vacant lots get "0 <street>" prefix in our convention; Zillow
+    # can't resolve a search for "0 street" cleanly. Skip those.
+    a = address.strip()
+    if a.startswith("0 ") or a == "0":
+        return ""
+    bits = [a, city.strip(), (state or "NC").strip(), zip_code.strip()]
+    bits = [b for b in bits if b]
+    if not bits:
+        return ""
+    raw = " ".join(bits)
+    # Slug: lowercase NOT required, but normalize whitespace + remove
+    # most punct except '.' (e.g. "St." stays meaningful).
+    import re
+    slug = re.sub(r"[^\w\s.-]", "", raw)
+    slug = re.sub(r"\s+", "-", slug.strip())
+    slug = re.sub(r"-+", "-", slug)
+    return f"https://www.zillow.com/homes/{slug}_rb/"
 
 
 def _fmt_money(v) -> str:
@@ -517,6 +559,7 @@ def write_ftm_xlsx(
         "Property Value": 14,
         "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
         "Match Reason": 24,
+        "Zillow URL": 50,
         # Heir / Decision Maker columns
         "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
         "DM 2 Name": 22, "DM 2 Relationship": 14,
