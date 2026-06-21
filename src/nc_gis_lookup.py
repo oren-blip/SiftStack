@@ -1212,6 +1212,25 @@ def _arcgis_to_candidate(
         elif situs_check[0].isalpha():
             is_vacant = True
 
+    # Market value: counties don't standardize the field name. Try the
+    # common ones in priority order. Cabarrus exposes "MarketValue"
+    # directly (and so do several other Tyler/ArcGIS layers). Without
+    # this read, the polish's drop_over_500k filter (Step 1.8) never
+    # fires on ArcGIS counties — Watts Mitchell W's $1.7M commercial
+    # estate leaked through Week 25 audit because market_value was
+    # hardcoded None.
+    market_value = None
+    for value_field in ("MarketValue", "TotalValue", "AssessedValue",
+                        "Market_Value", "TOTAL_VALUE", "MKT_VALUE",
+                        "AppraisedValue"):
+        v = rec.get(value_field)
+        if v not in (None, "", 0, 0.0):
+            try:
+                market_value = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+
     return PropertyCandidate(
         county=county,
         pid=pid,
@@ -1220,7 +1239,7 @@ def _arcgis_to_candidate(
         mailing_address=mailing,
         use_code=use_code,
         use_description=use_desc,
-        market_value=None,  # ArcGIS counties don't standardize value fields
+        market_value=market_value,
         year_built=None,
         bedrooms=None,
         bathrooms=None,
@@ -1681,7 +1700,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 4  # bumped 2026-06-19 — matcher updates (ESTATE-spelling escape + generational heir-transfer); cached PropertyCandidates carry match_score and is_heir_transferred fields that change under the new logic
+_PERSIST_VERSION = 5  # bumped 2026-06-20 — ArcGIS market_value read (MarketValue/TotalValue/AssessedValue fields). Cached candidates have market_value=None; without invalidation the $500K cap (Step 1.8) keeps missing commercial parcels like Watts Mitchell W's $1.7M estate
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded

@@ -283,6 +283,18 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
                 tag_parts.append(use)
             if s.lot_area and s.lot_area > 0:
                 tag_parts.append(f"{s.lot_area:.2f}ac")
+            # Show market value when known — lets the user eyeball a multi-
+            # parcel estate for commercial-portfolio patterns (Watts Mitchell
+            # W's $1.7M Florence St building, etc.) without a per-parcel
+            # GIS click-through. "$1.7M" reads faster than "$1,698,570".
+            if s.market_value and s.market_value > 0:
+                v = float(s.market_value)
+                if v >= 1_000_000:
+                    tag_parts.append(f"${v/1_000_000:.1f}M")
+                elif v >= 1_000:
+                    tag_parts.append(f"${v/1_000:.0f}K")
+                else:
+                    tag_parts.append(f"${int(v)}")
             if tag_parts:
                 bits.append(f"[{', '.join(tag_parts)}]")
             lines.append(" | ".join(bits))
