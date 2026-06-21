@@ -1852,6 +1852,28 @@ def _use_tier(c: PropertyCandidate) -> int:
     return 2  # unknown
 
 
+def _owner_has_middle_match(owner_name: str, decedent_name: str) -> bool:
+    """True when the owner string contains either the decedent's full
+    middle word OR an initial that matches the decedent's middle's first
+    letter. Used as a tiebreaker — when multiple parcels score equally
+    on name+suffix+use, prefer the one whose deed actually carries the
+    decedent's middle name (Gaither case: 'JAMES I GAITHER' at Seaman
+    Dr beats 'JAMES GAITHER' at Chestnut Oak Ln because decedent is
+    'James Israel' and 'I' matches Israel's initial).
+    """
+    if not owner_name or not decedent_name:
+        return False
+    _d_first, d_middle, _d_last = split_decedent_name(decedent_name)
+    if not d_middle:
+        return False
+    d_middle_words = [w for w in d_middle.split() if w]
+    d_middle_initials = {w[0] for w in d_middle_words}
+    o_tokens = set(_normalize_name(owner_name).split())
+    if any(w in o_tokens for w in d_middle_words):
+        return True
+    return any(len(t) == 1 and t in d_middle_initials for t in o_tokens)
+
+
 def pick_best_candidate(
     candidates: list[PropertyCandidate],
     decedent_name: str = "",
@@ -1863,10 +1885,15 @@ def pick_best_candidate(
          Kinney case (decedent "Leonard Sr." → KINNEY LEONARD SR HEIRS wins
          over KINNEY LEONARD HEIRS without suffix).
       2. match_score (already filtered, but kept here for sort stability).
-      3. Use tier — residential > unknown > vacant > commercial. Resolves the
+      3. Middle-name match — prefer parcels whose deed carries the
+         decedent's middle name/initial over deeds with no middle at
+         all. Resolves Gaither 26E002300-590 (decedent "James Israel"
+         → "JAMES I GAITHER" Seaman Dr wins over "JAMES GAITHER"
+         Chestnut Oak Ln since 'I' matches Israel's initial).
+      4. Use tier — residential > unknown > vacant > commercial. Resolves the
          Keller case (3820 Mt Hope SFR wins over 0 Mt Hope vacant).
-      4. Market value — when both candidates have a value.
-      5. Lot area — when market_value is unset (most ArcGIS counties), the
+      5. Market value — when both candidates have a value.
+      6. Lot area — when market_value is unset (most ArcGIS counties), the
          bigger parcel wins. Resolves Mauser case (481-ac Rocky Ford wins
          over 1.45-ac Hickory among the 5 addressed HEIRS parcels).
 
@@ -1880,6 +1907,7 @@ def pick_best_candidate(
         return (
             _owner_has_suffix(c.owner_name, suffix),
             c.match_score,
+            _owner_has_middle_match(c.owner_name, decedent_name),
             _use_tier(c),
             float(c.market_value or 0),
             float(c.lot_area or 0),
