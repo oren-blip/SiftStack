@@ -1236,7 +1236,13 @@ def _arcgis_to_candidate(
     market_value = None
     for value_field in ("MarketValue", "TotalValue", "AssessedValue",
                         "Market_Value", "TOTAL_VALUE", "MKT_VALUE",
-                        "AppraisedValue"):
+                        "AppraisedValue",
+                        # County-specific names discovered Week 26 audit:
+                        # Gaston exposes TOTVAL, Iredell Total_Value,
+                        # Lincoln TOTALVALUE, Rowan TOT_VAL. Without these,
+                        # the $500K drop filter only fired in Cabarrus +
+                        # Mecklenburg (2 of 7 counties).
+                        "TOTVAL", "Total_Value", "TOTALVALUE", "TOT_VAL"):
         v = rec.get(value_field)
         if v not in (None, "", 0, 0.0):
             try:
@@ -1791,7 +1797,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 7  # bumped 2026-06-20 — ArcGIS sale_date + sale_price now populated for Catawba/Iredell/Gaston/Lincoln/Rowan (previously hardcoded None). Required for drop_recently_sold (24-month window) polish step
+_PERSIST_VERSION = 8  # bumped 2026-06-22 — market_value now reads TOTVAL/Total_Value/TOTALVALUE/TOT_VAL (Gaston/Iredell/Lincoln/Rowan). Required for drop_over_500k filter to actually fire in those 4 counties — previously only active in Cabarrus + Mecklenburg.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
