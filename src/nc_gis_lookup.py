@@ -1918,6 +1918,35 @@ def _owner_has_suffix(owner_name: str, suffix: str) -> bool:
     return suffix in tokens
 
 
+def _suffix_match_score(owner_name: str, decedent_suffix: str) -> int:
+    """3-way suffix preference for the picker tiebreaker. Higher = better.
+
+      2 = exact match (both have same suffix, or both have none)
+      1 = decedent has suffix, owner doesn't (deed may have omitted it)
+      0 = decedent has NO suffix but owner has one (likely different person —
+          e.g. decedent "James R Beaver" vs owner "BEAVER JAMES R JR")
+
+    Resolves Beaver 26E000659-120 (Cabarrus): two candidates scored 1.0,
+    one was "BEAVER JAMES R JR" (different person, Sr decedent or no-
+    suffix decedent), the other "BEAVER JAMES R" (matches no-suffix
+    decedent). Old _owner_has_suffix tiebreaker returned False for both
+    when decedent had no suffix, so the picker fell through to value
+    and picked the wrong one.
+    """
+    o_tokens = re.sub(r"[^\w\s]", " ", (owner_name or "").upper()).split()
+    o_suffix = ""
+    for t in o_tokens:
+        if t in _GENERATIONAL_SUFFIXES:
+            o_suffix = t
+            break
+    d = (decedent_suffix or "").upper()
+    if d == o_suffix:
+        return 2  # both none, or both same
+    if d and not o_suffix:
+        return 1  # decedent has suffix, deed omitted it
+    return 0      # decedent no suffix but deed has one, or mismatched suffixes
+
+
 def _use_tier(c: PropertyCandidate) -> int:
     """Use-class rank for picker: RES > unknown > vacant > commercial."""
     if c.is_commercial:
@@ -1982,7 +2011,7 @@ def pick_best_candidate(
 
     def sort_key(c: PropertyCandidate) -> tuple:
         return (
-            _owner_has_suffix(c.owner_name, suffix),
+            _suffix_match_score(c.owner_name, suffix),
             c.match_score,
             _owner_has_middle_match(c.owner_name, decedent_name),
             _use_tier(c),
