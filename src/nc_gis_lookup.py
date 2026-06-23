@@ -672,10 +672,21 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
 
     # Per-county short-circuits BEFORE the polaris3g logic
     if cty == "cabarrus":
+        # Legacy V/I flags (old Tax_Parcels_Full layer — kept for cache-hit
+        # safety on entries from before 2026-05-31 layer switch).
         if code == "V":
             return "Vacant Land"
         if code == "I":
-            return "SFR"  # 'Improved' — assume residential default
+            return "SFR"
+        # New Parcels-layer CODE values (most common are KA=959, CN=627,
+        # CO=343, KT=64, HB=7 in a 2000-parcel sample). CN/CO/HB confirmed;
+        # KA/KT meaning unknown — leave blank so address heuristics handle.
+        if code == "CN":
+            return "Condo"   # Needham Mark Lindsay 26E000661-120 leaked through Week 26
+        if code == "CO":
+            return "Vacant Land"   # "Country/vacant" per Cabarrus comment
+        if code == "HB":
+            return "SFR"     # "Home Built" per Cabarrus comment
         return ""
     if cty == "lincoln":
         # Lincoln stores 'YES'/'NO' in the desc field (VACANT flag)
@@ -934,6 +945,12 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "owner_fields": ["CURR_NAME1", "CURR_NAME2"],
         "mailing_fields": ["CURR_ADDR1", "CURR_ADDR2", "CURR_CITY", "CURR_STATE", "CURR_ZIPCODE"],
         "situs_fields": ["PHYSSTRADD"],
+        # STATE + ZIP are per-parcel situs values (verified via two-parcel
+        # A/B for same owner — Hannah David Jon's two parcels show ZIP=28056
+        # for 3307 Sand Post Oak Ct and ZIP=28016 for 208 Park St while the
+        # owner mailing CURR_ZIPCODE is FL=325703762 on both). Without these,
+        # swap-on-DQ rewrites Property Address but leaves City/Zip blank.
+        "situs_zip_field": "ZIP",
         "parcel_field": "PIN",
         "use_field": "property_use",
         "use_desc_field": "DESC1_DESC",
@@ -1161,6 +1178,22 @@ def _arcgis_to_candidate(
             situs_city_override = c_city.title()
             situs_zip_override = c_zip
         # else: leave PropAddr as-is — it's valid in the new Parcels layer
+
+    # Per-county explicit situs city/zip fields (when GIS exposes them
+    # separately from the owner-mailing city/zip). Without these, swap-on-DQ
+    # leaves Property City/Zip blank when the new parcel's owner mails out
+    # of state — Hannah David Jon swap to 208 Park St lost ZIP 28016 because
+    # owner mailing was MILTON FL 325703762.
+    sf_city = cfg.get("situs_city_field")
+    sf_zip = cfg.get("situs_zip_field")
+    if sf_city and not situs_city_override:
+        v = rec.get(sf_city)
+        if v not in (None, "", 0):
+            situs_city_override = str(v).strip().title()
+    if sf_zip and not situs_zip_override:
+        v = rec.get(sf_zip)
+        if v not in (None, "", 0):
+            situs_zip_override = str(v).strip()
 
     # If situs is blank (vacant lots in Cabarrus / unimproved parcels in
     # other counties often have no NG911 address), fall back to the
@@ -1797,7 +1830,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 8  # bumped 2026-06-22 — market_value now reads TOTVAL/Total_Value/TOTALVALUE/TOT_VAL (Gaston/Iredell/Lincoln/Rowan). Required for drop_over_500k filter to actually fire in those 4 counties — previously only active in Cabarrus + Mecklenburg.
+_PERSIST_VERSION = 9  # bumped 2026-06-22 (same day as v8) — Cabarrus simplify_use_code now maps CN=Condo / CO=Vacant Land / HB=SFR (Needham 26E000661-120 condo leaked Week 26). Also Gaston situs_zip_field=ZIP populates situs_zip_override (Hannah 26E000841-350 swap-on-DQ lost ZIP 28016). Cache needs invalidation because both changes affect already-cached PropertyCandidate fields.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
