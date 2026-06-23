@@ -1805,7 +1805,19 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         """Return (is_dq, reason_code). Heir-occupied DQ fires when either
         the executor's mailing or any listed beneficiary's address matches
         the property address (all normalized via norm_addr).
+
+        Vacant land exemption: a vacant lot cannot be "occupied" by anyone.
+        When situs falls back to the owner's mailing (Cabarrus/etc. for
+        parcels without NG911 addresses), a vacant lot LOOKS heir-occupied
+        because situs == mailing. Skip the DQ for these. Surfaced Week 26
+        via Bostian 26E000662-120: residence at 4699 Rainbow Dr correctly
+        heir-occupied, but the decedent's adjacent vacant lot (separate
+        parcel, no NG911 address, situs fell back to 4699 Rainbow Dr too)
+        was incorrectly dropped along with it.
         """
+        use = (r.get("Property use") or "").upper()
+        if "VACANT" in use or use == "LAND":
+            return (False, "")
         mail = norm_addr(r.get("Mailing Address"))
         if mail and prop_norm == mail:
             return (True, "dq-executor-at-property")
@@ -1898,11 +1910,18 @@ def _try_swap_to_non_dq_sibling(
             return (99, 0)
         # Build a synthetic row preserving the original row's mailing +
         # beneficiaries (those are what we're comparing against) but with
-        # the sibling's situs as the property.
+        # the sibling's situs as the property. Include Property use so
+        # the vacant-land exemption in _row_dq_signals also applies to
+        # candidate siblings — without this, vacant siblings whose situs
+        # falls back to owner mailing would still be rejected.
+        sibling_use = (c.use_description or "").upper()
+        if not ("VACANT" in sibling_use or "LAND" in sibling_use) and c.is_vacant_land:
+            sibling_use = "VACANT LAND"
         synth = {
             "Mailing Address": row.get("Mailing Address", ""),
             "Beneficiaries": row.get("Beneficiaries", ""),
             "Property Address": temp_situs,
+            "Property use": sibling_use,
         }
         is_dq, _ = dq_check(synth, temp_norm)
         if is_dq:
