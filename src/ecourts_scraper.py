@@ -853,6 +853,87 @@ def _enrich_with_parties(
         enriched, len(targets), len(guardianships),
     )
 
+    # Will-document enrichment (build 1.0.34+). For each remaining notice,
+    # try to fetch + LLM-parse any attached Last Will and Testament. Gives
+    # us full legal names (with middles) + relationships that the Parties
+    # API truncates. See [[project_county_gis_as_pr_address_verification]]
+    # — full middle names dramatically improve PR people-search precision.
+    will_enriched = _enrich_with_wills(
+        [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"],
+        waf_token=waf_token,
+    )
+    if will_enriched:
+        logger.info("eCourts: will-data extracted for %d notice(s)", will_enriched)
+
+
+def _enrich_with_wills(notices: list[NoticeData], *, waf_token: str) -> int:
+    """For each probate notice with a case_id, try to fetch + LLM-parse any
+    attached will documents. Mutates notice.will_* fields in place. Returns
+    the count of notices where a will was found AND parsed successfully.
+
+    Failures (no will attached, fetch error, parse error) are logged and
+    skipped silently — those notices keep their existing parties-only data.
+    """
+    import json as _json
+    import time as _time
+    try:
+        from case_pdf_extractor import fetch_and_parse_case_wills
+        import config as cfg
+    except Exception as e:
+        logger.warning("Will enrichment unavailable (%s) — skipping", e)
+        return 0
+
+    api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    if not api_key:
+        logger.info("No ANTHROPIC_API_KEY — skipping will enrichment")
+        return 0
+
+    enriched = 0
+    for i, n in enumerate(notices):
+        if i > 0:
+            _time.sleep(1.5)  # polite cadence — same docket service as Parties
+        case_hex = getattr(n, "_roa_id", "")
+        try:
+            wills = fetch_and_parse_case_wills(case_hex, waf_token=waf_token, api_key=api_key)
+        except Exception as e:
+            logger.debug("Will fetch failed for %s: %s", n.case_number, e)
+            continue
+        if not wills:
+            continue
+        # If multiple will documents (rare — codicil etc), take the first.
+        # The structured fields below pull from the most-recent/primary will.
+        will = wills[0]
+        try:
+            n.will_data_json = _json.dumps(will, separators=(",", ":"))
+        except Exception:
+            n.will_data_json = ""
+        n.will_testator_spouse = (will.get("testator_spouse") or "").strip()
+
+        # Acting-PR pick: prefer the primary executor, unless the row's
+        # existing executor name (from Parties API) matches an alternate
+        # — in which case the primary predeceased and alternate is acting.
+        people = will.get("people") or []
+        primary = next((p for p in people if p.get("role") == "primary_executor"), None)
+        alternate = next((p for p in people if p.get("role") == "alternate_executor"), None)
+        acting = primary
+        if alternate:
+            ex_last = (n.executor_last_name or "").strip().upper()
+            ex_first = (n.executor_first_name or "").strip().upper()
+            alt_name = (alternate.get("full_name") or "").upper()
+            # Parties API named the alternate as the PR -> primary is out
+            if ex_last and ex_last in alt_name and (not ex_first or ex_first in alt_name):
+                acting = alternate
+        if acting:
+            n.will_pr_full_name = (acting.get("full_name") or "").strip()
+            n.will_pr_relationship = (acting.get("relationship") or "").strip()
+            logger.info(
+                "eCourts: will -> %s acting PR=%s (%s), spouse=%s",
+                n.case_number, n.will_pr_full_name, n.will_pr_relationship,
+                n.will_testator_spouse,
+            )
+        enriched += 1
+    return enriched
+
 
 # ── Public entry ─────────────────────────────────────────────────────
 

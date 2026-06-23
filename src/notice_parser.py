@@ -138,6 +138,15 @@ class NoticeData:
     executor_first_name: str = ""      # Affiant/Executor/Administrator first name
     executor_last_name: str = ""       # Affiant/Executor/Administrator last name
     beneficiaries_json: str = ""       # JSON list of {name, street, city, state, zip}
+    # Will-extracted data (populated by case_pdf_extractor during scrape
+    # when a Will document is attached to the case). Carries full legal
+    # names (with middles) + relationships, which the eCourts Parties API
+    # truncates. Used downstream for higher-precision PR people-search
+    # disambiguation. See [[project_county_gis_as_pr_address_verification]].
+    will_data_json: str = ""           # raw structured dict from parse_will
+    will_pr_full_name: str = ""        # acting PR's full legal name (with middle)
+    will_pr_relationship: str = ""     # acting PR's relationship to decedent
+    will_testator_spouse: str = ""     # spouse name from will (when stated)
     property_use_simple: str = ""      # Simplified use code: SFR / MH / Vacant Land / Condo / Commercial
     # True when the parcel has multiple owners (e.g. decedent + spouse).
     # Jointly-owned property typically transfers via right of survivorship
