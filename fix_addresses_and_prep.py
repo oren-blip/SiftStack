@@ -216,6 +216,77 @@ def _candidate_to_address_parts(c) -> tuple[str, str, str]:
     return street, city, zipc
 
 
+# Legacy horizontal "PLUS N PARCELS" lines look like:
+#   PLUS 2 PARCELS
+#     56210485720000 | 830 Florence St Nw Concord 28027 | [SFR]
+#     56118667130000 | 1015 Central Dr Nw Concord 28027
+# Captures: pid, address, optional use bracket. Indent + pipe separators
+# are diagnostic — the vertical format never produces this shape.
+_LEGACY_HORIZONTAL_LINE_RE = re.compile(
+    r"^\s+(?P<pid>\S+)\s*\|\s*(?P<addr>.+?)(?:\s*\|\s*\[(?P<use>[^\]]+)\])?\s*$"
+)
+_LEGACY_HEADER_RE = re.compile(r"^PLUS\s+\d+\s+PARCELS?(\s*\([^)]+\))?\s*$", re.IGNORECASE)
+
+
+def reformat_legacy_horizontal_notes(rows: list[dict]) -> int:
+    """Rewrite pre-2026-06-20 horizontal 'PLUS N PARCELS' Notes blocks
+    into the current vertical format. Preserves any other Notes content
+    (swap-on-DQ markers, 2nd-pass-obit annotations, already-vertical
+    blocks added by polish backfill).
+
+    Background: commit 22cea35 (2026-06-20) switched the scrape-time
+    Notes format from a single-line pipe-separated layout to a vertical
+    multi-line layout that's easier to scan. But rows scraped BEFORE
+    that date kept their horizontal Notes through merge + polish, since
+    the polish only APPENDS new vertical blocks for newly-discovered
+    siblings. This step parses the legacy lines and rewrites them.
+    """
+    from nc_ftm_writer import format_extra_parcels_vertical
+    updated = 0
+    for r in rows:
+        notes = (r.get("Notes") or "").strip()
+        if not notes or "PLUS " not in notes.upper() or "|" not in notes:
+            continue
+        lines = notes.split("\n")
+        # Find each legacy header + the contiguous parcel-line block under
+        # it. Replace each such block with a vertical rendering.
+        out_lines: list[str] = []
+        i = 0
+        changed = False
+        while i < len(lines):
+            line = lines[i]
+            if _LEGACY_HEADER_RE.match(line.strip()):
+                # Collect contiguous legacy parcel lines until a non-legacy line
+                items: list[dict] = []
+                j = i + 1
+                while j < len(lines):
+                    m = _LEGACY_HORIZONTAL_LINE_RE.match(lines[j])
+                    if not m:
+                        # Allow a single blank line between header and items
+                        if not lines[j].strip() and j == i + 1:
+                            j += 1
+                            continue
+                        break
+                    items.append({
+                        "pid": m.group("pid"),
+                        "address": m.group("addr").strip(),
+                        "use": (m.group("use") or "").strip(),
+                    })
+                    j += 1
+                if items:
+                    vertical_block = format_extra_parcels_vertical(items)
+                    out_lines.append(vertical_block)
+                    changed = True
+                    i = j
+                    continue
+            out_lines.append(line)
+            i += 1
+        if changed:
+            r["Notes"] = "\n".join(out_lines).strip()
+            updated += 1
+    return updated
+
+
 def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) -> int:
     """For each row with a Parcel ID, check if there are OTHER high-score
     GIS candidates for the same decedent that aren't already mentioned in
@@ -2493,6 +2564,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
               f"{sum(len(r['candidates']) for r in heir_transfer_rows)} candidates)")
     else:
         print(f"  No heir-transfer candidates found.")
+
+    print("Step 0.69: reformat pre-2026-06-20 horizontal 'PLUS N PARCELS' Notes to vertical")
+    n_reformatted = reformat_legacy_horizontal_notes(rows)
+    print(f"  Rows with legacy Notes rewritten: {n_reformatted}")
 
     print("Step 0.7: backfill sibling parcels into Notes (multi-parcel estates)")
     n_siblings = backfill_sibling_parcels_to_notes(rows)
