@@ -853,86 +853,233 @@ def _enrich_with_parties(
         enriched, len(targets), len(guardianships),
     )
 
-    # Will-document enrichment (build 1.0.34+). For each remaining notice,
-    # try to fetch + LLM-parse any attached Last Will and Testament. Gives
-    # us full legal names (with middles) + relationships that the Parties
-    # API truncates. See [[project_county_gis_as_pr_address_verification]]
-    # — full middle names dramatically improve PR people-search precision.
-    will_enriched = _enrich_with_wills(
+    # Case-document enrichment (build 1.0.34+). Fetch + parse Wills AND
+    # Application for Letters PDFs. Wills give us full PR middle names +
+    # relationships; Applications give us heirs with addresses (closes the
+    # OData-misses-heirs recall gap). Cases whose PDFs aren't uploaded yet
+    # get added to the pending-doc queue and retried on subsequent runs.
+    docs_enriched = _enrich_with_case_docs(
         [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"],
         waf_token=waf_token,
     )
-    if will_enriched:
-        logger.info("eCourts: will-data extracted for %d notice(s)", will_enriched)
+    if docs_enriched:
+        logger.info("eCourts: case-doc data extracted for %d notice(s)", docs_enriched)
 
 
-def _enrich_with_wills(notices: list[NoticeData], *, waf_token: str) -> int:
-    """For each probate notice with a case_id, try to fetch + LLM-parse any
-    attached will documents. Mutates notice.will_* fields in place. Returns
-    the count of notices where a will was found AND parsed successfully.
-
-    Failures (no will attached, fetch error, parse error) are logged and
-    skipped silently — those notices keep their existing parties-only data.
-    """
+def _apply_will_data(notice: NoticeData, will: dict) -> None:
+    """Populate notice.will_* fields from a parse_will() result dict."""
     import json as _json
+    try:
+        notice.will_data_json = _json.dumps(will, separators=(",", ":"))
+    except Exception:
+        notice.will_data_json = ""
+    notice.will_testator_spouse = (will.get("testator_spouse") or "").strip()
+    # Acting-PR pick: prefer the primary executor, unless the row's existing
+    # executor name (from Parties API) matches an alternate — in which case
+    # the primary predeceased and the alternate is acting.
+    people = will.get("people") or []
+    primary = next((p for p in people if p.get("role") == "primary_executor"), None)
+    alternate = next((p for p in people if p.get("role") == "alternate_executor"), None)
+    acting = primary
+    if alternate:
+        ex_last = (notice.executor_last_name or "").strip().upper()
+        ex_first = (notice.executor_first_name or "").strip().upper()
+        alt_name = (alternate.get("full_name") or "").upper()
+        if ex_last and ex_last in alt_name and (not ex_first or ex_first in alt_name):
+            acting = alternate
+    if acting:
+        notice.will_pr_full_name = (acting.get("full_name") or "").strip()
+        notice.will_pr_relationship = (acting.get("relationship") or "").strip()
+
+
+def _apply_application_data(notice: NoticeData, app: dict) -> None:
+    """Populate notice.application_* fields from a parse_application() result dict."""
+    import json as _json
+    try:
+        notice.application_data_json = _json.dumps(app, separators=(",", ":"))
+    except Exception:
+        notice.application_data_json = ""
+    applicant = app.get("applicant") or {}
+    notice.application_pr_full_name = (applicant.get("full_name") or "").strip()
+    notice.application_pr_relationship = (applicant.get("relationship_to_decedent") or "").strip()
+    notice.application_dod = (app.get("date_of_death") or "").strip()
+    notice.application_attorney_name = (app.get("attorney_name") or "").strip()
+    val = app.get("preliminary_estate_value_usd")
+    if val is not None:
+        try:
+            notice.application_estate_value = f"{int(round(float(val))):,}"
+        except (TypeError, ValueError):
+            notice.application_estate_value = ""
+    heirs = app.get("heirs") or []
+    if heirs:
+        try:
+            notice.application_heirs_json = _json.dumps(heirs, separators=(",", ":"))
+        except Exception:
+            notice.application_heirs_json = ""
+
+
+_DOC_APPLIERS = {
+    "will": _apply_will_data,
+    "application": _apply_application_data,
+}
+
+
+def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str) -> int:
+    """For each probate notice with a case_id, fetch + LLM-parse all
+    registered doc types (will, application). On miss, add to pending
+    queue for retry on subsequent daily runs. Mutates notice fields in
+    place; persists case_id_hex onto the notice so polish can find the
+    right row to update if a delayed PDF lands later.
+
+    Returns count of notices where at least one doc type was successfully
+    parsed (either fresh or from prior-run cache).
+    """
     import time as _time
     try:
-        from case_pdf_extractor import fetch_and_parse_case_wills
+        import case_pdf_extractor  # triggers DocTypeSpec registration
+        from case_pdf_extractor import fetch_and_parse_case_docs
+        import case_doc_queue as cdq
         import config as cfg
     except Exception as e:
-        logger.warning("Will enrichment unavailable (%s) — skipping", e)
+        logger.warning("Case-doc enrichment unavailable (%s) — skipping", e)
         return 0
 
     api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
     if not api_key:
-        logger.info("No ANTHROPIC_API_KEY — skipping will enrichment")
+        logger.info("No ANTHROPIC_API_KEY — skipping case-doc enrichment")
         return 0
 
+    doc_types = list(_DOC_APPLIERS.keys())
     enriched = 0
     for i, n in enumerate(notices):
-        if i > 0:
-            _time.sleep(1.5)  # polite cadence — same docket service as Parties
         case_hex = getattr(n, "_roa_id", "")
-        try:
-            wills = fetch_and_parse_case_wills(case_hex, waf_token=waf_token, api_key=api_key)
-        except Exception as e:
-            logger.debug("Will fetch failed for %s: %s", n.case_number, e)
+        if not case_hex:
             continue
-        if not wills:
-            continue
-        # If multiple will documents (rare — codicil etc), take the first.
-        # The structured fields below pull from the most-recent/primary will.
-        will = wills[0]
-        try:
-            n.will_data_json = _json.dumps(will, separators=(",", ":"))
-        except Exception:
-            n.will_data_json = ""
-        n.will_testator_spouse = (will.get("testator_spouse") or "").strip()
+        # Persist case_id onto the notice so it survives to the CSV; the
+        # queue keys off it for retries and polish keys off it for late
+        # apply-back.
+        n.case_id_hex = case_hex
+        applied_any = False
 
-        # Acting-PR pick: prefer the primary executor, unless the row's
-        # existing executor name (from Parties API) matches an alternate
-        # — in which case the primary predeceased and alternate is acting.
-        people = will.get("people") or []
-        primary = next((p for p in people if p.get("role") == "primary_executor"), None)
-        alternate = next((p for p in people if p.get("role") == "alternate_executor"), None)
-        acting = primary
-        if alternate:
-            ex_last = (n.executor_last_name or "").strip().upper()
-            ex_first = (n.executor_first_name or "").strip().upper()
-            alt_name = (alternate.get("full_name") or "").upper()
-            # Parties API named the alternate as the PR -> primary is out
-            if ex_last and ex_last in alt_name and (not ex_first or ex_first in alt_name):
-                acting = alternate
-        if acting:
-            n.will_pr_full_name = (acting.get("full_name") or "").strip()
-            n.will_pr_relationship = (acting.get("relationship") or "").strip()
-            logger.info(
-                "eCourts: will -> %s acting PR=%s (%s), spouse=%s",
-                n.case_number, n.will_pr_full_name, n.will_pr_relationship,
-                n.will_testator_spouse,
+        # First check the fetched cache — prior daily runs may have already
+        # captured these docs. Apply without re-fetching (free).
+        cached_types: list[str] = []
+        for dt in doc_types:
+            cached = cdq.get_fetched(case_hex, dt)
+            if cached:
+                applier = _DOC_APPLIERS[dt]
+                applier(n, cached)
+                cached_types.append(dt)
+                applied_any = True
+        # Doc types still needed
+        still_needed = [dt for dt in doc_types if dt not in cached_types]
+        if not still_needed:
+            if applied_any:
+                enriched += 1
+            continue
+
+        if i > 0 and not cached_types:
+            _time.sleep(1.5)  # polite cadence on fresh fetches
+
+        try:
+            fetched = fetch_and_parse_case_docs(
+                case_hex, waf_token=waf_token, doc_types=still_needed, api_key=api_key,
             )
-        enriched += 1
+        except Exception as e:
+            logger.debug("Case-doc fetch failed for %s: %s", n.case_number, e)
+            fetched = {dt: [] for dt in still_needed}
+
+        misses: list[str] = []
+        for dt in still_needed:
+            results = fetched.get(dt) or []
+            if not results:
+                misses.append(dt)
+                continue
+            # Multiple matching docs (rare — codicil, amended application).
+            # Take the first; cache + apply.
+            parsed = results[0]
+            cdq.record_fetched(case_hex, dt, parsed)
+            cdq.mark_fetched(case_hex, dt)  # in case it was previously pending
+            applier = _DOC_APPLIERS[dt]
+            applier(n, parsed)
+            applied_any = True
+            logger.info("eCourts: %s -> %s extracted (%s)",
+                        n.case_number, dt, parsed.get("_meta", {}).get("event_label", ""))
+
+        # Queue any misses for retry on subsequent runs
+        if misses:
+            cdq.add_to_pending(
+                case_hex,
+                case_number=n.case_number,
+                county=n.county,
+                notice_type=n.notice_type,
+                needed_doc_types=misses,
+            )
+
+        if applied_any:
+            enriched += 1
+
+    # Housekeeping: expire any stale queue entries past the retry window
+    cdq.expire_old()
+
+    summary = cdq.pending_summary()
+    if summary["total_cases"]:
+        logger.info("eCourts: pending case-docs queue = %d cases, by type: %s",
+                    summary["total_cases"], summary["by_doc_type"])
     return enriched
+
+
+def drain_pending_case_docs(*, waf_token: str) -> int:
+    """Standalone retry pass: walk the pending-doc queue and try to fetch
+    each needed doc with the current WAF token. Independent of any active
+    scrape — call this at the start of a daily run, before regular
+    scraping, so newly-scraped cases benefit from prior-run cache hits.
+
+    Returns count of doc fetches that succeeded this pass.
+    """
+    import time as _time
+    try:
+        import case_pdf_extractor  # triggers registration
+        from case_pdf_extractor import fetch_and_parse_case_docs
+        import case_doc_queue as cdq
+        import config as cfg
+    except Exception as e:
+        logger.warning("Queue drain unavailable (%s) — skipping", e)
+        return 0
+
+    api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return 0
+    cdq.expire_old()
+    pending = cdq.load_pending()
+    if not pending:
+        return 0
+    logger.info("eCourts: draining pending-doc queue — %d case(s) to retry", len(pending))
+    fetches = 0
+    for i, (case_hex, entry) in enumerate(pending.items()):
+        if i > 0:
+            _time.sleep(1.5)
+        needs = entry.get("needs", [])
+        if not needs:
+            continue
+        try:
+            fetched = fetch_and_parse_case_docs(
+                case_hex, waf_token=waf_token, doc_types=needs, api_key=api_key,
+            )
+        except Exception as e:
+            logger.debug("Queue drain fetch failed for %s: %s", entry.get("case_number"), e)
+            continue
+        for dt, results in fetched.items():
+            if not results:
+                continue
+            parsed = results[0]
+            cdq.record_fetched(case_hex, dt, parsed)
+            cdq.mark_fetched(case_hex, dt)
+            fetches += 1
+            logger.info("Queue drain: %s -> %s landed (%s)",
+                        entry.get("case_number"), dt,
+                        parsed.get("_meta", {}).get("event_label", ""))
+    return fetches
 
 
 # ── Public entry ─────────────────────────────────────────────────────

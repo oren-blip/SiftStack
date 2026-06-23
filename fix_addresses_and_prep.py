@@ -287,6 +287,83 @@ def reformat_legacy_horizontal_notes(rows: list[dict]) -> int:
     return updated
 
 
+def apply_fetched_case_docs(rows: list[dict]) -> int:
+    """For each row, look up its Case ID (hex) in the fetched_case_docs.json
+    store and populate the will_* / application_* columns if structured data
+    is available. Mutates rows in place. Returns count of rows updated.
+
+    This is the late-arrival apply path: when a Will or Application PDF
+    wasn't yet uploaded at scrape time, the scraper queues the case;
+    subsequent daily runs drain the queue and store any newly-arrived
+    parsed docs in fetched_case_docs.json. This step picks that up and
+    updates the corresponding merged-CSV row by case_id_hex lookup.
+
+    Idempotent — re-running with the same fetched cache produces the same
+    row state.
+    """
+    try:
+        import case_doc_queue as cdq
+    except Exception as e:
+        print(f"  case_doc_queue unavailable ({e}) — skipping late-doc apply")
+        return 0
+    import json as _json
+    fetched = cdq.load_fetched()
+    if not fetched:
+        return 0
+    updated = 0
+    for r in rows:
+        case_hex = (r.get("Case ID (hex)") or "").strip()
+        if not case_hex:
+            continue
+        cache_entry = fetched.get(case_hex)
+        if not cache_entry:
+            continue
+        row_changed = False
+        # Will data
+        will = cache_entry.get("will")
+        if will and not (r.get("PR Full Name (Will)") or "").strip():
+            people = will.get("people") or []
+            primary = next((p for p in people if p.get("role") == "primary_executor"), None)
+            alternate = next((p for p in people if p.get("role") == "alternate_executor"), None)
+            # Same acting-PR pick as the scraper applier
+            acting = primary
+            if alternate:
+                last_in_row = (r.get("Last Name") or "").strip().upper()
+                first_in_row = (r.get("First Name") or "").strip().upper()
+                alt_name = (alternate.get("full_name") or "").upper()
+                if last_in_row and last_in_row in alt_name and (not first_in_row or first_in_row in alt_name):
+                    acting = alternate
+            if acting:
+                r["PR Full Name (Will)"] = (acting.get("full_name") or "").strip()
+                r["PR Relationship (Will)"] = (acting.get("relationship") or "").strip()
+                row_changed = True
+        # Application data
+        app = cache_entry.get("application")
+        if app and not (r.get("PR Full Name (App)") or "").strip():
+            applicant = app.get("applicant") or {}
+            r["PR Full Name (App)"] = (applicant.get("full_name") or "").strip()
+            r["PR Relationship (App)"] = (applicant.get("relationship_to_decedent") or "").strip()
+            r["Date of Death (App)"] = (app.get("date_of_death") or "").strip()
+            r["Attorney (App)"] = (app.get("attorney_name") or "").strip()
+            val = app.get("preliminary_estate_value_usd")
+            if val is not None:
+                try:
+                    r["Estate Value (App)"] = f"{int(round(float(val))):,}"
+                except (TypeError, ValueError):
+                    pass
+            heirs = app.get("heirs") or []
+            if heirs:
+                try:
+                    r["Heirs (App)"] = _json.dumps(heirs, separators=(",", ":"))
+                except Exception:
+                    pass
+            row_changed = True
+        if row_changed:
+            tag_reason(r, "late-doc-apply")
+            updated += 1
+    return updated
+
+
 def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) -> int:
     """For each row with a Parcel ID, check if there are OTHER high-score
     GIS candidates for the same decedent that aren't already mentioned in
@@ -2546,6 +2623,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         if "Executor Full Name" in r and "Personal Representative" not in r:
             r["Personal Representative"] = r.pop("Executor Full Name")
     print(f"Loaded {len(rows)} rows")
+
+    print("Step -1.5: apply late-arriving case-doc data (wills/applications fetched on prior runs)")
+    n_doc_applied = apply_fetched_case_docs(rows)
+    print(f"  Rows updated from fetched case-doc cache: {n_doc_applied}")
 
     print("Step -1: backfill blank Case No. from user's manual XLSX archive")
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
