@@ -91,7 +91,7 @@ FTM_COLUMNS = [
 # Case Status is a silent guardrail — every kept row should be "Pending"
 # (polish drops Disposed/Closed). Hiding it removes visual noise but
 # preserves the field for audit / debugging / future use.
-HIDDEN_FROM_WORKBOOK = {"Case Status", "PR Full Name (Will)", "PR Relationship (Will)"}
+HIDDEN_FROM_WORKBOOK = {"Case Status"}
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
@@ -573,6 +573,8 @@ def write_ftm_xlsx(
         "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
         "DM 2 Name": 22, "DM 2 Relationship": 14,
         "DM 3 Name": 22, "DM 3 Relationship": 14,
+        # Will-extracted PR (visible 2026-06-23) — full middle names + relationship
+        "PR Full Name (Will)": 26, "PR Relationship (Will)": 16,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         dim = ws.column_dimensions[get_column_letter(c_idx)]
