@@ -1445,12 +1445,129 @@ def _batch_tracerfy_lookup(notices: list) -> None:
         logger.warning("Tracerfy batch lookup failed: %s", e)
 
 
+_NC_COUNTY_ADJACENCY: dict[str, list[str]] = {
+    # Property county -> counties to extend the GIS owner search into when
+    # the property county itself doesn't return a unique hit. The PR may
+    # live in an adjacent county, especially when they're a sibling or
+    # spouse's-family relative (the Earney/Cox brother-in-law class).
+    "Cabarrus":    ["Mecklenburg", "Iredell", "Rowan"],
+    "Catawba":     ["Iredell", "Lincoln"],
+    "Gaston":      ["Lincoln", "Cleveland", "Catawba", "Mecklenburg"],
+    "Iredell":     ["Mecklenburg", "Cabarrus", "Rowan", "Catawba"],
+    "Lincoln":     ["Gaston", "Catawba", "Iredell", "Mecklenburg"],
+    "Mecklenburg": ["Cabarrus", "Iredell", "Gaston", "Lincoln"],
+    "Rowan":       ["Cabarrus", "Iredell", "Davidson"],
+}
+# Counties we have working GIS endpoints for (the 7 NC counties we scrape).
+_NC_GIS_CAPABLE = {"cabarrus", "catawba", "gaston", "iredell", "lincoln", "mecklenburg", "rowan"}
+# Composed mailing-address parser. mailing fields in GIS are typically
+# "{STREET} {CITY} {STATE} {ZIP[-ZIP4]}" (the lookup composes from
+# mailing_fields config). We anchor on ZIP at the end, then 2-letter
+# state immediately before that. Everything between street and state
+# is the city (1-3 words). Street is GREEDY (was .+? which only grabbed
+# the first token).
+_MAILING_PARSE_RE = re.compile(
+    r"^(?P<street>.+)\s+(?P<city>[A-Z][A-Z\s'.-]+?)\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5})(?:-\d{4})?$"
+)
+
+
+def _lookup_dm_address_county_gis(
+    name: str, property_county: str, state: str = "NC",
+) -> dict | None:
+    """Tier 0 (NC only): search the property's county + adjacent counties'
+    GIS for the PR/IP as a property owner. County tax-assessor data is
+    authoritative when it hits — the owner of record's mailing address
+    is the legal address on file.
+
+    Returns None when no UNIQUE 1.0 match exists. Multiple owners scoring
+    1.0 with different mailings = same-name strangers (common name like
+    Daniel Cox can hit 2-3x in a single county). Abstaining is safer than
+    guessing — downstream tiers (people-search) get a shot, and Step 1.95
+    falls back to the property address as a last resort.
+
+    Verified 2026-06-23 against Earney 26E000838-350 / Daniel Clinton Cox:
+    given the full middle name from the will, returns the exact address
+    (2053 Beth Haven Church Rd Denver NC 28037) at score 1.0 from Lincoln
+    County GIS. See [[project_county_gis_as_pr_address_verification]].
+    """
+    if (state or "").strip().upper() != "NC" or not property_county:
+        return None
+    parts = name.strip().split()
+    if len(parts) < 2:
+        return None
+    last = parts[-1]
+    first_middle = " ".join(parts[:-1])
+    # Comma form is required — split_decedent_name misparses space form
+    # like "JOHNSTON GERALDINE H" as first=JOHNSTON, last=H.
+    query = f"{last}, {first_middle}"
+
+    counties_to_try = [property_county] + _NC_COUNTY_ADJACENCY.get(property_county, [])
+    # Aggregate 1.0 hits across ALL counties first — checking county-by-county
+    # would accept the first unique hit even if a different county also had a
+    # unique-but-different match (Daniel Cox in Lincoln vs Daniel Cox in
+    # Mecklenburg = 2 different people, both ambiguous globally).
+    from nc_gis_lookup import lookup_properties
+    all_top_cands: list[tuple[str, object]] = []  # (county_used, candidate)
+    for cty in counties_to_try:
+        if cty.lower() not in _NC_GIS_CAPABLE:
+            continue
+        try:
+            cands = lookup_properties(query, cty, min_score=0.7)
+        except Exception as e:
+            logger.debug("Tier 0 GIS lookup failed for %s in %s: %s", name, cty, e)
+            continue
+        if not cands:
+            continue
+        county_top = max(c.match_score for c in cands)
+        if county_top < 1.0:
+            continue
+        for c in cands:
+            if c.match_score >= county_top - 0.001:
+                all_top_cands.append((cty, c))
+
+    if not all_top_cands:
+        return None
+    # Group by unique mailing across the entire region. Multiple parcels for
+    # the same owner = same mailing = still unique. Same name + different
+    # mailings = different people = abstain.
+    by_mailing: dict[str, tuple[str, object]] = {}
+    for cty, c in all_top_cands:
+        ma = (c.mailing_address or "").strip().upper()
+        if ma and ma not in by_mailing:
+            by_mailing[ma] = (cty, c)
+    if len(by_mailing) != 1:
+        logger.debug("Tier 0 GIS abstained for %s: %d distinct mailings across %s",
+                     name, len(by_mailing), counties_to_try)
+        return None
+    # Single unique mailing across the entire region — accept
+    cty, c = next(iter(by_mailing.values()))
+    mail = (c.mailing_address or "").strip()
+    m = _MAILING_PARSE_RE.search(mail)
+    if m:
+        return {
+            "street": m.group("street").strip().title(),
+            "city": m.group("city").strip().title(),
+            "state": m.group("state"),
+            "zip": m.group("zip"),
+            "source": f"county_gis_{cty.lower()}",
+        }
+    return {
+        "street": mail.title(),
+        "city": "",
+        "state": "NC",
+        "zip": "",
+        "source": f"county_gis_{cty.lower()}",
+    }
+
+
 def _lookup_dm_address(
     name: str, city: str, api_key: str, tracerfy_tier1: bool = False,
     state: str = "TN", county: str = "",
 ) -> dict:
     """Look up decision-maker's mailing address using tiered sources.
 
+    Tier 0 (NC): County GIS owner search (property county + adjacent),
+                 free + authoritative when name is unique
     Tier 0 (opt-in): Tracerfy skip tracing (paid, highest hit rate)
     Tier 1: Knox County Tax API (free, fast, TN-only — skipped for other states)
     Tier 2: Serper.dev + Firecrawl + LLM (cheap, national)
@@ -1466,6 +1583,17 @@ def _lookup_dm_address(
     state_code = (state or "TN").strip().upper()
     fallback_city = _STATE_FALLBACK_CITY.get(state_code, "")
     search_city = city or fallback_city  # may be "" for non-TN with no notice city
+
+    # Tier 0 (NC only): County GIS owner search. Free, fast, authoritative
+    # when the PR happens to own property in NC. Abstains when the name
+    # has multiple owners scoring 1.0 (Daniel Cox class — 2 in Lincoln).
+    if state_code == "NC" and county:
+        gis_result = _lookup_dm_address_county_gis(name, county, state=state_code)
+        if gis_result and gis_result.get("street"):
+            result.update(gis_result)
+            logger.info("    Tier 0 (County GIS): %s, %s [%s]",
+                        result["street"], result["city"], result["source"])
+            return result
 
     # Tier 0 (opt-in): Tracerfy as primary lookup
     if tracerfy_tier1:
