@@ -496,6 +496,7 @@ _HEADER_FILL_COLOR = "1B5E20"        # dark green
 _HEADER_TEXT_COLOR = "FFFFFF"        # white
 _BAND_FILL_COLOR = "FFFDE7"          # very light yellow (banded rows)
 _DEFAULT_ROW_HEIGHT = 16             # single-line height
+_MAX_ROW_LINES = 20                  # ceiling for multi-line wrapping (~300pt)
 
 
 def write_ftm_xlsx(
@@ -553,18 +554,42 @@ def write_ftm_xlsx(
         c: PatternFill(start_color=h, end_color=h, fill_type="solid")
         for c, h in NC_COUNTY_COLORS.items()
     }
-    multiline_cols = {"Notes", "Beneficiaries"}
+    # Columns that legitimately carry multi-line content. These get
+    # wrap_text=True so newlines display as separate lines instead of
+    # being squashed into one. Heirs (App) is JSON today but can grow
+    # multi-line if we ever reformat it.
+    multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
     for r_idx, r in enumerate(rows, start=2):
         row_fill = county_fills.get(r.get("County", ""))
+        # Tally the max line-count across this row's multiline columns
+        # so we can size the row to fit ALL the content. Previous behavior
+        # squashed newlines to pipe-separators, hiding the vertical Notes
+        # format Oren wanted to see. Capped at MAX_ROW_LINES to keep
+        # legitimately-huge cells (rare 14-parcel estates, long
+        # beneficiary lists) from making the workbook unscrollable.
+        max_lines = 1
+        for col_name in multiline_cols:
+            val = r.get(col_name, "")
+            if val:
+                n_lines = str(val).count("\n") + 1
+                if n_lines > max_lines:
+                    max_lines = n_lines
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
-            if col_name in multiline_cols and val:
-                val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+            if col_name in multiline_cols:
+                # Top-align wrapped cells so the first line stays at the
+                # top of the row (matches reading expectation: scan down
+                # the column, first line is the header info).
+                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
             if row_fill:
                 cell.fill = row_fill
-        ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
+        # Excel row height: ~15pt per line. Cap at MAX_ROW_LINES so a
+        # 30-parcel decedent doesn't blow up the row.
+        capped = min(max_lines, _MAX_ROW_LINES)
+        ws.row_dimensions[r_idx].height = max(_DEFAULT_ROW_HEIGHT, capped * 15)
 
     # County dropdown — applied to the full County column
     county_col_idx = FTM_COLUMNS.index("County") + 1
