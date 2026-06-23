@@ -85,13 +85,26 @@ FTM_COLUMNS = [
     # "Daniel Cox" form. Polish Step 1.93 prefers this when present.
     "PR Full Name (Will)",
     "PR Relationship (Will)",
+    # Application-extracted fields (AOC-E-201). Populated when an
+    # Application for Probate / Letters PDF is attached. Heirs JSON
+    # often contains addresses missing from the OData Parties API,
+    # which closes the heir-occupancy filter recall gap.
+    "PR Full Name (App)",
+    "PR Relationship (App)",
+    "Date of Death (App)",
+    "Estate Value (App)",
+    "Attorney (App)",
+    "Heirs (App)",
+    # Internal — needed by case_doc_queue to update this row on a
+    # future daily run when a delayed PDF finally lands.
+    "Case ID (hex)",
 ]
 
 # Columns that exist in the data but are hidden from the xlsx display.
 # Case Status is a silent guardrail — every kept row should be "Pending"
 # (polish drops Disposed/Closed). Hiding it removes visual noise but
 # preserves the field for audit / debugging / future use.
-HIDDEN_FROM_WORKBOOK = {"Case Status"}
+HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)"}
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
@@ -387,6 +400,13 @@ def notice_to_ftm_row(
         "DM 3 Relationship": notice.decision_maker_3_relationship or "",
         "PR Full Name (Will)":     getattr(notice, "will_pr_full_name", "") or "",
         "PR Relationship (Will)":  getattr(notice, "will_pr_relationship", "") or "",
+        "PR Full Name (App)":      getattr(notice, "application_pr_full_name", "") or "",
+        "PR Relationship (App)":   getattr(notice, "application_pr_relationship", "") or "",
+        "Date of Death (App)":     getattr(notice, "application_dod", "") or "",
+        "Estate Value (App)":      getattr(notice, "application_estate_value", "") or "",
+        "Attorney (App)":          getattr(notice, "application_attorney_name", "") or "",
+        "Heirs (App)":             getattr(notice, "application_heirs_json", "") or "",
+        "Case ID (hex)":           getattr(notice, "case_id_hex", "") or "",
     }
 
 
@@ -575,6 +595,10 @@ def write_ftm_xlsx(
         "DM 3 Name": 22, "DM 3 Relationship": 14,
         # Will-extracted PR (visible 2026-06-23) — full middle names + relationship
         "PR Full Name (Will)": 26, "PR Relationship (Will)": 16,
+        # Application-extracted (AOC-E-201) — heirs + applicant + estate value
+        "PR Full Name (App)": 26, "PR Relationship (App)": 16,
+        "Date of Death (App)": 12, "Estate Value (App)": 14,
+        "Attorney (App)": 22, "Heirs (App)": 50,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         dim = ws.column_dimensions[get_column_letter(c_idx)]

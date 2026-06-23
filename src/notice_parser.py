@@ -147,6 +147,20 @@ class NoticeData:
     will_pr_full_name: str = ""        # acting PR's full legal name (with middle)
     will_pr_relationship: str = ""     # acting PR's relationship to decedent
     will_testator_spouse: str = ""     # spouse name from will (when stated)
+    # Application-extracted data (AOC-E-201 / Application for Probate /
+    # Application for Letters of Administration). Carries heirs list +
+    # applicant address that the OData Parties API often misses (see
+    # [[project_odata_misses_pdf_heirs]]).
+    application_data_json: str = ""    # raw structured dict from parse_application
+    application_pr_full_name: str = ""    # applicant (acting PR) full legal name
+    application_pr_relationship: str = "" # applicant relationship to decedent
+    application_dod: str = ""             # date of death from the form (MM/DD/YYYY)
+    application_heirs_json: str = ""      # JSON list of heirs from "persons entitled to share"
+    application_attorney_name: str = ""   # named attorney (empty if pro se)
+    application_estate_value: str = ""    # preliminary estate value (USD as str)
+    # Case ID hex — needed by the retry queue to find the right row to update
+    # when a late-arriving PDF finally lands during a future daily run.
+    case_id_hex: str = ""
     property_use_simple: str = ""      # Simplified use code: SFR / MH / Vacant Land / Condo / Commercial
     # True when the parcel has multiple owners (e.g. decedent + spouse).
     # Jointly-owned property typically transfers via right of survivorship

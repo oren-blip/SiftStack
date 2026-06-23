@@ -54,6 +54,16 @@ _HEADERS = {
 #   "Will Filed"
 _WILL_DESCRIPTION_RE = re.compile(r"\b(will|testament)\b", re.IGNORECASE)
 
+# Application form type detection. Variants seen so far per Oren 2026-06-23:
+#   "Application for Probate and Letters Testamentary"
+#   "Application for Letters of Administration"
+#   "Application for Letters" (generic)
+# Also matches the AOC form number directly (AOC-E-201 = Application).
+_APPLICATION_DESCRIPTION_RE = re.compile(
+    r"\b(application\s+for\s+(probate|letters?)|AOC-?E-?201)\b",
+    re.IGNORECASE,
+)
+
 
 def download_document_by_longhex(long_hex: str, case_no: str = "", *, timeout: int = 30) -> bytes:
     """Fetch PDF using the unauthenticated /Portal/DocumentViewer/Embedded/
@@ -177,24 +187,33 @@ def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str
     return out
 
 
-def find_will_documents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter a list_case_documents() result down to events that look
-    like a will or last-will-and-testament. Matches the event label,
-    the type description, and the document name.
+def _find_documents_matching(events: list[dict[str, Any]], pattern: re.Pattern) -> list[dict[str, Any]]:
+    """Filter docket events by matching `pattern` against event_label,
+    event_type_desc, and individual document_name fields.
     """
-    wills: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for ev in events:
-        if (_WILL_DESCRIPTION_RE.search(ev.get("event_label", ""))
-                or _WILL_DESCRIPTION_RE.search(ev.get("event_type_desc", ""))):
-            wills.append(ev)
+        if (pattern.search(ev.get("event_label", ""))
+                or pattern.search(ev.get("event_type_desc", ""))):
+            out.append(ev)
             continue
-        # Also check individual document names in case the event label is generic
         for doc in ev.get("documents", []):
-            if (_WILL_DESCRIPTION_RE.search(doc.get("document_name", ""))
-                    or _WILL_DESCRIPTION_RE.search(doc.get("document_type_desc", ""))):
-                wills.append(ev)
+            if (pattern.search(doc.get("document_name", ""))
+                    or pattern.search(doc.get("document_type_desc", ""))):
+                out.append(ev)
                 break
-    return wills
+    return out
+
+
+def find_will_documents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Events that look like a Last Will and Testament."""
+    return _find_documents_matching(events, _WILL_DESCRIPTION_RE)
+
+
+def find_application_documents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Events that look like an Application for Probate / Letters Test. /
+    Letters of Administration (AOC-E-201)."""
+    return _find_documents_matching(events, _APPLICATION_DESCRIPTION_RE)
 
 
 # ── Text extraction ───────────────────────────────────────────────────
@@ -277,6 +296,90 @@ Will text:
 """
 
 
+_APPLICATION_EXTRACT_PROMPT = """\
+You are reading a North Carolina Application for Probate / Letters Testamentary /
+Letters of Administration (AOC-E-201 or similar). Extract structured data.
+
+The application typically contains:
+- The DECEDENT's name, date of death, and last domicile address
+- The APPLICANT (who is acting as Personal Representative) — name + address +
+  relationship to decedent (spouse / child / sibling / etc.)
+- A list of HEIRS / persons entitled to share in the estate — each with their
+  name, age indicator (e.g. "18+" or actual age), relationship, mailing address
+- The ATTORNEY representing the estate (when one is listed)
+- A preliminary estate value (Part I total of the Preliminary Inventory)
+
+OCR / form extraction is messy — field labels and values get jumbled. Do your
+best to associate each value with the right field by context.
+
+Return ONLY valid JSON with this exact shape (use empty strings/arrays when
+data is missing — DO NOT invent):
+
+{{
+  "decedent_name": "<full legal name>",
+  "decedent_address": "<street, city, state, zip>",
+  "date_of_death": "<MM/DD/YYYY>",
+  "applicant": {{
+    "full_name": "<full legal name including middle if shown>",
+    "street": "...",
+    "city": "...",
+    "state": "...",
+    "zip": "...",
+    "relationship_to_decedent": "<spouse / child / sibling / etc., if stated>"
+  }},
+  "heirs": [
+    {{
+      "full_name": "...",
+      "age": "<age or '18+' or empty>",
+      "relationship": "<spouse / child / parent / sibling / niece / etc.>",
+      "street": "...",
+      "city": "...",
+      "state": "...",
+      "zip": "..."
+    }}
+  ],
+  "attorney_name": "<full name, empty if pro se>",
+  "preliminary_estate_value_usd": <number or null>
+}}
+
+If this document is NOT an Application form (e.g. it's a death certificate or
+some unrelated affidavit), return:
+{{ "decedent_name": "", "applicant": {{"full_name": ""}}, "heirs": [] }}
+
+Application text:
+{app_text}
+"""
+
+
+def parse_application(text: str, *, api_key: str = "", max_chars: int = 30000) -> dict[str, Any]:
+    """LLM-parse Application for Probate / Letters into structured data.
+
+    Captures applicant (acting PR), heirs (often missing from OData
+    Parties API — see [[project_odata_misses_pdf_heirs]]), date of death,
+    attorney, and preliminary estate value. Returns empty dict on LLM
+    failure or when the doc isn't an Application.
+    """
+    if not text or not text.strip():
+        return {}
+    try:
+        import llm_client  # type: ignore
+        import config as cfg  # type: ignore
+    except Exception as e:
+        logger.warning("LLM client unavailable: %s", e)
+        return {}
+    api_key = api_key or getattr(cfg, "ANTHROPIC_API_KEY", "")
+    if not api_key:
+        logger.warning("No ANTHROPIC_API_KEY configured for application parser")
+        return {}
+    prompt = _APPLICATION_EXTRACT_PROMPT.format(app_text=text[:max_chars])
+    return llm_client.chat_json(
+        prompt,
+        system="You extract structured data from legal forms. Return only valid JSON.",
+        max_tokens=2048,
+        api_key=api_key,
+    ) or {}
+
+
 def parse_will(text: str, *, api_key: str = "", max_chars: int = 30000) -> dict[str, Any]:
     """LLM-parse will text into structured executor/beneficiary data.
 
@@ -327,6 +430,64 @@ def fetch_and_parse_will_by_longhex(
     return parse_will(text, api_key=api_key)
 
 
+def fetch_and_parse_case_docs(
+    case_id_hex: str, waf_token: str, doc_types: list[str], *, api_key: str = "",
+) -> dict[str, list[dict[str, Any]]]:
+    """Fetch + LLM-parse multiple registered doc types from a case in one
+    docket round-trip.
+
+    Returns {doc_type: [parsed_dict, ...]}. Doc types with no matching
+    document in the docket OR whose document couldn't be fetched/parsed
+    map to an empty list — caller can use that to decide whether to queue
+    the doc type for retry.
+
+    Requires waf_token because the api/ViewDocument endpoint is auth-gated.
+    """
+    import case_doc_queue as cdq
+    out: dict[str, list[dict[str, Any]]] = {dt: [] for dt in doc_types}
+    try:
+        events = list_case_documents(case_id_hex)
+    except Exception as e:
+        logger.warning("list_case_documents failed for case %s...: %s", case_id_hex[:16], e)
+        return out
+
+    for doc_type in doc_types:
+        spec = cdq.get_doc_type(doc_type)
+        if not spec:
+            logger.debug("Unknown doc_type %r — skipping", doc_type)
+            continue
+        matching = _find_documents_matching(events, spec.label_regex)
+        if not matching:
+            continue
+        for ev in matching:
+            for doc in ev.get("documents", []):
+                fragment_id = doc.get("fragment_id", "")
+                if not fragment_id:
+                    continue
+                try:
+                    pdf_bytes = download_document_by_fragment(
+                        case_id_hex, fragment_id, waf_token=waf_token,
+                    )
+                except Exception as e:
+                    logger.warning("PDF fetch failed for %s fragment %s: %s",
+                                   doc_type, fragment_id, e)
+                    continue
+                text = extract_text(pdf_bytes)
+                if needs_ocr(text):
+                    logger.info("%s fragment %s: needs OCR, skipping",
+                                doc_type, fragment_id)
+                    continue
+                parsed = spec.parser(text, api_key=api_key)
+                if parsed:
+                    parsed["_meta"] = {
+                        "event_label": ev.get("event_label", ""),
+                        "filing_date": ev.get("filing_date", ""),
+                        "fragment_id": fragment_id,
+                    }
+                    out[doc_type].append(parsed)
+    return out
+
+
 def fetch_and_parse_case_wills(
     case_id_hex: str, waf_token: str, *, api_key: str = "",
 ) -> list[dict[str, Any]]:
@@ -374,3 +535,25 @@ def fetch_and_parse_case_wills(
                 }
                 results.append(parsed)
     return results
+
+
+# ── Doc type registration ────────────────────────────────────────────
+
+
+def _register_known_doc_types() -> None:
+    """Register the doc types this module knows how to parse with the
+    case_doc_queue registry. Idempotent."""
+    import case_doc_queue as cdq
+    cdq.register_doc_type(cdq.DocTypeSpec(
+        key="will",
+        label_regex=_WILL_DESCRIPTION_RE,
+        parser=parse_will,
+    ))
+    cdq.register_doc_type(cdq.DocTypeSpec(
+        key="application",
+        label_regex=_APPLICATION_DESCRIPTION_RE,
+        parser=parse_application,
+    ))
+
+
+_register_known_doc_types()
