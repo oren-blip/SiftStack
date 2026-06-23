@@ -33,31 +33,41 @@ logger = logging.getLogger(__name__)
 
 
 _PORTAL_BASE = "https://portal-nc.tylertech.cloud"
-_DOC_VIEWER_URL = _PORTAL_BASE + "/Portal/DocumentViewer/Embedded/{doc_id}"
+_DOC_VIEWER_LONGHEX_URL = _PORTAL_BASE + "/Portal/DocumentViewer/Embedded/{doc_id}"
+_DOC_VIEWER_API_URL = _PORTAL_BASE + "/app/RegisterOfActionsService/api/ViewDocument"
+_CASE_EVENTS_URL = _PORTAL_BASE + "/app/RegisterOfActionsService/CaseEvents('{case_id}')"
 _REFERER = _PORTAL_BASE + "/"
 
-# Verified 2026-06-23: no WAF cookie needed for /Portal/DocumentViewer/
-# Embedded/{doc_id}?caseNum={no}&p=0 — just User-Agent + Referer.
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": _REFERER,
-    "Accept": "application/pdf, */*",
+    "Accept": "application/pdf, application/json, */*",
 }
 
+# Will-document type detection. Tyler Tech populates Event.TypeId.Description
+# (and DocumentTypeID.Description) with values like these. We match on the
+# description with a flexible regex so future variants don't slip through.
+# Examples seen in the wild:
+#   "Will Recorded -Not Probated"
+#   "Last Will and Testament"
+#   "Will Filed"
+_WILL_DESCRIPTION_RE = re.compile(r"\b(will|testament)\b", re.IGNORECASE)
 
-def download_document(doc_id: str, case_no: str = "", *, timeout: int = 30) -> bytes:
-    """Fetch the raw PDF bytes for an Odyssey document.
 
-    Verified working without auth — the viewer URL serves the PDF binary
-    directly (Content-Type: application/pdf). caseNum query param is
-    optional for the request but accepted.
+def download_document_by_longhex(long_hex: str, case_no: str = "", *, timeout: int = 30) -> bytes:
+    """Fetch PDF using the unauthenticated /Portal/DocumentViewer/Embedded/
+    {long_hex} endpoint. The long_hex is a 256-char token minted by the
+    portal SPA for a specific document — no auth needed once you have it.
 
-    Raises requests.HTTPError on non-200; RuntimeError on non-PDF content-type.
+    Use this when a long_hex has already been obtained (e.g. from a copied
+    browser URL). For programmatic fetching from a case_id + fragmentId,
+    use download_document_by_fragment() instead — long_hex minting is not
+    yet discovered.
     """
-    if not doc_id:
-        raise ValueError("doc_id is required")
-    url = _DOC_VIEWER_URL.format(doc_id=doc_id)
+    if not long_hex:
+        raise ValueError("long_hex is required")
+    url = _DOC_VIEWER_LONGHEX_URL.format(doc_id=long_hex)
     params = {"p": "0"}
     if case_no:
         params["caseNum"] = case_no
@@ -69,22 +79,122 @@ def download_document(doc_id: str, case_no: str = "", *, timeout: int = 30) -> b
     return r.content
 
 
-def list_case_documents(case_id_hex: str, waf_token: str = "") -> list[dict[str, Any]]:
-    """Return a list of document entries for a case from the Register of
-    Actions service.
+def download_document_by_fragment(
+    case_id_hex: str, fragment_id: str, waf_token: str, *, timeout: int = 30,
+) -> bytes:
+    """Fetch PDF using the WAF-protected api/ViewDocument endpoint.
 
-    Each entry: {doc_id, label, filing_date, doc_type}
-
-    TODO: wire to Tyler Tech's actual docket endpoint. Common candidates:
-      /app/RegisterOfActionsService/Events('{case_id_hex}')
-      /app/RegisterOfActionsService/CaseEvents('{case_id_hex}')
-      /app/RegisterOfActionsService/Documents('{case_id_hex}')
-    Until verified, callers should supply doc_ids directly.
+    Requires a valid AWS WAF session cookie (same one used by the
+    existing scrape's CaseDetailClient). Returns the PDF binary on
+    success. Raises RuntimeError with the Odyssey error message on
+    session-invalid (HTTP 602).
     """
-    raise NotImplementedError(
-        "list_case_documents() — docket-listing endpoint not yet discovered. "
-        "Pass known doc_ids to download_document() directly for now."
-    )
+    if not case_id_hex or not fragment_id:
+        raise ValueError("case_id_hex and fragment_id are required")
+    if not waf_token:
+        raise ValueError("waf_token is required for api/ViewDocument")
+    params = {"caseId": case_id_hex, "fragmentId": fragment_id}
+    cookies = {"aws-waf-token": waf_token}
+    r = requests.get(_DOC_VIEWER_API_URL, params=params, headers=_HEADERS,
+                     cookies=cookies, timeout=timeout)
+    if r.status_code == 602:
+        # Tyler Tech's "session invalid" — happens when the WAF cookie expired
+        body = r.text[:300] if r.text else ""
+        raise RuntimeError(f"WAF session invalid (HTTP 602). Cookie may have expired. {body}")
+    r.raise_for_status()
+    ctype = r.headers.get("Content-Type", "").lower()
+    if "pdf" not in ctype:
+        raise RuntimeError(f"Expected PDF, got Content-Type={ctype!r}, body[:200]={r.content[:200]!r}")
+    return r.content
+
+
+def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str, Any]]:
+    """Return the docket entries for a case along with attached document IDs.
+
+    Hits the public OData endpoint /CaseEvents('{case_id}') (no WAF cookie
+    needed — verified 2026-06-23). Note: must NOT pass mode=portalembed,
+    or the DocumentViewerIntents array comes back empty.
+
+    Returns a list of dicts shaped:
+      {
+        "event_id": int,
+        "filing_date": "MM/DD/YYYY",
+        "event_label": str,            # e.g. "Last Will and Testament of ..."
+        "event_type_code": str,        # e.g. "WLNP"
+        "event_type_desc": str,        # e.g. "Will Recorded -Not Probated"
+        "documents": [                  # one or more attached PDFs per event
+            {
+                "document_id": str,    # internal DocumentID
+                "document_name": str,  # e.g. "Will Recorded -Not Probated"
+                "fragment_id": str,    # the URI used by api/ViewDocument
+            },
+            ...
+        ]
+      }
+    """
+    url = _CASE_EVENTS_URL.format(case_id=case_id_hex)
+    # NO mode param — that's what gates DocumentViewerIntents population.
+    params = {"$top": "200", "$skip": "0"}
+    r = requests.get(url, params=params, headers=_HEADERS, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    out: list[dict[str, Any]] = []
+    for raw_ev in (data.get("Events") or []):
+        ev = raw_ev.get("Event") or {}
+        type_id = ev.get("TypeId") or {}
+        entry: dict[str, Any] = {
+            "event_id": raw_ev.get("EventId"),
+            "filing_date": raw_ev.get("SortEventDate") or ev.get("Date") or "",
+            "event_label": (ev.get("Comment") or "").strip(),
+            "event_type_code": (type_id.get("Word") or "").strip(),
+            "event_type_desc": (type_id.get("Description") or "").strip(),
+            "documents": [],
+        }
+        for doc in (ev.get("Documents") or []):
+            doc_type = doc.get("DocumentTypeID") or {}
+            # The "URI" we need for api/ViewDocument lives in
+            # DocumentViewer Intents (when mode is omitted). Find the
+            # PDF-viewing intent.
+            fragment_id = ""
+            for version in (doc.get("DocumentVersions") or []):
+                for frag in (version.get("DocumentFragments") or []):
+                    for intent in (frag.get("DocumentViewerIntents") or []):
+                        uri = intent.get("URI")
+                        if uri:
+                            fragment_id = str(uri)
+                            break
+                    if fragment_id:
+                        break
+                if fragment_id:
+                    break
+            entry["documents"].append({
+                "document_id": str(doc.get("DocumentID") or ""),
+                "document_name": (doc.get("DocumentName") or "").strip(),
+                "document_type_desc": (doc_type.get("Description") or "").strip(),
+                "fragment_id": fragment_id,
+            })
+        out.append(entry)
+    return out
+
+
+def find_will_documents(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter a list_case_documents() result down to events that look
+    like a will or last-will-and-testament. Matches the event label,
+    the type description, and the document name.
+    """
+    wills: list[dict[str, Any]] = []
+    for ev in events:
+        if (_WILL_DESCRIPTION_RE.search(ev.get("event_label", ""))
+                or _WILL_DESCRIPTION_RE.search(ev.get("event_type_desc", ""))):
+            wills.append(ev)
+            continue
+        # Also check individual document names in case the event label is generic
+        for doc in ev.get("documents", []):
+            if (_WILL_DESCRIPTION_RE.search(doc.get("document_name", ""))
+                    or _WILL_DESCRIPTION_RE.search(doc.get("document_type_desc", ""))):
+                wills.append(ev)
+                break
+    return wills
 
 
 # ── Text extraction ───────────────────────────────────────────────────
@@ -197,20 +307,70 @@ def parse_will(text: str, *, api_key: str = "", max_chars: int = 30000) -> dict[
 # ── Convenience ───────────────────────────────────────────────────────
 
 
-def fetch_and_parse_will(doc_id: str, case_no: str = "", *, api_key: str = "") -> dict[str, Any]:
-    """End-to-end: download will PDF -> extract text -> LLM-parse.
-
+def fetch_and_parse_will_by_longhex(
+    long_hex: str, case_no: str = "", *, api_key: str = "",
+) -> dict[str, Any]:
+    """End-to-end with a known long_hex token (unauthenticated). Use this
+    when a long_hex has already been minted (e.g. copied from a browser).
     Returns the structured dict from parse_will() or {} on any failure.
     """
     try:
-        pdf_bytes = download_document(doc_id, case_no=case_no)
+        pdf_bytes = download_document_by_longhex(long_hex, case_no=case_no)
     except Exception as e:
-        logger.warning("PDF download failed for doc %s: %s", doc_id[:16], e)
+        logger.warning("PDF download failed for long_hex %s...: %s", long_hex[:16], e)
         return {}
     text = extract_text(pdf_bytes)
     if needs_ocr(text):
-        # OCR fallback not yet wired — return empty so caller treats as "no will"
-        logger.info("doc %s: native extraction yielded %d chars; OCR fallback not yet wired",
-                    doc_id[:16], len(text))
+        logger.info("long_hex %s...: native extraction yielded %d chars; OCR fallback not yet wired",
+                    long_hex[:16], len(text))
         return {}
     return parse_will(text, api_key=api_key)
+
+
+def fetch_and_parse_case_wills(
+    case_id_hex: str, waf_token: str, *, api_key: str = "",
+) -> list[dict[str, Any]]:
+    """End-to-end for a probate case: list the docket, find any will
+    documents, download + LLM-parse each one. Returns a list of structured
+    dicts (one per will found).
+
+    Requires waf_token because we use the api/ViewDocument endpoint (the
+    unauthenticated /Portal/DocumentViewer/Embedded endpoint needs a
+    pre-minted long_hex token which we can't programmatically generate).
+
+    Empty list = no will found OR fetch/parse failed for all wills.
+    """
+    results: list[dict[str, Any]] = []
+    try:
+        events = list_case_documents(case_id_hex)
+    except Exception as e:
+        logger.warning("list_case_documents failed for case %s...: %s", case_id_hex[:16], e)
+        return results
+    wills = find_will_documents(events)
+    if not wills:
+        return results
+    for ev in wills:
+        for doc in ev.get("documents", []):
+            fragment_id = doc.get("fragment_id", "")
+            if not fragment_id:
+                continue
+            try:
+                pdf_bytes = download_document_by_fragment(
+                    case_id_hex, fragment_id, waf_token=waf_token,
+                )
+            except Exception as e:
+                logger.warning("Will fetch failed for fragment %s: %s", fragment_id, e)
+                continue
+            text = extract_text(pdf_bytes)
+            if needs_ocr(text):
+                logger.info("Will fragment %s: needs OCR, skipping", fragment_id)
+                continue
+            parsed = parse_will(text, api_key=api_key)
+            if parsed:
+                parsed["_meta"] = {
+                    "event_label": ev.get("event_label", ""),
+                    "filing_date": ev.get("filing_date", ""),
+                    "fragment_id": fragment_id,
+                }
+                results.append(parsed)
+    return results
