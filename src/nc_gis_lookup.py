@@ -1064,6 +1064,40 @@ _CABARRUS_ADDR_URL = (
 )
 
 
+_CATAWBA_PARCEL_REPORT_URL = "https://gis.catawbacountync.gov/_ws/v2/ws_ims_attribute_query.php"
+
+
+def _catawba_parcel_report(pid: str) -> dict | None:
+    """Fetch the bitek_parcel_report_view record for a Catawba parcel.
+
+    The PHP-based GIS layer we use for name search exposes only 8 fields
+    (no value, no use, no sale data). This endpoint backs the "Parcel Report"
+    UI link on gis.catawbacountync.gov and returns the full assessor record:
+    total_value, bldg_value, land_value, yr_built, sale_date, sale_amount,
+    legal description, etc. Used by populate_property_values to plug the
+    Catawba value-blind gap (see project_catawba_value_field_missing.md).
+    """
+    if not pid:
+        return None
+    params = {
+        "table": "bitek_parcel_report_view",
+        "fields": "*",
+        "where": f"where pinc like '{pid}%'",
+    }
+    headers = dict(_ARCGIS_HEADERS)
+    headers["Referer"] = f"https://gis.catawbacountync.gov/nomap/parcel_report_h.php?key={pid}&typ=P"
+    try:
+        r = requests.get(_CATAWBA_PARCEL_REPORT_URL, params=params, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if isinstance(data, list) and data:
+            return data[0]
+    except (requests.RequestException, ValueError):
+        return None
+    return None
+
+
 def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
     """Look up real situs address for a Cabarrus parcel by PIN.
 

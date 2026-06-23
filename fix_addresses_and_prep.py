@@ -899,7 +899,14 @@ def populate_property_values(rows: list[dict]) -> int:
     """Backfill Property Value from a fresh GIS lookup for rows that have a
     Parcel ID but no Property Value populated yet. Required before the
     drop_over_500k filter can run.
+
+    Catawba fallback: the county's PHP layer used for name search exposes
+    no value field at all (see project_catawba_value_field_missing.md).
+    For Catawba rows still blank after the standard lookup, hit the
+    bitek_parcel_report_view endpoint (which backs the "Parcel Report"
+    page on gis.catawbacountync.gov) to pull total_value directly.
     """
+    from nc_gis_lookup import _catawba_parcel_report
     filled = 0
     for r in rows:
         pid = (r.get("Parcel ID") or "").strip()
@@ -914,11 +921,24 @@ def populate_property_values(rows: list[dict]) -> int:
         try:
             results = lookup_properties(dec, county, min_score=0.5)
         except Exception:
-            continue
+            results = []
         match = next((c for c in results if c.pid == pid), None)
         if match and match.market_value:
             r["Property Value"] = f"{int(round(float(match.market_value))):,}"
             filled += 1
+            continue
+        # Catawba PHP endpoint fallback — ArcGIS layer has no value field.
+        if county.lower() == "catawba":
+            rec = _catawba_parcel_report(pid)
+            if rec:
+                v = rec.get("total_value")
+                try:
+                    v_f = float(v) if v not in (None, "", 0, "0") else None
+                except (TypeError, ValueError):
+                    v_f = None
+                if v_f:
+                    r["Property Value"] = f"{int(round(v_f)):,}"
+                    filled += 1
     return filled
 
 
