@@ -1639,13 +1639,19 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
         # Property city is a soft locality hint — PRs are often local to the
         # decedent. The lookup tolerates a wrong/empty city (national search).
         city = (r.get("Property City") or "").strip()
+        # County is the STRICT anchor (Week 26 audit fix): without it, common-
+        # name PRs like "Daniel Cox" matched a stranger 4 hrs away in Oak City
+        # NC. The LLM now treats same-county-or-adjacent as "high" confidence
+        # only; other matches return blank and fall through to property mailing.
+        county = (r.get("County") or "").strip()
         attempted += 1
-        key = f"{name}|{city}".upper()
+        # Cache key includes county so different counties don't share results
+        key = f"{name}|{city}|{county}".upper()
         res = cache.get(key)
         if res is None:
             try:
                 # Tier 1: free Serper + Firecrawl + LLM via CyberBackgroundChecks.
-                res = _lookup_dm_address(name, city, api_key, state=state)
+                res = _lookup_dm_address(name, city, api_key, state=state, county=county)
             except Exception as e:
                 print(f"    people-search error for {name!r}: {e}")
                 res = {}

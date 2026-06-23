@@ -810,24 +810,33 @@ ADDRESS_EXTRACT_PROMPT = """\
 Extract the current residential mailing address for this person from the web page text.
 
 Person: {name}
-Expected area: {city}, {state_name} (or nearby)
+Expected area: {city}, {county_phrase}{state_name}
 
 Instructions:
 1. The page may list MULTIPLE people. Scan ALL result blocks to find the one that \
 best matches "{name}" in {city}, {state_name}.
 2. Within that block, prefer the "Lives at" or "Current address" over "Used to live" addresses.
-3. If you find an exact name + state match, return it even if the city differs slightly \
-(people move within {state_name}).
+3. GEOGRAPHIC CONSTRAINT: prefer matches in {county_phrase_for_constraint}{state_name}. A match in a \
+DIFFERENT county that's far from {city} is likely a SAME-NAME STRANGER, not the right person — \
+common names (Smith, Cox, Johnson, etc.) appear hundreds of times statewide. Treat far-county \
+matches with strong skepticism.
 4. If multiple exact matches exist (common name), pick the {state_name} address closest \
 to {city}.
 5. If no confident match exists, return empty strings — do not guess.
+
+CONFIDENCE RULES (be strict — the cost of a wrong address is high; blank is OK):
+- "high": exact name + same-or-adjacent county + the page shows family ties / age plausible / \
+matches local context. ONLY high-confidence results will be used.
+- "medium": exact name + same state but FAR county, or name match but no corroborating signals. \
+DO NOT return medium for common names without corroboration.
+- "low": uncertain, common name with no signals, or only partial name match.
 
 Return ONLY valid JSON with these exact keys:
 - "street": street address (e.g., "1234 Oak Street") — empty string if not found
 - "city": city name — empty string if not found
 - "state": 2-letter state code (e.g., "{state_code}" for {state_name})
 - "zip": 5-digit zip code — empty string if not found
-- "confidence": "high" if name+state match found, "medium" if likely match, "low" if uncertain
+- "confidence": "high" / "medium" / "low" per rules above
 
 Web page text:
 {page_text}"""
@@ -869,7 +878,7 @@ def _lookup_dm_address_knox_tax(name: str) -> dict | None:
 
 
 def _lookup_dm_address_web(
-    name: str, city: str, api_key: str, state: str = "TN",
+    name: str, city: str, api_key: str, state: str = "TN", county: str = "",
 ) -> dict | None:
     """Search free people search sites for DM's residential address.
 
@@ -907,9 +916,18 @@ def _lookup_dm_address_web(
                 continue
 
             # LLM extraction
+            county_clean = (county or "").strip().rstrip(",")
+            if county_clean:
+                county_phrase = f"{county_clean} County, "
+                county_phrase_for_constraint = f"{county_clean} County or adjacent counties in "
+            else:
+                county_phrase = ""
+                county_phrase_for_constraint = ""
             prompt = ADDRESS_EXTRACT_PROMPT.format(
                 name=name,
                 city=city_for_prompt,
+                county_phrase=county_phrase,
+                county_phrase_for_constraint=county_phrase_for_constraint,
                 state_name=state_name,
                 state_code=state_code,
                 page_text=page_text[:MAX_OBITUARY_TEXT],
@@ -918,7 +936,10 @@ def _lookup_dm_address_web(
                 parsed = llm_client.chat_json(prompt, system=SYSTEM_PROMPT, max_tokens=256, api_key=api_key)
                 if parsed:
                     street = parsed.get("street", "").strip()
-                    if street and parsed.get("confidence") in ("high", "medium"):
+                    # STRICT: only "high" confidence (matches the prompt rules
+                    # in ADDRESS_EXTRACT_PROMPT). Blank falls back to property
+                    # mailing in Step 1.95 -- safer than a wrong-person guess.
+                    if street and parsed.get("confidence") == "high":
                         logger.info("  People search found address for %s: %s, %s",
                                     name, street, parsed.get("city", ""))
                         return {
@@ -1118,14 +1139,34 @@ def _fetch_firecrawl(
 
 def _extract_address_from_page(
     page_text: str, name: str, city: str, api_key: str, state: str = "TN",
+    county: str = "",
 ) -> dict | None:
-    """Use Claude Haiku to extract a mailing address from page text."""
+    """Use Claude Haiku to extract a mailing address from page text.
+
+    `county` (optional): when provided, the LLM is instructed to require a
+    same-county-or-adjacent match for "high" confidence. Far-county matches
+    fall to "medium" or "low" and are rejected by the strict acceptance
+    below. Prevents the Daniel Cox / Oak City NC class — common names
+    statewide getting attached to the wrong person 4 hours from the
+    property. See [[project_pr_address_lookup]] for the audit context.
+    """
     state_code = (state or "TN").strip().upper()
     state_name = _state_full(state_code)
     city_for_prompt = city or _STATE_FALLBACK_CITY.get(state_code, "")
+    county_clean = (county or "").strip().rstrip(",")
+    # Two phrasings of the same county hint, baked into different sentences
+    # in the prompt template
+    if county_clean:
+        county_phrase = f"{county_clean} County, "
+        county_phrase_for_constraint = f"{county_clean} County or adjacent counties in "
+    else:
+        county_phrase = ""
+        county_phrase_for_constraint = ""
     prompt = ADDRESS_EXTRACT_PROMPT.format(
         name=name,
         city=city_for_prompt,
+        county_phrase=county_phrase,
+        county_phrase_for_constraint=county_phrase_for_constraint,
         state_name=state_name,
         state_code=state_code,
         page_text=page_text[:MAX_ADDRESS_TEXT],
@@ -1136,7 +1177,12 @@ def _extract_address_from_page(
             return None
 
         street = parsed.get("street", "").strip()
-        if street and parsed.get("confidence") in ("high", "medium"):
+        # STRICT: only "high" confidence. Last night's audit showed the
+        # Earney/Daniel Cox case slipped through because "medium" was
+        # accepted with no geographic constraint. When uncertain we leave
+        # the mailing blank and let Step 1.95 fall back to the property
+        # address — more reliable than a wrong-person guess.
+        if street and parsed.get("confidence") == "high":
             return {
                 "street": street,
                 "city": parsed.get("city", ""),
@@ -1149,7 +1195,7 @@ def _extract_address_from_page(
 
 
 def _lookup_dm_address_serper_firecrawl(
-    name: str, city: str, api_key: str, state: str = "TN",
+    name: str, city: str, api_key: str, state: str = "TN", county: str = "",
 ) -> dict | None:
     """Look up DM address via direct people search URLs + Firecrawl rendering.
 
@@ -1157,6 +1203,9 @@ def _lookup_dm_address_serper_firecrawl(
     show actual street addresses for free), then falls back to Serper Google
     search for additional people search sites. Uses Claude Haiku to extract
     the address from rendered page content.
+
+    `county` (optional): passed to the LLM extractor for a same-county
+    geographic anchor (see _extract_address_from_page).
     """
     # Phase 1: Direct people search URLs (no Google search needed)
     direct_urls = _build_people_search_urls(name, city, state=state)
@@ -1167,7 +1216,7 @@ def _lookup_dm_address_serper_firecrawl(
         if not page_text or len(page_text) < 100:
             continue
 
-        result = _extract_address_from_page(page_text, name, city, api_key, state=state)
+        result = _extract_address_from_page(page_text, name, city, api_key, state=state, county=county)
         if result:
             logger.debug("Direct URL hit for %s: %s", name, url)
             return result
@@ -1186,7 +1235,7 @@ def _lookup_dm_address_serper_firecrawl(
         if not page_text or len(page_text) < 100:
             continue
 
-        result = _extract_address_from_page(page_text, name, city, api_key, state=state)
+        result = _extract_address_from_page(page_text, name, city, api_key, state=state, county=county)
         if result:
             logger.debug("Serper URL hit for %s: %s", name, url)
             return result
@@ -1398,7 +1447,7 @@ def _batch_tracerfy_lookup(notices: list) -> None:
 
 def _lookup_dm_address(
     name: str, city: str, api_key: str, tracerfy_tier1: bool = False,
-    state: str = "TN",
+    state: str = "TN", county: str = "",
 ) -> dict:
     """Look up decision-maker's mailing address using tiered sources.
 
@@ -1453,7 +1502,7 @@ def _lookup_dm_address(
     # Tier 2: Direct people search URLs + Firecrawl + LLM
     import config as cfg
     sf_result = _lookup_dm_address_serper_firecrawl(
-        name, search_city, api_key, state=state_code,
+        name, search_city, api_key, state=state_code, county=county,
     )
     if sf_result and sf_result.get("street"):
         result.update(sf_result)
@@ -1464,7 +1513,7 @@ def _lookup_dm_address(
 
     # Tier 2b: DuckDuckGo fallback (when Serper/Firecrawl not configured)
     if not cfg.SERPER_API_KEY and not cfg.FIRECRAWL_API_KEY:
-        web_result = _lookup_dm_address_web(name, search_city, api_key, state=state_code)
+        web_result = _lookup_dm_address_web(name, search_city, api_key, state=state_code, county=county)
         if web_result and web_result.get("street"):
             result.update(web_result)
             result["source"] = "ddg_people_search"
