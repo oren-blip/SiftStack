@@ -139,7 +139,7 @@ def research_blank_parcels(
     "Walker, Betty Louise" kept getting re-bound to the same Walker
     Family Trust parcel after the audit had explicitly rejected it.
     """
-    from nc_gis_lookup import filter_for_lead_quality, pick_best_candidate
+    from nc_gis_lookup import filter_for_lead_quality, pick_best_candidate, _name_match_score
     rejected = audit_rejected_pids or set()
     recovered = 0
     for r in rows:
@@ -156,6 +156,18 @@ def research_blank_parcels(
                 results = lookup_properties(v, county, min_score=min_score)
             except Exception:
                 continue
+            if not results:
+                continue
+            # CRITICAL: re-score each candidate against the CANONICAL decedent
+            # name, not the search variation. The variation "JOHNSTON GERALDINE
+            # H" gets misparsed by split_decedent_name as first=JOHNSTON, last=H
+            # — which then matches "HARRILL JOHN H HEIRS" at 0.7 via the
+            # prefix-escape (JOHN matches JOHNSTON[:4]). Re-scoring against the
+            # original "Johnston, Geraldine Hagan" parses correctly and drops
+            # that false positive to 0.0. (Week 26 Johnston 26E000837-350.)
+            for c in results:
+                c.match_score = _name_match_score(dec, c.owner_name or "")
+            results = [c for c in results if c.match_score >= min_score]
             if not results:
                 continue
             kept = filter_for_lead_quality(results)
@@ -295,6 +307,104 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
             r["Notes"] = new_block
         updated += 1
     return updated
+
+
+_LOT_CLUSTER_SUFFIXES = {
+    "ST", "STREET", "RD", "ROAD", "AVE", "AVENUE", "DR", "DRIVE",
+    "LN", "LANE", "CT", "COURT", "PL", "PLACE", "HWY", "HIGHWAY",
+    "WAY", "BLVD", "BOULEVARD", "CIR", "CIRCLE", "TRL", "TRAIL",
+    "PKWY", "PARKWAY", "TER", "TERRACE", "CR",
+}
+_LOT_CLUSTER_DIRECTIONALS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+
+
+def _street_signature(addr: str) -> str:
+    """Canonical street name for cluster comparison.
+
+    Strips leading house number, trailing street-type suffix, and trailing
+    directional (so "1015 GOLD MINE DR" and "1083 GOLD MINE DR" both
+    reduce to "GOLD MINE"; "4054 WANDERING LN NE" reduces to "WANDERING").
+    Returns "" when no recognizable street name remains.
+    """
+    if not addr:
+        return ""
+    tokens = re.sub(r"[^\w\s\-]", " ", addr.upper()).split()
+    if not tokens:
+        return ""
+    # Drop leading numeric house-number token (allowing "1015A" / "1015-2" etc.)
+    if re.match(r"^\d", tokens[0]):
+        tokens = tokens[1:]
+    # Drop trailing directional then suffix (or suffix then directional)
+    for _ in range(2):
+        if tokens and tokens[-1] in _LOT_CLUSTER_DIRECTIONALS:
+            tokens = tokens[:-1]
+            continue
+        if tokens and tokens[-1] in _LOT_CLUSTER_SUFFIXES:
+            tokens = tokens[:-1]
+            continue
+        break
+    return " ".join(tokens)
+
+
+def tag_lot_clusters(rows: list[dict], min_score: float = 0.7) -> int:
+    """Flag rows whose decedent owns 2+ parcels on the same street.
+
+    Per Oren's Week 26 feedback ([[feedback_consecutive_vacant_lots]]):
+    estates with multiple parcels on a single street are HIGH-value leads
+    — mobile-home-on-land buyers prize adjacent parcels for siting MHs,
+    combining lots, or building a small park. Without an explicit tag the
+    user has to read the Notes column to spot the pattern; this surfaces
+    it in Tags + Match Reason so it's visible at a glance.
+
+    Detection: 2+ kept candidates for the same decedent whose street
+    signature (street name minus house number + suffix + directional)
+    matches the main parcel's. Vacant-vs-improved is NOT required —
+    same-street clustering alone is the signal. Tag stays generic so it
+    also catches residential cluster cases (family compound, etc).
+    """
+    from nc_gis_lookup import lookup_properties, filter_for_lead_quality
+    tagged = 0
+    for r in rows:
+        current_pid = (r.get("Parcel ID") or "").strip()
+        if not current_pid:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=min_score)
+        except Exception:
+            continue
+        if len(cands) < 2:
+            continue
+        kept = filter_for_lead_quality(
+            cands,
+            beneficiaries_json=r.get("Beneficiaries", "") or "",
+            decedent_name=dec,
+        )
+        # Anchor street = current row's main parcel street
+        main = next((c for c in kept if c.pid == current_pid), None)
+        if main:
+            anchor = _street_signature(main.situs_address or r.get("Property Address", ""))
+        else:
+            anchor = _street_signature(r.get("Property Address", ""))
+        if not anchor:
+            continue
+        same_street = [
+            c for c in kept
+            if c.pid and _street_signature(c.situs_address or "") == anchor
+        ]
+        if len(same_street) < 2:
+            continue
+        # Add tag + match reason
+        cluster_tag = "Lot Cluster"
+        existing_tags = (r.get("Tags") or "").strip()
+        if cluster_tag.lower() not in existing_tags.lower():
+            r["Tags"] = (existing_tags + ", " if existing_tags else "") + cluster_tag
+        tag_reason(r, f"lot-cluster-{len(same_street)}")
+        tagged += 1
+    return tagged
 
 
 def collect_multi_parcel_estates(rows: list[dict], threshold: int = 5) -> list[dict]:
@@ -2387,6 +2497,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.7: backfill sibling parcels into Notes (multi-parcel estates)")
     n_siblings = backfill_sibling_parcels_to_notes(rows)
     print(f"  Rows updated with sibling-parcel notes: {n_siblings}")
+
+    print("Step 0.75: tag Lot Cluster rows (2+ parcels on same street — high-value MH niche)")
+    n_clusters = tag_lot_clusters(rows)
+    print(f"  Rows tagged 'Lot Cluster': {n_clusters}")
 
     print("Step 0.8: write Multi-Parcel Estates review-me XLSX (decedents with 5+ parcels)")
     mpe_entries = collect_multi_parcel_estates(rows, threshold=5)

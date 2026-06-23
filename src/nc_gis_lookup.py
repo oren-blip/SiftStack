@@ -345,21 +345,32 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
         ]
         if competing_first_names:
             # Estate-marker escape: when owner is clearly the decedent's
-            # estate (contains HEIRS/ESTATE) AND a competing token shares
-            # the 4-char prefix of d_first, treat as a spelling variant
-            # of the decedent. Catches Cabarrus 26E000656-120 / Sega
-            # Paulene: owner "HUNTER VERNICE SR | SEGA PAULINE E ESTATE"
-            # — Paulene vs Pauline is a deed-spelling drift on the same
-            # person. Accept with confidence 0.7 (above min_score, below
-            # exact-match 1.0).
+            # estate (contains HEIRS/ESTATE) AND a competing token is a
+            # spelling variant of d_first (shares both 4-char PREFIX and
+            # 2-char SUFFIX), treat as the same person. Catches Cabarrus
+            # 26E000656-120 / Sega: "HUNTER VERNICE SR | SEGA PAULINE E
+            # ESTATE" (Paulene vs Pauline — share PAUL prefix and NE suffix).
+            #
+            # The suffix requirement blocks false positives like Hannah
+            # 26E000841-350 Week 26: decedent DAVID, owner "HANNAH DAVIS
+            # ROWE HEIRS". DAVID and DAVIS share prefix DAVI but suffix
+            # D vs S — different person, not a spelling variant. Prefix-
+            # only matching was returning 0.7 and pulling in the wrong
+            # estate's parcel via swap-on-DQ.
             if (
                 o_set & _HEIRS_MARKERS
                 and d_first
                 and len(d_first) >= 4
             ):
                 d_prefix = d_first[:4]
+                d_suffix = d_first[-2:]
                 for cf in competing_first_names:
-                    if len(cf) >= 4 and cf[:4] == d_prefix:
+                    if (
+                        len(cf) >= 4
+                        and cf[:4] == d_prefix
+                        and len(cf) >= 2
+                        and cf[-2:] == d_suffix
+                    ):
                         return 0.7
             return 0.4  # owner has its own first name, ours isn't it
 
@@ -1864,7 +1875,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 9  # bumped 2026-06-22 (same day as v8) — Cabarrus simplify_use_code now maps CN=Condo / CO=Vacant Land / HB=SFR (Needham 26E000661-120 condo leaked Week 26). Also Gaston situs_zip_field=ZIP populates situs_zip_override (Hannah 26E000841-350 swap-on-DQ lost ZIP 28016). Cache needs invalidation because both changes affect already-cached PropertyCandidate fields.
+_PERSIST_VERSION = 10  # bumped 2026-06-22 (third bump same day) — estate-marker prefix escape in _name_match_score_one now requires shared 2-char SUFFIX in addition to 4-char prefix (was prefix-only). Blocks Hannah 26E000841-350 DAVID/DAVIS false positive while preserving Sega PAULENE/PAULINE legitimate spelling-drift match. Cache needs invalidation because cached candidate match_scores change for any decedent whose owner had a same-prefix-different-suffix HEIRS entry.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
