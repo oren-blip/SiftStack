@@ -1241,6 +1241,19 @@ async def scrape_ecourts(
         except Exception:
             logger.exception("eCourts: parties enrichment failed (continuing with bare notices)")
 
+    # Drain the case-doc retry queue with the same fresh WAF cookie.
+    # Handles cases scraped on prior days whose Will/Application PDFs
+    # weren't yet uploaded by the clerk — those got queued, and now we
+    # retry them so the polish step's apply_fetched_case_docs picks up
+    # any newly-arrived data.
+    if waf_token_for_api:
+        try:
+            n_drained = drain_pending_case_docs(waf_token=waf_token_for_api)
+            if n_drained:
+                logger.info("eCourts: pending-doc drain landed %d new docs", n_drained)
+        except Exception:
+            logger.exception("eCourts: pending-doc drain failed (continuing)")
+
     save_seen_ids(seen_ids)
     save_last_run_date()
     logger.info("eCourts: total %d notice(s)", len(notices))
