@@ -78,13 +78,20 @@ FTM_COLUMNS = [
     "DM 2 Relationship",
     "DM 3 Name",
     "DM 3 Relationship",
+    # Will-extracted PR name (populated by ecourts_scraper._enrich_with_wills
+    # when a Last Will and Testament PDF is attached). Carries the FULL
+    # legal name including middle name(s), which is dramatically more
+    # disambiguating in PR people-search than the eCourts-truncated
+    # "Daniel Cox" form. Polish Step 1.93 prefers this when present.
+    "PR Full Name (Will)",
+    "PR Relationship (Will)",
 ]
 
 # Columns that exist in the data but are hidden from the xlsx display.
 # Case Status is a silent guardrail — every kept row should be "Pending"
 # (polish drops Disposed/Closed). Hiding it removes visual noise but
 # preserves the field for audit / debugging / future use.
-HIDDEN_FROM_WORKBOOK = {"Case Status"}
+HIDDEN_FROM_WORKBOOK = {"Case Status", "PR Full Name (Will)", "PR Relationship (Will)"}
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
@@ -378,6 +385,8 @@ def notice_to_ftm_row(
         "DM 2 Relationship": notice.decision_maker_2_relationship or "",
         "DM 3 Name":        notice.decision_maker_3_name or "",
         "DM 3 Relationship": notice.decision_maker_3_relationship or "",
+        "PR Full Name (Will)":     getattr(notice, "will_pr_full_name", "") or "",
+        "PR Relationship (Will)":  getattr(notice, "will_pr_relationship", "") or "",
     }
 
 

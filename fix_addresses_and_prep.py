@@ -1635,7 +1635,16 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
             continue  # need a real PR name to search
         if (r.get("Mailing Address") or "").strip():
             continue  # already have a court-supplied mailing
-        name = f"{first} {last}"
+        # Prefer the will-extracted full legal name when available — it
+        # carries middle names that the eCourts Parties API truncates
+        # ("Daniel Cox" -> "DANIEL CLINTON COX"). Full middle names are
+        # dramatically more disambiguating in both Tier 0 county GIS
+        # search AND Tier 2 people-search. See [[project_county_gis_as_pr_address_verification]].
+        will_full = (r.get("PR Full Name (Will)") or "").strip()
+        if will_full:
+            name = will_full
+        else:
+            name = f"{first} {last}"
         # Property city is a soft locality hint — PRs are often local to the
         # decedent. The lookup tolerates a wrong/empty city (national search).
         city = (r.get("Property City") or "").strip()
