@@ -1017,6 +1017,14 @@ def validate_existing_matches(
                 r["Property use"] = "Vacant Land"
             elif best.is_residential:
                 r["Property use"] = "SFR"
+            # Same fix as re_collapse_multi_parcel: refresh value from
+            # the new parcel or blank so Step 1.7 re-derives. Without
+            # this the stale value from the swapped-out parcel survives.
+            # (Walton 26E002339-590 leaked $7,900 on a $260,400 house.)
+            if best.market_value:
+                r["Property Value"] = f"{int(round(float(best.market_value))):,}"
+            else:
+                r["Property Value"] = ""
     return blanked, rejected_pids
 
 
@@ -2100,6 +2108,17 @@ def re_collapse_multi_parcel(rows: list[dict]) -> int:
         r["Property State"] = "NC"
         r["Property Zip"] = zipc
         r["Property use"] = new_use
+        # Refresh Property Value from the new main parcel — without this
+        # the stale value from the swapped-out parcel survives because
+        # Step 1.7 only fires on blank values. Walton 26E002339-590
+        # surfaced this Week 26: scraper picked $7,900 vacant strip as
+        # main, polish swapped to $260K house at 7918 Corder Dr but
+        # value stayed $7,900. Always overwrite when we have a value
+        # from the new main; otherwise blank so Step 1.7 re-derives.
+        if new_main.market_value:
+            r["Property Value"] = f"{int(round(float(new_main.market_value))):,}"
+        else:
+            r["Property Value"] = ""
         # Rebuild the PLUS-N-PARCELS note (vertical format) with the
         # remaining parcels
         extras = sorted_kept[1:]
