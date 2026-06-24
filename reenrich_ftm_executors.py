@@ -358,18 +358,33 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
         c: PatternFill(start_color=h, end_color=h, fill_type="solid")
         for c, h in NC_COUNTY_COLORS.items()
     }
-    multiline_cols = {"Notes", "Beneficiaries"}
+    # Match the renderer in nc_ftm_writer.write_ftm_xlsx — multiline
+    # columns are wrapped + the row is sized to fit the tallest cell.
+    # Previously we squashed newlines to pipe-separators (defeating the
+    # vertical Notes format we ship at scrape/polish time). Now the
+    # vertical layout renders correctly in Excel + Google Sheets.
+    multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
+    MAX_ROW_LINES = 20
     for r_idx, r in enumerate(rows, start=2):
         row_fill = county_fills.get(r.get("County", ""))
+        max_lines = 1
+        for col_name in multiline_cols:
+            val = r.get(col_name, "")
+            if val:
+                n_lines = str(val).count("\n") + 1
+                if n_lines > max_lines:
+                    max_lines = n_lines
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
-            if col_name in multiline_cols and val:
-                val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+            if col_name in multiline_cols:
+                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
             if row_fill:
                 cell.fill = row_fill
-        ws.row_dimensions[r_idx].height = 16
+        capped = min(max_lines, MAX_ROW_LINES)
+        ws.row_dimensions[r_idx].height = max(16, capped * 15)
 
     county_col_idx = FTM_COLUMNS.index("County") + 1
     county_col_letter = get_column_letter(county_col_idx)
