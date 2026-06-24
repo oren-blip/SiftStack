@@ -358,22 +358,16 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
         c: PatternFill(start_color=h, end_color=h, fill_type="solid")
         for c, h in NC_COUNTY_COLORS.items()
     }
-    # Match the renderer in nc_ftm_writer.write_ftm_xlsx — multiline
-    # columns are wrapped + the row is sized to fit the tallest cell.
-    # Previously we squashed newlines to pipe-separators (defeating the
-    # vertical Notes format we ship at scrape/polish time). Now the
-    # vertical layout renders correctly in Excel + Google Sheets.
+    # Multi-line columns get wrap_text + top-align so the FULL content
+    # is preserved in the cell (visible in the formula bar on click, and
+    # rendered fully when the user expands the row). Rows default to
+    # compact single-line height so the workbook stays scannable —
+    # matches Oren's Google Sheets workflow. To see all multi-line
+    # content at once: Excel Alt+H+O+A or Sheets Format > Row >
+    # Auto-fit row height.
     multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
-    MAX_ROW_LINES = 20
     for r_idx, r in enumerate(rows, start=2):
         row_fill = county_fills.get(r.get("County", ""))
-        max_lines = 1
-        for col_name in multiline_cols:
-            val = r.get(col_name, "")
-            if val:
-                n_lines = str(val).count("\n") + 1
-                if n_lines > max_lines:
-                    max_lines = n_lines
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
@@ -383,8 +377,7 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
             if row_fill:
                 cell.fill = row_fill
-        capped = min(max_lines, MAX_ROW_LINES)
-        ws.row_dimensions[r_idx].height = max(16, capped * 15)
+        ws.row_dimensions[r_idx].height = 16
 
     county_col_idx = FTM_COLUMNS.index("County") + 1
     county_col_letter = get_column_letter(county_col_idx)
