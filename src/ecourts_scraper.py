@@ -853,17 +853,16 @@ def _enrich_with_parties(
         enriched, len(targets), len(guardianships),
     )
 
-    # Case-document enrichment (build 1.0.34+). Fetch + parse Wills AND
-    # Application for Letters PDFs. Wills give us full PR middle names +
-    # relationships; Applications give us heirs with addresses (closes the
-    # OData-misses-heirs recall gap). Cases whose PDFs aren't uploaded yet
-    # get added to the pending-doc queue and retried on subsequent runs.
-    docs_enriched = _enrich_with_case_docs(
-        [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"],
-        waf_token=waf_token,
-    )
-    if docs_enriched:
-        logger.info("eCourts: case-doc data extracted for %d notice(s)", docs_enriched)
+    # NOTE: case-doc enrichment used to run here inline, sharing the same
+    # WAF cookie used by Parties. But the ViewDocument endpoint requires a
+    # fresher WAF cookie than Parties does — by the time Parties finishes
+    # its 30+ minutes of work, the cookie is stale and ViewDocument returns
+    # HTTP 602 "session invalid" for every fetch. Surfaced Week 26 audit:
+    # 51 cases queued, 0 fetched.
+    #
+    # Case-doc enrichment now runs as a separate post-scrape step in
+    # scrape_ecourts(), with a freshly-captured WAF cookie obtained via a
+    # brief Playwright session immediately before the doc-fetch batch.
 
 
 def _apply_will_data(notice: NoticeData, will: dict) -> None:
@@ -1233,19 +1232,16 @@ async def scrape_ecourts(
         await ctx.close()
         await browser.close()
 
-    # Per-case enrichment via OData Parties endpoint (pure HTTP — no browser)
-    # Fills executor + beneficiaries from each case's Register of Actions
-    if waf_token_for_api and notices:
-        try:
-            _enrich_with_parties(notices, waf_token=waf_token_for_api, user_agent=ua_for_api)
-        except Exception:
-            logger.exception("eCourts: parties enrichment failed (continuing with bare notices)")
+    # Ordering matters here: WAF cookie was just captured (seconds old).
+    # Tyler Tech's ViewDocument endpoint is stricter about cookie freshness
+    # than the Parties endpoint — by the time Parties finishes its 30+
+    # minutes of work, ViewDocument calls return HTTP 602 (Week 26 audit:
+    # 51 cases queued, 0 fetched). So do doc-fetch FIRST while cookie is
+    # fresh, THEN Parties (which tolerates older cookies).
 
-    # Drain the case-doc retry queue with the same fresh WAF cookie.
-    # Handles cases scraped on prior days whose Will/Application PDFs
-    # weren't yet uploaded by the clerk — those got queued, and now we
-    # retry them so the polish step's apply_fetched_case_docs picks up
-    # any newly-arrived data.
+    # 1. Drain pending-doc queue (cases queued on prior runs whose PDFs
+    #    just landed). Runs first because the queue is what makes the
+    #    retry feature actually work — and cookie is freshest right now.
     if waf_token_for_api:
         try:
             n_drained = drain_pending_case_docs(waf_token=waf_token_for_api)
@@ -1253,6 +1249,26 @@ async def scrape_ecourts(
                 logger.info("eCourts: pending-doc drain landed %d new docs", n_drained)
         except Exception:
             logger.exception("eCourts: pending-doc drain failed (continuing)")
+
+    # 2. Case-doc enrichment for THIS run's notices (will + application).
+    #    Uses fresh cookie. Adds to pending queue on miss for tomorrow.
+    if waf_token_for_api and notices:
+        probate_targets = [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"]
+        if probate_targets:
+            try:
+                docs_enriched = _enrich_with_case_docs(probate_targets, waf_token=waf_token_for_api)
+                if docs_enriched:
+                    logger.info("eCourts: case-doc data extracted for %d notice(s)", docs_enriched)
+            except Exception:
+                logger.exception("eCourts: case-doc enrichment failed (continuing)")
+
+    # 3. Parties enrichment last — slow (30+ min for big batches) but
+    #    Parties endpoint tolerates cookies several minutes old.
+    if waf_token_for_api and notices:
+        try:
+            _enrich_with_parties(notices, waf_token=waf_token_for_api, user_agent=ua_for_api)
+        except Exception:
+            logger.exception("eCourts: parties enrichment failed (continuing with bare notices)")
 
     save_seen_ids(seen_ids)
     save_last_run_date()

@@ -319,13 +319,17 @@ def apply_fetched_case_docs(rows: list[dict]) -> int:
         if not cache_entry:
             continue
         row_changed = False
-        # Will data
+        # Will data — ALWAYS re-derive (not just when blank). The scrape's
+        # case-doc enrichment runs BEFORE Parties (cookie-freshness reason)
+        # so it picks the primary executor by default. Once polish runs,
+        # First/Last Name are populated from Parties — re-derive here so
+        # the acting-executor pick is correct (catches the case where the
+        # alternate is acting because the primary predeceased).
         will = cache_entry.get("will")
-        if will and not (r.get("PR Full Name (Will)") or "").strip():
+        if will:
             people = will.get("people") or []
             primary = next((p for p in people if p.get("role") == "primary_executor"), None)
             alternate = next((p for p in people if p.get("role") == "alternate_executor"), None)
-            # Same acting-PR pick as the scraper applier
             acting = primary
             if alternate:
                 last_in_row = (r.get("Last Name") or "").strip().upper()
@@ -333,9 +337,12 @@ def apply_fetched_case_docs(rows: list[dict]) -> int:
                 alt_name = (alternate.get("full_name") or "").upper()
                 if last_in_row and last_in_row in alt_name and (not first_in_row or first_in_row in alt_name):
                     acting = alternate
-            if acting:
-                r["PR Full Name (Will)"] = (acting.get("full_name") or "").strip()
-                r["PR Relationship (Will)"] = (acting.get("relationship") or "").strip()
+            new_pr = (acting.get("full_name") or "").strip() if acting else ""
+            new_rel = (acting.get("relationship") or "").strip() if acting else ""
+            if new_pr and (new_pr != (r.get("PR Full Name (Will)") or "").strip()
+                           or new_rel != (r.get("PR Relationship (Will)") or "").strip()):
+                r["PR Full Name (Will)"] = new_pr
+                r["PR Relationship (Will)"] = new_rel
                 row_changed = True
         # Application data
         app = cache_entry.get("application")
