@@ -2034,8 +2034,22 @@ def _try_swap_to_non_dq_sibling(
         return False  # every sibling also heir-occupied
 
     street, city, zipc = _candidate_to_address_parts(best)
+    # Vacant/landlocked parcels often have no situs in GIS — fall back to
+    # the user's manual convention rather than dumping the mailing-style
+    # "City State Zip" string into the street field (Hefner 26E000742-170
+    # Week 26: swap-on-DQ landed on a vacant parcel with situs="",
+    # mailing="Hickory NC 28602" -> Property Address showed the mailing
+    # which is wrong and confusing). When street is unknown:
+    #   * If we have a real situs street, use "0 <street>" (Oren's
+    #     vacant-lot convention)
+    #   * Otherwise use "No Address" (landlocked or NG911-unassigned)
     if not street:
-        street = best.mailing_address or ""
+        # situs_address may exist but be a no-number street name only
+        situs_text = (best.situs_address or "").strip()
+        if situs_text and not situs_text[0].isdigit():
+            street = "0 " + situs_text
+        else:
+            street = "No Address"
     old_pid = current_pid
     row["Parcel ID"] = best.pid or ""
     row["Property Address"] = street
