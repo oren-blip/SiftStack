@@ -1032,6 +1032,16 @@ def validate_existing_matches(
                 r["Property Value"] = f"{int(round(float(best.market_value))):,}"
             else:
                 r["Property Value"] = ""
+            # Notes dedup: same pattern as swap-on-DQ. When audit-repick
+            # promotes a parcel that was previously listed in Notes as a
+            # sibling (via Step 0.7 sibling-backfill), strip that block so
+            # the new main doesn't appear duplicated in Notes.
+            # Edwards 26E002336-590 Week 26: audit-repick promoted Crown
+            # Colony Dr to main but Notes still showed it as "PLUS 1 PARCEL".
+            existing_notes = (r.get("Notes") or "").strip()
+            new_pid = (best.pid or "").strip()
+            if existing_notes and new_pid:
+                r["Notes"] = _strip_parcel_from_notes(existing_notes, new_pid)
     return blanked, rejected_pids
 
 
