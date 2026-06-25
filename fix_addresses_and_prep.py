@@ -1282,9 +1282,15 @@ def drop_recently_sold(rows: list[dict], months: int = 24, min_price: float = 50
         if age_days < 0 or age_days > cutoff_days:
             kept.append(r)
             continue
-        # Within the window — verify it was a real sale, not an intra-
-        # family $0/$10/$100 deed stamp
-        if match.sale_price and float(match.sale_price) < min_price:
+        # Within the window — verify it was a real arms-length sale, not
+        # an intra-family $0/$10/$100 deed stamp or unrecorded price.
+        # Unknown sale_price (None) is treated as "not a real sale" and
+        # KEPT — without this guard, intra-family deed transfers were
+        # over-dropping live cases (Lingerfelt 26E000849-350 Week 26:
+        # Larry Keith Lingerfelt's residence had a Jan 2026 deed event
+        # with price=None, very likely the deed-to-life-estate that
+        # opened the probate — not a market sale).
+        if not match.sale_price or float(match.sale_price) < min_price:
             kept.append(r)
             continue
         tag_reason(r, "dq-recently-sold")
