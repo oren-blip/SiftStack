@@ -690,14 +690,19 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
         if code == "I":
             return "SFR"
         # New Parcels-layer CODE values (most common are KA=959, CN=627,
-        # CO=343, KT=64, HB=7 in a 2000-parcel sample). CN/CO/HB confirmed;
-        # KA/KT meaning unknown — leave blank so address heuristics handle.
+        # CO=343, KT=64, HB=7 in a 2000-parcel sample). CN/HB confirmed;
+        # KA/KT/CO ambiguous — leave blank so address heuristics handle.
         if code == "CN":
             return "Condo"   # Needham Mark Lindsay 26E000661-120 leaked through Week 26
-        if code == "CO":
-            return "Vacant Land"   # "Country/vacant" per Cabarrus comment
         if code == "HB":
             return "SFR"     # "Home Built" per Cabarrus comment
+        # Note: removed CO -> Vacant Land (shipped 2026-06-22, reverted
+        # 2026-06-24). The code comment claimed "Country/vacant" but Week 26
+        # audit found CO applied to BOTH true vacant lots AND residences on
+        # country/rural land (Honeycutt Ralph A 26E000664-120: residence at
+        # 26 Mary Cir $336K marked CO; adjacent lot at 28 Mary Cir $24K
+        # also CO). The address heuristic in _arcgis_to_candidate ("0 STREET"
+        # = vacant) handles the true-vacant case more reliably.
         return ""
     if cty == "lincoln":
         # Lincoln stores 'YES'/'NO' in the desc field (VACANT flag)
