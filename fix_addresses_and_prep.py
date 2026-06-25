@@ -2064,12 +2064,64 @@ def _try_swap_to_non_dq_sibling(
             new_use = "SFR"
     if new_use:
         row["Property use"] = new_use
+    # Notes coherence: when the sibling-backfill (Step 0.7) already added
+    # the new main parcel to Notes as a sibling, we now have it duplicated
+    # (Main + Notes both show the same parcel). Strip the new main's PID
+    # from Notes if present, then append a DQ marker for the old main so
+    # the user can still see which parcel got dropped as heir-occupied.
+    # Taylor 26E000853-350 Week 26: main was Jonathan Dr (heir-occupied),
+    # swap moved to 404 S 6th St, but old Notes had 404 S 6th St as PLUS
+    # 1 PARCEL while Jonathan Dr disappeared entirely. Both wrong.
     existing_notes = (row.get("Notes") or "").strip()
-    swap_marker = f"[SWAPPED-ON-HEIR-OCCUPIED from {old_pid}]"
+    new_main_pid = (best.pid or "").strip()
+    if existing_notes and new_main_pid:
+        existing_notes = _strip_parcel_from_notes(existing_notes, new_main_pid)
+    swap_marker = f"[SWAPPED-ON-HEIR-OCCUPIED from {old_pid}: prior main DQ'd]"
     row["Notes"] = (existing_notes + ("\n" if existing_notes else "") + swap_marker).strip()
     tag_reason(row, "swap-on-dq")
     print(f"  SWAP-ON-DQ {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
     return True
+
+
+def _strip_parcel_from_notes(notes: str, pid_to_strip: str) -> str:
+    """Remove a vertical PLUS-N-PARCELS block that references the given
+    PID — used after swap-on-DQ to deduplicate the new main from Notes.
+
+    Recognizes both vertical format ("PLUS N PARCELS" header followed by
+    address / meta / "  PID xxx" trios separated by blank lines) and the
+    legacy horizontal format. Best-effort — leaves Notes unchanged when
+    structure doesn't match the expected shape.
+    """
+    if not notes or not pid_to_strip:
+        return notes
+    lines = notes.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Look ahead 5 lines for the PID marker to confirm a block to skip
+        ahead = "\n".join(lines[i:i + 6])
+        if pid_to_strip in ahead and (line.strip().startswith("PLUS ") or
+                                       (line.strip() and not line[0].isspace())):
+            # Skip lines until we hit a blank-line gap OR end OR a non-related block
+            j = i
+            block_end = len(lines)
+            in_target_block = False
+            while j < len(lines):
+                if pid_to_strip in lines[j]:
+                    in_target_block = True
+                if in_target_block and (j > i and lines[j].strip() == ""):
+                    block_end = j + 1
+                    break
+                j += 1
+            if in_target_block:
+                i = block_end
+                continue
+        out.append(line)
+        i += 1
+    # Also collapse the now-orphan "PLUS 1 PARCEL" header if its only item was stripped
+    cleaned = "\n".join(out).strip()
+    return cleaned
 
 
 def _parcel_use_tier(use: str) -> int:
