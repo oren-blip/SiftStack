@@ -735,8 +735,16 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
         #   EXEMPT, OTHER. DESC1_DESC carries the detailed text we
         #   previously matched against.
         if code == "RES":
+            # Gaston RES covers ALL residential — SFR, townhouse, condo, MH.
+            # Check the detailed desc to route to the right bucket. Without
+            # this, townhouses + condos were defaulting to SFR and slipping
+            # past the condo/townhouse drop (Reid 26E000854-350 Week 26).
             if "MOBILE HOME" in desc or "MANUFACTURED" in desc:
                 return "MH"
+            if "TOWNHOUSE" in desc or "TOWN HOUSE" in desc:
+                return "Townhouse"
+            if "CONDO" in desc:
+                return "Condo"
             return "SFR"
         if code in ("COM", "IND"):
             return "Commercial"

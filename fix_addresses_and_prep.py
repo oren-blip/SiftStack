@@ -1924,6 +1924,29 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
             for ben_addr in _BENEFICIARY_ADDR_RE.findall(ben_block):
                 if norm_addr(ben_addr) == prop_norm:
                     return (True, "dq-beneficiary-at-property")
+        # Application-PDF heirs (when available) — the OData Parties API
+        # often misses an heir/applicant address that the Application PDF
+        # records. Once the case-doc retry queue fetches the App PDF,
+        # Heirs (App) column carries JSON [{full_name, street, city, ...}, ...].
+        # Surfaced Week 26 audit: Ramsey 26E002367-590 — PR Bryan Scott
+        # Ramsey lives at the property (348 Touch Mc Not Lane) per his
+        # own Application but his address didn't appear in the Parties API
+        # response, so heir-occupied check missed it and the case stayed
+        # in the workbook. With App data on the row, this catches it.
+        app_heirs_json = r.get("Heirs (App)") or ""
+        if app_heirs_json:
+            try:
+                import json as _json
+                heirs = _json.loads(app_heirs_json)
+                if isinstance(heirs, list):
+                    for h in heirs:
+                        if not isinstance(h, dict):
+                            continue
+                        street = (h.get("street") or "").strip()
+                        if street and norm_addr(street) == prop_norm:
+                            return (True, "dq-app-heir-at-property")
+            except (ValueError, TypeError):
+                pass
         return (False, "")
 
     kept = []
