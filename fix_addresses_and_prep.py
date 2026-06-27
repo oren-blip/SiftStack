@@ -1178,6 +1178,48 @@ def _money(v) -> float:
         return 0.0
 
 
+def refresh_property_use_from_gis(rows: list[dict]) -> int:
+    """Re-derive Property use from the current cached GIS data for each
+    row with a parcel. Catches cases where simplify_use_code was upgraded
+    AFTER the row's scrape (Reid Townhouse Week 26: scraped 6/24 with the
+    old SFR mapping; my Townhouse fix shipped 6/25; today's polish would
+    otherwise keep the stale SFR because dedup/seen_ids prevents re-scrape).
+
+    Only OVERWRITES when the new derived value is non-empty AND differs
+    from the current. Doesn't blank an existing use just because GIS lost
+    a candidate (defensive — keep what we have if GIS goes empty).
+
+    Returns count of rows whose Property use was updated.
+    """
+    from nc_gis_lookup import lookup_properties, simplify_use_code
+    updated = 0
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        if not pid:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.5)
+        except Exception:
+            continue
+        match = next((c for c in cands if c.pid == pid), None)
+        if not match:
+            continue
+        new_use = simplify_use_code(match.use_code, match.use_description, match.county) or ""
+        # Apply the same vacant-override the scrape path uses
+        if match.is_vacant_land and "VACANT" not in new_use.upper():
+            new_use = "Vacant Land"
+        if new_use and new_use != (r.get("Property use") or "").strip():
+            old = r.get("Property use") or ""
+            r["Property use"] = new_use
+            updated += 1
+            print(f"    USE-REFRESH {county}/{dec[:30]} pid={pid}: {old!r} -> {new_use!r}")
+    return updated
+
+
 def populate_property_values(rows: list[dict]) -> int:
     """Backfill Property Value from a fresh GIS lookup for rows that have a
     Parcel ID but no Property Value populated yet. Required before the
@@ -2848,6 +2890,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.5: re-collapse multi-parcel decedents (prefer residential as main)")
     n_swapped = re_collapse_multi_parcel(rows)
     print(f"  Swapped vacant/commercial-main -> residential-main: {n_swapped}")
+
+    print("Step 1.6: re-derive Property use from current GIS (catches stale classifications)")
+    n_use_refreshed = refresh_property_use_from_gis(rows)
+    print(f"  Property use refreshed: {n_use_refreshed}")
 
     print("Step 1.7: backfill Property Value from GIS where missing")
     n_priced = populate_property_values(rows)
