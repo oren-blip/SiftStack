@@ -164,6 +164,14 @@ def research_blank_parcels(
             continue
         found = None
         used_variation = ""
+        # Compute the drop-first variation form once so we can detect when
+        # a hit came via that path (and treat its score differently).
+        _first_dec, _mid_dec, _last_dec = split_decedent_name(dec)
+        _mid_words = _mid_dec.split() if _mid_dec else []
+        _drop_first_form = (
+            f"{_last_dec}, {_mid_dec}".strip()
+            if (_last_dec and len(_mid_words) >= 2) else ""
+        )
         for v in _name_variations(dec, county):
             try:
                 results = lookup_properties(v, county, min_score=min_score)
@@ -171,15 +179,28 @@ def research_blank_parcels(
                 continue
             if not results:
                 continue
-            # CRITICAL: re-score each candidate against the CANONICAL decedent
-            # name, not the search variation. The variation "JOHNSTON GERALDINE
-            # H" gets misparsed by split_decedent_name as first=JOHNSTON, last=H
+            # Re-score each candidate against the CANONICAL decedent name,
+            # not the search variation. The variation "JOHNSTON GERALDINE H"
+            # gets misparsed by split_decedent_name as first=JOHNSTON, last=H
             # — which then matches "HARRILL JOHN H HEIRS" at 0.7 via the
-            # prefix-escape (JOHN matches JOHNSTON[:4]). Re-scoring against the
-            # original "Johnston, Geraldine Hagan" parses correctly and drops
-            # that false positive to 0.0. (Week 26 Johnston 26E000837-350.)
+            # prefix-escape. Re-scoring against the original "Johnston,
+            # Geraldine Hagan" parses correctly and drops that false
+            # positive to 0.0. (Week 26 Johnston 26E000837-350.)
+            #
+            # EXCEPTION: the "drop-first" variation (e.g. "Peacock, Kathryn
+            # Campbell" when court has "Edith Kathryn Campbell") ALWAYS
+            # re-scores below threshold because Edith isn't in the deed
+            # owner — but the variation was DESIGNED for that case. When
+            # the variation match scored 1.0 AND we're on the drop-first
+            # variation, keep the variation-based score (Peacock 26E000684-790).
+            is_drop_first_match = bool(_drop_first_form) and v.strip().upper() == _drop_first_form.upper()
             for c in results:
-                c.match_score = _name_match_score(dec, c.owner_name or "")
+                canon_score = _name_match_score(dec, c.owner_name or "")
+                var_score = c.match_score
+                if is_drop_first_match and var_score >= 1.0:
+                    c.match_score = var_score
+                else:
+                    c.match_score = canon_score
             results = [c for c in results if c.match_score >= min_score]
             if not results:
                 continue
@@ -2208,9 +2229,11 @@ _STREET_SUFFIX_NORMALIZE = {
     # vs property="8110 Gera Emma Dr".)
     "drive": "dr",
     "avenue": "ave",
+    "av": "ave",      # Sellers 26E000406-540: "319 Sherrill Av" vs "319 Sherrill Avenue"
     "street": "st",
     "road": "rd",
     "boulevard": "blvd",
+    "bl": "blvd",
     "court": "ct",
     "place": "pl",
     "lane": "ln",
@@ -2314,13 +2337,23 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
                             return (True, "dq-app-heir-at-property")
             except (ValueError, TypeError):
                 pass
-        # PR-is-co-owner-on-deed check (JTWROS auto-transfer signal).
-        # When the PR's first+last appears as a co-owner segment in the
-        # parcel's owner string, the property likely transferred via
-        # right of survivorship — no probate needed for that property,
-        # dead lead. Gaston Wilbert 26E000673-120 Week 26: PR Betty
-        # Gaston has different mailing address than the property but
-        # her name appears on the deed; user dropped manually.
+        # PR-is-spouse-co-owner check (Tenancy-by-Entirety auto-transfer).
+        # Only fires when the deed segment containing the DECEDENT has an
+        # explicit marriage marker (WF/HSB) AND the PR's first+last appears
+        # as a separate co-owner segment. In NC, married couples on a deed
+        # default to tenancy by the entirety (auto-survivorship) — definite
+        # JTWROS, no probate needed for that property.
+        #
+        # Without a marriage marker (e.g. "MORRISON JEANETTE C | MORRISON
+        # VICTOR HARVEY"), joint ownership could be either tenants-in-common
+        # (decedent's share IS in probate — keep) or JTWROS (drop). Ambiguous
+        # — DON'T auto-drop. User can judge from the workbook.
+        #
+        # Surfaced Week 26: Gaston Wilbert 26E000673-120 — owner "GASTON
+        # BETTY K | GASTON WILBERT HSB" has HSB marker on decedent Wilbert,
+        # PR Betty is the surviving spouse-co-owner -> DQ. Morrison
+        # 26E000725-170 — owner "MORRISON JEANETTE C | MORRISON VICTOR
+        # HARVEY" has no marker, kept.
         first = (r.get("First Name") or "").strip().upper()
         last = (r.get("Last Name") or "").strip().upper()
         if first and last:
@@ -2329,20 +2362,32 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
             county_check = (r.get("County") or "").strip()
             if pid_check and dec_check and county_check and "IN THE MATTER" not in dec_check.upper():
                 try:
-                    from nc_gis_lookup import lookup_properties as _lp
+                    from nc_gis_lookup import lookup_properties as _lp, split_decedent_name as _split
                     cands_check = _lp(dec_check, county_check, min_score=0.5)
                     match_check = next((c for c in cands_check if c.pid == pid_check), None)
                 except Exception:
                     match_check = None
                 if match_check and match_check.is_jointly_owned:
                     owner_upper = (match_check.owner_name or "").upper()
-                    # Split into co-owner segments
                     segments = [s.strip() for s in
                                 __import__("re").split(r"\s*\|\s*|\s+&\s+|\s*;\s*", owner_upper)]
+                    _MARRIAGE_MARKERS = {"WF", "HSB", "WIFE", "HUSBAND"}
+                    # Find the segment containing the DECEDENT's last name AND a
+                    # marriage marker — that's the spouse-on-the-deed pattern.
+                    _, _, _dec_last = _split(dec_check)
+                    dec_last_up = (_dec_last or "").upper()
+                    decedent_segment_has_marker = False
                     for seg in segments:
                         seg_tokens = set(t.strip(",.") for t in seg.split())
-                        if first in seg_tokens and last in seg_tokens:
-                            return (True, "dq-pr-is-coowner")
+                        if dec_last_up and dec_last_up in seg_tokens and (seg_tokens & _MARRIAGE_MARKERS):
+                            decedent_segment_has_marker = True
+                            break
+                    if decedent_segment_has_marker:
+                        # Now confirm PR is a co-owner (separate segment)
+                        for seg in segments:
+                            seg_tokens = set(t.strip(",.") for t in seg.split())
+                            if first in seg_tokens and last in seg_tokens:
+                                return (True, "dq-pr-spouse-coowner")
         return (False, "")
 
     kept = []
@@ -2363,6 +2408,19 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
             # occupied) + vacant lot next door — vacant lot is the real
             # lead the residence DQ would otherwise kill.
             if _try_swap_to_non_dq_sibling(r, norm_addr, _row_dq_signals):
+                # Re-check DQ on the now-swapped row. The swap's synth-row
+                # dq check uses a stripped-down row dict (no First/Last),
+                # so PR-as-co-owner can't fire during swap selection. Re-
+                # run the full dq_check against the actual row now that
+                # all fields are populated. Catches Gaston Wilbert
+                # 26E000673-120 Week 26: swapped to a sibling where PR
+                # Betty Gaston is on the deed.
+                new_prop = norm_addr(r.get("Property Address"))
+                post_dq, post_reason = _row_dq_signals(r, new_prop) if new_prop else (False, "")
+                if post_dq:
+                    tag_reason(r, post_reason)
+                    dropped += 1
+                    continue
                 kept.append(r)
                 continue
             tag_reason(r, _reason)
