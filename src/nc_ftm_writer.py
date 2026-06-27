@@ -561,11 +561,16 @@ def write_ftm_xlsx(
     # workflow: workbook is scannable; click cells to dig into multi-
     # parcel details.
     multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
+    band_fill = PatternFill(start_color=_BAND_FILL_COLOR, end_color=_BAND_FILL_COLOR, fill_type="solid")
     for r_idx, r in enumerate(rows, start=2):
         # Per-county tint applied ONLY to the County column cell — per Oren
         # 2026-06-26, full-row tinting was visually noisy. Matches his
         # manual workbook convention.
         row_fill = county_fills.get(r.get("County", ""))
+        # Alternating band: even data rows (3rd, 5th, ...) get a pale tint
+        # for readability. Skip the County column — its per-county color
+        # should stand out, not be overwritten by the band.
+        is_banded = (r_idx - 2) % 2 == 1
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
@@ -573,8 +578,10 @@ def write_ftm_xlsx(
                 cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            if row_fill and col_name == "County":
+            if col_name == "County" and row_fill:
                 cell.fill = row_fill
+            elif is_banded and col_name != "County":
+                cell.fill = band_fill
         ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
 
     # County dropdown — applied to the full County column

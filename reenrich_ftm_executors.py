@@ -366,10 +366,14 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
     # content at once: Excel Alt+H+O+A or Sheets Format > Row >
     # Auto-fit row height.
     multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
+    band_fill = PatternFill(start_color=BAND_FILL, end_color=BAND_FILL, fill_type="solid")
     for r_idx, r in enumerate(rows, start=2):
         # Per-county tint applied ONLY to the County column cell — per Oren
         # 2026-06-26, full-row tinting was visually noisy.
         row_fill = county_fills.get(r.get("County", ""))
+        # Alternating band: even data rows (3rd, 5th, ...) get a pale tint
+        # for readability. Skip County so its per-county color stays clean.
+        is_banded = (r_idx - 2) % 2 == 1
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
@@ -377,8 +381,10 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
                 cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            if row_fill and col_name == "County":
+            if col_name == "County" and row_fill:
                 cell.fill = row_fill
+            elif is_banded and col_name != "County":
+                cell.fill = band_fill
         ws.row_dimensions[r_idx].height = 16
 
     county_col_idx = FTM_COLUMNS.index("County") + 1
