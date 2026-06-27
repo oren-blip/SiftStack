@@ -1197,6 +1197,91 @@ def _money(v) -> float:
         return 0.0
 
 
+def flag_initial_only_middle_matches(rows: list[dict]) -> int:
+    """Tag rows where the matched deed owner has middle-initial-ONLY but
+    the decedent has a FULL middle name. The matcher accepts these at
+    score 1.0 (initial-of-Edward matches "E") but the deed "E" could
+    actually be Eugene, Eric, Ethan, etc — same-name homonym risk.
+
+    Surfaced Week 26 audit (Smith Thomas Edward 26E000638-480 Iredell):
+    deed showed "SMITH THOMAS E", matcher picked it confidently, but
+    Oren verified via BeenVerified that the real owner is Thomas
+    Eugene Smith — different person.
+
+    We can't disambiguate automatically (Iredell deed + GIS both lose
+    the full middle). Best we can do is FLAG the risk so Oren scans
+    those rows on BeenVerified manually. Adds 'verify-middle-initial'
+    to Match Reason — doesn't drop the row.
+
+    Returns count of rows flagged.
+    """
+    from nc_gis_lookup import lookup_properties, split_decedent_name
+    import re as _re
+    # Tokens that are NOT middle-name candidates (suffixes, noise, etc.)
+    _SKIP_TOKENS = {"JR", "SR", "II", "III", "IV", "V", "WF", "HSB",
+                    "HEIRS", "ESTATE", "TRUSTEE", "TRUST", "LIVING",
+                    "REVOC", "REVOCABLE", "LFI", "AKA", "C/O"}
+    flagged = 0
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        if not pid:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        # Skip if Match Reason already has the flag (idempotent)
+        if "verify-middle-initial" in (r.get("Match Reason") or "").lower():
+            continue
+        # Decedent must have a FULL middle name (>=2 chars). Single-char
+        # middle = no information to verify against; skip silently.
+        _first, dec_middle, dec_last = split_decedent_name(dec)
+        if not dec_middle:
+            continue
+        dec_middle_words = [w for w in dec_middle.split() if w]
+        if not any(len(w) >= 2 for w in dec_middle_words):
+            continue  # decedent middle is itself initial-only
+
+        # Look up the matched candidate to inspect deed owner middle
+        try:
+            cands = lookup_properties(dec, county, min_score=0.5)
+        except Exception:
+            continue
+        match = next((c for c in cands if c.pid == pid), None)
+        if not match:
+            continue
+        owner = (match.owner_name or "").upper()
+        if not owner:
+            continue
+        # Take the segment containing the decedent's last name (handles
+        # joint owners like "SMITH JOHN | SMITH JANE")
+        segments = _re.split(r"\s*\|\s*|\s+&\s+|\s*;\s*", owner)
+        target_seg = next(
+            (s for s in segments if dec_last and dec_last.upper() in s),
+            owner,
+        )
+        tokens = [t.strip(",.") for t in target_seg.split() if t.strip(",.")]
+        tokens = [t for t in tokens if t not in _SKIP_TOKENS]
+        if dec_last and dec_last.upper() in tokens:
+            idx = tokens.index(dec_last.upper())
+            tokens = tokens[:idx] + tokens[idx + 1:]
+        # After dropping last+first, what's left is middle-position tokens.
+        # If ALL remaining are single chars, owner has initial-only middle.
+        if len(tokens) < 2:
+            continue
+        middle_tokens = tokens[1:]
+        if not middle_tokens or not all(len(t) == 1 for t in middle_tokens):
+            continue
+        # Initial-only middle AND decedent has full middle -> flag as
+        # informational. The deed-E could be Edward, Eugene, Eric, etc;
+        # most cases ARE the right person (Tadlock, Earney) but Smith
+        # Thomas Edward / Eugene class isn't distinguishable from our data.
+        # Treat as a manual-verification flag, not a drop.
+        tag_reason(r, "verify-middle-initial")
+        flagged += 1
+    return flagged
+
+
 def refresh_property_use_from_gis(rows: list[dict]) -> int:
     """Re-derive Property use from the current cached GIS data for each
     row with a parcel. Catches cases where simplify_use_code was upgraded
@@ -2913,6 +2998,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.6: re-derive Property use from current GIS (catches stale classifications)")
     n_use_refreshed = refresh_property_use_from_gis(rows)
     print(f"  Property use refreshed: {n_use_refreshed}")
+
+    print("Step 1.65: flag rows where deed has middle-initial only but decedent has full middle (verify-middle-initial)")
+    n_flagged = flag_initial_only_middle_matches(rows)
+    print(f"  Rows flagged for manual middle-initial verification: {n_flagged}")
 
     print("Step 1.7: backfill Property Value from GIS where missing")
     n_priced = populate_property_values(rows)
