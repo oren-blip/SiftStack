@@ -923,7 +923,8 @@ _DOC_APPLIERS = {
 }
 
 
-def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str) -> int:
+def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
+                            all_cookies: dict | None = None) -> int:
     """For each probate notice with a case_id, fetch + LLM-parse all
     registered doc types (will, application). On miss, add to pending
     queue for retry on subsequent daily runs. Mutates notice fields in
@@ -983,6 +984,7 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str) -> int:
         try:
             fetched = fetch_and_parse_case_docs(
                 case_hex, waf_token=waf_token, doc_types=still_needed, api_key=api_key,
+                all_cookies=all_cookies,
             )
         except Exception as e:
             logger.debug("Case-doc fetch failed for %s: %s", n.case_number, e)
@@ -1028,11 +1030,15 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str) -> int:
     return enriched
 
 
-def drain_pending_case_docs(*, waf_token: str) -> int:
+def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) -> int:
     """Standalone retry pass: walk the pending-doc queue and try to fetch
     each needed doc with the current WAF token. Independent of any active
     scrape — call this at the start of a daily run, before regular
     scraping, so newly-scraped cases benefit from prior-run cache hits.
+
+    `all_cookies` (optional): full cookie jar from the Playwright session.
+    api/ViewDocument needs ALB stickiness cookies in addition to
+    aws-waf-token to be routed correctly — without them HTTP 602 fires.
 
     Returns count of doc fetches that succeeded this pass.
     """
@@ -1064,6 +1070,7 @@ def drain_pending_case_docs(*, waf_token: str) -> int:
         try:
             fetched = fetch_and_parse_case_docs(
                 case_hex, waf_token=waf_token, doc_types=needs, api_key=api_key,
+                all_cookies=all_cookies,
             )
         except Exception as e:
             logger.debug("Queue drain fetch failed for %s: %s", entry.get("case_number"), e)
@@ -1223,11 +1230,22 @@ async def scrape_ecourts(
                 break
 
         # Capture the WAF token + UA before tearing down the browser context
-        # so the Parties API client (pure HTTP) can use them.
+        # so the Parties API client (pure HTTP) can use them. Also capture
+        # the FULL cookie jar — Tyler Tech's api/ViewDocument endpoint
+        # appears to require ALB stickiness cookies (AWSALB / AWSALBCORS)
+        # to route the request to a backend that recognizes the WAF token.
+        # Parties tolerates token-only; ViewDocument returns HTTP 602
+        # "session invalid" when only aws-waf-token is sent. Week 26
+        # audit: 156 cases queued, 0 fetched.
         ctx_cookies = await ctx.cookies("https://portal-nc.tylertech.cloud/")
         waf_cookie = next((c for c in ctx_cookies if c["name"] == "aws-waf-token"), None)
         waf_token_for_api = waf_cookie["value"] if waf_cookie else ""
         ua_for_api = (cached.get("user_agent") if cached else _DEFAULT_UA) or _DEFAULT_UA
+        # Full cookie jar as {name: value} dict — passed alongside waf_token
+        # to api/ViewDocument so ALL session cookies travel with the request.
+        all_cookies_for_api = {c["name"]: c["value"] for c in ctx_cookies if c.get("name")}
+        logger.info("eCourts: captured %d cookies for API (names: %s)",
+                    len(all_cookies_for_api), sorted(all_cookies_for_api.keys()))
 
         await ctx.close()
         await browser.close()
@@ -1244,7 +1262,8 @@ async def scrape_ecourts(
     #    retry feature actually work — and cookie is freshest right now.
     if waf_token_for_api:
         try:
-            n_drained = drain_pending_case_docs(waf_token=waf_token_for_api)
+            n_drained = drain_pending_case_docs(waf_token=waf_token_for_api,
+                                                 all_cookies=all_cookies_for_api)
             if n_drained:
                 logger.info("eCourts: pending-doc drain landed %d new docs", n_drained)
         except Exception:
@@ -1256,7 +1275,9 @@ async def scrape_ecourts(
         probate_targets = [n for n in notices if getattr(n, "_roa_id", "") and n.notice_type == "probate"]
         if probate_targets:
             try:
-                docs_enriched = _enrich_with_case_docs(probate_targets, waf_token=waf_token_for_api)
+                docs_enriched = _enrich_with_case_docs(probate_targets,
+                                                       waf_token=waf_token_for_api,
+                                                       all_cookies=all_cookies_for_api)
                 if docs_enriched:
                     logger.info("eCourts: case-doc data extracted for %d notice(s)", docs_enriched)
             except Exception:

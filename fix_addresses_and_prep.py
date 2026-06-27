@@ -2167,7 +2167,15 @@ def _parcel_use_tier(use: str) -> int:
     if u in {"SFR", "RESIDENTIAL", "TOWNHOUSE", "CONDO", "MH",
              "MULTI-FAMILY", "DUPLEX"}:
         return 3
-    return 2
+    # Unknown use (blank/uncategorized) is no better than vacant — without
+    # this guard, Step 1.5 re_collapse_multi_parcel swapped vacant-land
+    # leads to blank-use parcels because blank ranked higher (was tier 2).
+    # Bostian 26E000662-120 Week 26: my CO mapping revert left both Cabarrus
+    # parcels at use="". The vacant-land $53K parcel (correct lead) got
+    # swapped to the $316K residence at 4699 Rainbow Dr (heir-occupied,
+    # then dropped). Tying blank to tier 1 keeps vacant from being
+    # outranked by uncategorized targets.
+    return 1
 
 
 def re_collapse_multi_parcel(rows: list[dict]) -> int:

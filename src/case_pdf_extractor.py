@@ -91,20 +91,32 @@ def download_document_by_longhex(long_hex: str, case_no: str = "", *, timeout: i
 
 def download_document_by_fragment(
     case_id_hex: str, fragment_id: str, waf_token: str, *, timeout: int = 30,
+    all_cookies: dict | None = None,
 ) -> bytes:
     """Fetch PDF using the WAF-protected api/ViewDocument endpoint.
 
-    Requires a valid AWS WAF session cookie (same one used by the
-    existing scrape's CaseDetailClient). Returns the PDF binary on
-    success. Raises RuntimeError with the Odyssey error message on
-    session-invalid (HTTP 602).
+    `all_cookies` (optional): full cookie jar from the Playwright session
+    (e.g. AWSALB, AWSALBCORS in addition to aws-waf-token). Tyler Tech's
+    ViewDocument endpoint requires ALB stickiness cookies to be routed to
+    the backend that recognizes the WAF token — without them, HTTP 602
+    fires even when the WAF token itself is fresh (Week 26 audit: 156
+    cases queued, 0 fetched until we plumbed all_cookies through).
+
+    Returns the PDF binary on success. Raises RuntimeError with the
+    Odyssey error message on session-invalid (HTTP 602).
     """
     if not case_id_hex or not fragment_id:
         raise ValueError("case_id_hex and fragment_id are required")
     if not waf_token:
         raise ValueError("waf_token is required for api/ViewDocument")
     params = {"caseId": case_id_hex, "fragmentId": fragment_id}
-    cookies = {"aws-waf-token": waf_token}
+    # Build cookie jar — full jar from Playwright if available, else
+    # fall back to just the WAF token (legacy behavior).
+    if all_cookies:
+        cookies = dict(all_cookies)
+        cookies["aws-waf-token"] = waf_token  # ensure latest WAF token
+    else:
+        cookies = {"aws-waf-token": waf_token}
     r = requests.get(_DOC_VIEWER_API_URL, params=params, headers=_HEADERS,
                      cookies=cookies, timeout=timeout)
     if r.status_code == 602:
@@ -432,6 +444,7 @@ def fetch_and_parse_will_by_longhex(
 
 def fetch_and_parse_case_docs(
     case_id_hex: str, waf_token: str, doc_types: list[str], *, api_key: str = "",
+    all_cookies: dict | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Fetch + LLM-parse multiple registered doc types from a case in one
     docket round-trip.
@@ -442,6 +455,8 @@ def fetch_and_parse_case_docs(
     the doc type for retry.
 
     Requires waf_token because the api/ViewDocument endpoint is auth-gated.
+    `all_cookies` (optional): full Playwright cookie jar for ALB
+    stickiness — see download_document_by_fragment.
     """
     import case_doc_queue as cdq
     out: dict[str, list[dict[str, Any]]] = {dt: [] for dt in doc_types}
@@ -467,6 +482,7 @@ def fetch_and_parse_case_docs(
                 try:
                     pdf_bytes = download_document_by_fragment(
                         case_id_hex, fragment_id, waf_token=waf_token,
+                        all_cookies=all_cookies,
                     )
                 except Exception as e:
                     logger.warning("PDF fetch failed for %s fragment %s: %s",
