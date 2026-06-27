@@ -562,6 +562,9 @@ def write_ftm_xlsx(
     # parcel details.
     multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
     for r_idx, r in enumerate(rows, start=2):
+        # Per-county tint applied ONLY to the County column cell — per Oren
+        # 2026-06-26, full-row tinting was visually noisy. Matches his
+        # manual workbook convention.
         row_fill = county_fills.get(r.get("County", ""))
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
@@ -570,7 +573,7 @@ def write_ftm_xlsx(
                 cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            if row_fill:
+            if row_fill and col_name == "County":
                 cell.fill = row_fill
         ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
 

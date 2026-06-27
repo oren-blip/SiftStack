@@ -367,6 +367,8 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
     # Auto-fit row height.
     multiline_cols = {"Notes", "Beneficiaries", "Heirs (App)"}
     for r_idx, r in enumerate(rows, start=2):
+        # Per-county tint applied ONLY to the County column cell — per Oren
+        # 2026-06-26, full-row tinting was visually noisy.
         row_fill = county_fills.get(r.get("County", ""))
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
@@ -375,7 +377,7 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
                 cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            if row_fill:
+            if row_fill and col_name == "County":
                 cell.fill = row_fill
         ws.row_dimensions[r_idx].height = 16
 
