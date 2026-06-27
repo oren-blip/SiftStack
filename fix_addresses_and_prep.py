@@ -84,6 +84,17 @@ def _name_variations(decedent: str, county: str = "") -> list[str]:
     """
     first, mid, last = split_decedent_name(decedent)
     mid_initial = mid[0] if mid else ""
+    # "Drop first" variation: deed sometimes records the decedent under
+    # her MIDDLE name as the first name, with the court-record first
+    # suppressed. Peacock Edith Kathryn Campbell (Rowan 26E000684-790
+    # Week 26): court=Edith but deed owner='PEACOCK KATHRYN CAMPBELL'.
+    # Trying "Peacock, Kathryn Campbell" would match. Only emit when we
+    # have a multi-word middle (so "Smith, John A" doesn't trigger and
+    # match every Smith A in the county).
+    mid_words = mid.split() if mid else []
+    drop_first_variation = ""
+    if last and len(mid_words) >= 2:
+        drop_first_variation = f"{last}, {mid}"
 
     if county.lower() in _SLOW_GIS_COUNTIES:
         if last and first and mid:
@@ -91,6 +102,7 @@ def _name_variations(decedent: str, county: str = "") -> list[str]:
                 f"{last} {first} {mid}".strip(),
                 f"{last} {first} {mid_initial}".strip(),
                 decedent,
+                drop_first_variation,
             ]
         elif last and first:
             # No middle name — try LAST FIRST then the as-passed comma form
@@ -108,6 +120,7 @@ def _name_variations(decedent: str, county: str = "") -> list[str]:
             f"{last} {first} {mid}".strip() if (last and first and mid) else None,
             f"{last} {first} {mid_initial}".strip() if (last and first and mid) else None,
             decedent,
+            drop_first_variation,
         ]
     seen: set[str] = set()
     out: list[str] = []
@@ -987,18 +1000,24 @@ def validate_existing_matches(
             best = pick_best_candidate(kept, dec)
             if best is None or best.pid == pid:
                 continue
-            # Only swap if the rank really moved (don't churn on equal tuples)
-            from nc_gis_lookup import _owner_has_suffix, _use_tier, _extract_suffix
+            # Only swap if the rank really moved (don't churn on equal tuples).
+            # Use the 3-way _suffix_match_score (matches pick_best_candidate
+            # from commit c1db989). The old boolean _owner_has_suffix returned
+            # False for BOTH "Smith Thomas E" and "Smith Thomas Jr" when the
+            # decedent had no suffix, leaving them tied — then audit-repick
+            # fell through to value tiebreaker and picked the higher-value JR
+            # (the wrong person). Smith Thomas Edward 26E000638-480 Week 26.
+            from nc_gis_lookup import _suffix_match_score, _use_tier, _extract_suffix
             suffix = _extract_suffix(dec)
             current_key = (
-                _owner_has_suffix(cand.owner_name, suffix),
+                _suffix_match_score(cand.owner_name, suffix),
                 cand.match_score,
                 _use_tier(cand),
                 float(cand.market_value or 0),
                 float(cand.lot_area or 0),
             )
             best_key = (
-                _owner_has_suffix(best.owner_name, suffix),
+                _suffix_match_score(best.owner_name, suffix),
                 best.match_score,
                 _use_tier(best),
                 float(best.market_value or 0),
