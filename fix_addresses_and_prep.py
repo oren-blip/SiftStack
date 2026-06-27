@@ -1160,6 +1160,9 @@ def repair_addresses(rows: list[dict]) -> int:
 _BAD_CITY_TOKENS = {
     "DR","ST","RD","LN","CT","AVE","BLVD","WAY","CIR","PL","TC","TER","TR","TRL","PKWY","HWY",
     "N","S","E","W","NE","NW","SE","SW",
+    # Common abbreviated street suffixes seen in mangled city fields
+    # (Sellers Irma Elizabeth 26E000406-540: city="Av" leftover from "Sherrill Avenue")
+    "AV","CR","BL","HW","PK","PY","TL",
 }
 _US_STATE_CODES = {
     "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA",
@@ -1176,14 +1179,20 @@ def clean_bad_city_zip_in_place(rows: list[dict]) -> tuple[int, int]:
     bad value. Wrong city data is worse than blank — DataSift's Smarty
     will populate blanks on upload, but can't undo wrong values.
 
-    Also reformat 9-digit-no-dash ZIPs (e.g., 281640000) to '28164-0000'
-    or '28164' when the +4 portion is all zeros.
+    Also handles:
+      - 9-digit-no-dash ZIPs (e.g., 281640000) -> '28164-0000' or '28164'
+      - Mecklenburg pattern "ADDR CITYNAME NC" (and "ADDR CITYNAME UNINC NC")
+        jammed into Property Address — strip out trailing city/state and
+        move to Property City. Locklear/Edwards/Walton Week 26.
+      - Gaston pattern: zip captured, city blank — populate city from a
+        local zip->city table for our 7 NC counties.
 
     Returns (cities_cleaned, zips_cleaned).
     """
     cleaned_city = 0
     cleaned_zip = 0
     for r in rows:
+        # ── 1. Bad-city tokens (street suffix / state code / numeric) ──
         city = (r.get("Property City") or "").strip()
         city_upper = city.upper()
         is_bad_city = (
@@ -1197,7 +1206,39 @@ def clean_bad_city_zip_in_place(rows: list[dict]) -> tuple[int, int]:
                 r["Property Address"] = f"{addr} {city}"
             r["Property City"] = ""
             cleaned_city += 1
-        # ZIP normalization
+
+        # ── 2. Mecklenburg-style jammed city: "ADDRESS CITYNAME NC" ──
+        # Polaris3g sometimes returns situs with city+state appended:
+        # "7918 CORDER DR CHARLOTTE NC" or "6813 MT HOLLY-HUNTERSVILLE
+        # RD UNINC NC". Anchor split on the LAST street suffix — city is
+        # whatever comes between that suffix and " NC" at the end.
+        addr = (r.get("Property Address") or "").strip()
+        if addr and addr.upper().endswith(" NC") and not (r.get("Property City") or "").strip():
+            tokens = addr.split()
+            if len(tokens) >= 3 and tokens[-1].upper() == "NC":
+                tokens = tokens[:-1]  # drop trailing "NC"
+                # Find LAST street suffix
+                last_suffix_idx = -1
+                for i in range(len(tokens) - 1, -1, -1):
+                    if tokens[i].upper().rstrip(".") in _STREET_SUFFIXES_FOR_SPLIT:
+                        last_suffix_idx = i
+                        break
+                if last_suffix_idx >= 0 and last_suffix_idx < len(tokens) - 1:
+                    # Tokens AFTER the street suffix are the jammed city
+                    city_tokens = tokens[last_suffix_idx + 1:]
+                    city_str = " ".join(city_tokens)
+                    if city_str.upper() not in {"UNINC", "UNINCORPORATED"}:
+                        r["Property City"] = city_str.title()
+                    r["Property Address"] = " ".join(tokens[: last_suffix_idx + 1])
+                    r["Property State"] = "NC"
+                    cleaned_city += 1
+                elif last_suffix_idx == len(tokens) - 1:
+                    # Suffix is the last token (no city before NC) — just
+                    # drop the trailing " NC" and leave city blank
+                    r["Property Address"] = " ".join(tokens)
+                    r["Property State"] = "NC"
+
+        # ── 3. ZIP normalization ──
         z = (r.get("Property Zip") or "").strip()
         if z and len(z) == 9 and z.isdigit():
             if z[5:] == "0000":
@@ -1213,7 +1254,102 @@ def clean_bad_city_zip_in_place(rows: list[dict]) -> tuple[int, int]:
         if z2 and not valid_zip:
             r["Property Zip"] = ""
             cleaned_zip += 1
+
+        # ── 4. ZIP -> city lookup when city is blank ──
+        # Gaston ArcGIS returns ZIP per parcel but no city; same for some
+        # parcels in other counties. Populate city from a local lookup.
+        if not (r.get("Property City") or "").strip():
+            z3 = (r.get("Property Zip") or "").strip()[:5]
+            city_from_zip = _NC_ZIP_TO_CITY.get(z3)
+            if city_from_zip:
+                r["Property City"] = city_from_zip
+                cleaned_city += 1
     return cleaned_city, cleaned_zip
+
+
+# Street-suffix tokens for the jammed-city splitter. Includes both
+# abbreviated and spelled-out forms.
+_STREET_SUFFIXES_FOR_SPLIT = {
+    "ST", "STREET", "RD", "ROAD", "AVE", "AVENUE", "AV", "DR", "DRIVE",
+    "LN", "LANE", "CT", "COURT", "PL", "PLACE", "BLVD", "BOULEVARD",
+    "WAY", "WY", "CIR", "CIRCLE", "CR", "HWY", "HIGHWAY", "PKWY",
+    "PARKWAY", "TER", "TERRACE", "TR", "TRL", "TRAIL", "TC", "PIKE",
+    "RUN", "ROW", "LOOP", "PATH", "ALY", "ALLEY", "EXT", "EXTENSION",
+    "EXPY", "EXPRESSWAY", "CRT",
+    # Compass directions that often follow a street suffix (e.g. "5503 GLENVIEW DR NE")
+    # are NOT included here because they're treated as part of the street.
+}
+
+# Local zip -> city for the 7 NC counties we scrape. Covers the cases
+# where county ArcGIS returns zip but not city. Not exhaustive — extend
+# as new patterns surface.
+_NC_ZIP_TO_CITY = {
+    # Cabarrus
+    "28025": "Concord", "28026": "Concord", "28027": "Concord",
+    "28075": "Harrisburg",
+    "28081": "Kannapolis", "28082": "Kannapolis", "28083": "Kannapolis",
+    "28107": "Midland",
+    # Catawba
+    "28601": "Hickory", "28602": "Hickory", "28603": "Hickory",
+    "28609": "Catawba",
+    "28610": "Claremont",
+    "28613": "Conover",
+    "28625": "Statesville",  # Iredell overlap
+    "28658": "Newton",
+    "28673": "Sherrills Ford",
+    "28681": "Taylorsville",
+    # Gaston
+    "28006": "Alexis",
+    "28012": "Belmont",
+    "28016": "Bessemer City",
+    "28021": "Cherryville",
+    "28032": "Cramerton",
+    "28034": "Dallas",
+    "28052": "Gastonia", "28054": "Gastonia", "28056": "Gastonia",
+    "28098": "Lowell",
+    "28101": "Mc Adenville",
+    "28120": "Mount Holly",
+    "28164": "Stanley",
+    # Iredell
+    "28115": "Mooresville", "28117": "Mooresville",
+    "28166": "Troutman",
+    "28625": "Statesville", "28677": "Statesville",
+    "28634": "Harmony",
+    "28660": "Olin",
+    "28673": "Sherrills Ford",
+    # Lincoln
+    "28033": "Crouse",
+    "28037": "Denver",
+    "28080": "Iron Station",
+    "28092": "Lincolnton", "28093": "Lincolnton",
+    "28168": "Vale",
+    # Mecklenburg (Charlotte main + suburbs)
+    "28078": "Huntersville",
+    "28031": "Cornelius",
+    "28036": "Davidson",
+    "28104": "Matthews", "28105": "Matthews",
+    "28134": "Pineville",
+    "28202": "Charlotte", "28203": "Charlotte", "28204": "Charlotte",
+    "28205": "Charlotte", "28206": "Charlotte", "28207": "Charlotte",
+    "28208": "Charlotte", "28209": "Charlotte", "28210": "Charlotte",
+    "28211": "Charlotte", "28212": "Charlotte", "28213": "Charlotte",
+    "28214": "Charlotte", "28215": "Charlotte", "28216": "Charlotte",
+    "28217": "Charlotte", "28226": "Charlotte", "28227": "Charlotte",
+    "28262": "Charlotte", "28269": "Charlotte", "28270": "Charlotte",
+    "28273": "Charlotte", "28277": "Charlotte", "28278": "Charlotte",
+    "28280": "Charlotte",
+    # Rowan
+    "28023": "China Grove",
+    "28071": "Gold Hill",
+    "28072": "Granite Quarry",
+    "28138": "Rockwell",
+    "28144": "Salisbury", "28145": "Salisbury", "28146": "Salisbury", "28147": "Salisbury",
+    "28159": "Spencer",
+    "28023": "China Grove",
+    "28041": "Cleveland",
+    "28039": "Cleveland",
+    "28023": "China Grove",
+}
 
 
 def _money(v) -> float:
