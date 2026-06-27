@@ -371,6 +371,38 @@ def apply_fetched_case_docs(rows: list[dict]) -> int:
                     r["Estate Value (App)"] = f"{int(round(float(val))):,}"
                 except (TypeError, ValueError):
                     pass
+            # When App data has a confirmed applicant AND the current main
+            # PR was inferred (DM-promoted from obit, beneficiary-promoted,
+            # or generic "Heirs of"), OVERWRITE the main PR fields with
+            # the court-confirmed applicant. The App PDF is more
+            # authoritative than obituary-derived DM picks.
+            # Kiser 26E002388-590 Week 26: obit gave us "Linda Kiser" as DM,
+            # she got promoted to PR. App PDF says actual PR is "Robert
+            # Dustin Kiser" at 111 Lookout Ridge Cedar Point — different
+            # person. App data should win.
+            current_reason = (r.get("Match Reason") or "").lower()
+            current_pr = (r.get("Personal Representative") or "").strip().lower()
+            inferred_pr = (
+                "dm-promoted-pr" in current_reason
+                or "beneficiary-promoted-pr" in current_reason
+                or current_pr.startswith("heirs of")
+                or current_pr.startswith("estate of")
+            )
+            app_pr_name = (applicant.get("full_name") or "").strip()
+            if inferred_pr and app_pr_name:
+                # Split full name into First/Last for the search-friendly columns
+                parts = app_pr_name.split()
+                if len(parts) >= 2:
+                    r["Personal Representative"] = app_pr_name
+                    r["First Name"] = parts[0]
+                    r["Last Name"] = parts[-1]
+                    # Apply applicant's mailing too — court-confirmed address
+                    if applicant.get("street"):
+                        r["Mailing Address"] = applicant.get("street", "")
+                        r["Mailing City"] = applicant.get("city", "")
+                        r["Mailing State"] = applicant.get("state") or "NC"
+                        r["Mailing Zip"] = applicant.get("zip", "")
+                    tag_reason(r, "pr-from-app-override")
             heirs = app.get("heirs") or []
             if heirs:
                 try:
@@ -1545,32 +1577,27 @@ def drop_entity_decedents(rows: list[dict]) -> tuple[list[dict], int, list[str]]
 
 
 def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]:
-    """Drop rows whose Case Status is finished (Disposed/Closed/etc).
+    """Tally Case Status distribution + keep all rows.
 
-    Blank Case Status passes through — pre-Case-Status-column raws don't
-    carry the field and we shouldn't drop those wholesale. Small Estate
-    Affidavit carve-out: Disposed cases filed within
-    SMALL_ESTATE_RECENT_DAYS pass through (Disposed-same-day-as-filed
-    typically means the heir got immediate legal ownership via affidavit
-    — a real lead, NOT a finalized estate).
+    Per Oren 2026-06-27: Disposed cases ARE real probate leads — Disposed
+    in NC probate typically means Letters issued and estate is being
+    administered, often with real estate just transferred to heirs. Those
+    heirs may want to sell. The heir-occupied filter (Step 1.9) already
+    handles the "heirs live there → dead lead" case; Disposed status alone
+    isn't a DQ signal.
 
-    Returns (kept_rows, dropped_count, status_histogram).
+    Previously dropped Closed/Disposed/etc. Now passes everything and just
+    tracks status distribution for telemetry. Returns the same shape so
+    callers don't need to change.
     """
     histo: dict[str, int] = {}
-    kept: list[dict] = []
-    dropped = 0
     for r in rows:
         status = (r.get("Case Status") or "").strip()
         histo[status or "(blank)"] = histo.get(status or "(blank)", 0) + 1
-        if status.upper() in _DROP_CASE_STATUSES_POLISH:
-            if _is_small_estate_disposed_recent(r):
-                tag_reason(r, "small-estate-disposed-recent")
-                kept.append(r)
-                continue
-            dropped += 1
-            continue
-        kept.append(r)
-    return kept, dropped, histo
+        # Tag any Disposed-recent rows for visibility (still kept)
+        if status.upper() in _DROP_CASE_STATUSES_POLISH and _is_small_estate_disposed_recent(r):
+            tag_reason(r, "small-estate-disposed-recent")
+    return rows, 0, histo
 
 
 # Polish-side mirror of ecourts_scraper.SMALL_ESTATE_RECENT_DAYS — kept
@@ -2103,6 +2130,35 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
                             return (True, "dq-app-heir-at-property")
             except (ValueError, TypeError):
                 pass
+        # PR-is-co-owner-on-deed check (JTWROS auto-transfer signal).
+        # When the PR's first+last appears as a co-owner segment in the
+        # parcel's owner string, the property likely transferred via
+        # right of survivorship — no probate needed for that property,
+        # dead lead. Gaston Wilbert 26E000673-120 Week 26: PR Betty
+        # Gaston has different mailing address than the property but
+        # her name appears on the deed; user dropped manually.
+        first = (r.get("First Name") or "").strip().upper()
+        last = (r.get("Last Name") or "").strip().upper()
+        if first and last:
+            pid_check = (r.get("Parcel ID") or "").strip()
+            dec_check = (r.get("Deceased Owner") or "").strip()
+            county_check = (r.get("County") or "").strip()
+            if pid_check and dec_check and county_check and "IN THE MATTER" not in dec_check.upper():
+                try:
+                    from nc_gis_lookup import lookup_properties as _lp
+                    cands_check = _lp(dec_check, county_check, min_score=0.5)
+                    match_check = next((c for c in cands_check if c.pid == pid_check), None)
+                except Exception:
+                    match_check = None
+                if match_check and match_check.is_jointly_owned:
+                    owner_upper = (match_check.owner_name or "").upper()
+                    # Split into co-owner segments
+                    segments = [s.strip() for s in
+                                __import__("re").split(r"\s*\|\s*|\s+&\s+|\s*;\s*", owner_upper)]
+                    for seg in segments:
+                        seg_tokens = set(t.strip(",.") for t in seg.split())
+                        if first in seg_tokens and last in seg_tokens:
+                            return (True, "dq-pr-is-coowner")
         return (False, "")
 
     kept = []
@@ -2917,10 +2973,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
     print(f"  Archive-backfilled: {n_archive_hit}  No-match (still blank-case): {n_archive_miss}")
 
-    print("Step -0.9: drop non-Pending cases (Disposed/Closed/etc) per Case Status column")
+    print("Step -0.9: tally Case Status (Disposed/Closed kept per Oren 2026-06-27 — heir-occupied filter handles dead leads)")
     rows, n_non_pending, status_histo = drop_non_pending(rows)
     histo_pretty = ", ".join(f"{k}={v}" for k, v in sorted(status_histo.items(), key=lambda x: -x[1]))
-    print(f"  Dropped non-Pending: {n_non_pending}  Remaining: {len(rows)}  (status seen: {histo_pretty})")
+    print(f"  Status distribution: {histo_pretty}  Remaining: {len(rows)}")
 
     print("Step -0.85: drop trust / corporate-entity decedents (no probate lead)")
     rows, n_entity, entity_samples = drop_entity_decedents(rows)
@@ -3023,6 +3079,15 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.93: look up PR mailing via people search (Serper+Firecrawl, before property fallback)")
     n_ps_found, n_ps_tried = fill_pr_mailing_via_people_search(rows, state="NC")
     print(f"  PR addresses found via people search: {n_ps_found}/{n_ps_tried}")
+
+    # Run the city/zip cleanup BEFORE heir-occupied check so mangled
+    # Property Address strings (e.g. "319 Sherrill" with city="Av")
+    # get repaired before address-equality comparison. Sellers Irma
+    # Elizabeth 26E000406-540 Week 26: mangled address foiled the
+    # heir-occupied DQ even though PR clearly lived at the property.
+    print("Step 1.89: clean bad-city / bad-zip leftovers (before heir-occupied check)")
+    n_clean_city, n_clean_zip = clean_bad_city_zip_in_place(rows)
+    print(f"  Cleaned cities: {n_clean_city}  Reformatted/cleared zips: {n_clean_zip}")
 
     print("Step 1.9: drop heir-occupied (executor mailing == property address)")
     rows, n_heir_occupied = drop_executor_at_property(rows)
