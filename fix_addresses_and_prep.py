@@ -1712,6 +1712,54 @@ def drop_entity_decedents(rows: list[dict]) -> tuple[list[dict], int, list[str]]
     return kept, len(dropped_names), dropped_names
 
 
+def backfill_case_status_from_odata(rows: list[dict]) -> int:
+    """For rows where Case Status is blank but Case ID (hex) is known,
+    fetch the canonical status from Tyler Tech's CaseSummariesSlim
+    OData endpoint (no auth required) and populate the column.
+
+    Some search-result rows don't render a status cell, so the scrape's
+    cell-scan misses them — leaving Case Status blank. Week 26 saw 8
+    such rows (Hoopingarner, Honeycutt, Gaston Wilbert, Lambert,
+    Sellers, etc). Backfilling here fixes display + downstream filters
+    that key on status.
+
+    Returns count of rows whose status was backfilled.
+    """
+    import requests as _requests
+    BASE = "https://portal-nc.tylertech.cloud/app/RegisterOfActionsService/CaseSummariesSlim"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://portal-nc.tylertech.cloud/",
+    }
+    backfilled = 0
+    for r in rows:
+        if (r.get("Case Status") or "").strip():
+            continue
+        case_hex = (r.get("Case ID (hex)") or "").strip()
+        if not case_hex:
+            continue
+        try:
+            resp = _requests.get(BASE, params={"key": case_hex}, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+        except Exception:
+            continue
+        # Status lives at CaseInformation.CaseStatuses[0].CaseStatusId.Description
+        try:
+            statuses = ((data.get("CaseInformation") or {}).get("CaseStatuses")) or []
+            if statuses and isinstance(statuses, list):
+                desc = (((statuses[0] or {}).get("CaseStatusId")) or {}).get("Description", "")
+                if desc:
+                    r["Case Status"] = desc.strip()
+                    backfilled += 1
+        except (AttributeError, IndexError, TypeError):
+            continue
+    return backfilled
+
+
 def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]:
     """Tally Case Status distribution + keep all rows.
 
@@ -3108,6 +3156,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step -1: backfill blank Case No. from user's manual XLSX archive")
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
     print(f"  Archive-backfilled: {n_archive_hit}  No-match (still blank-case): {n_archive_miss}")
+
+    print("Step -0.95: backfill blank Case Status from Tyler OData (CaseSummariesSlim)")
+    n_status = backfill_case_status_from_odata(rows)
+    print(f"  Case Status backfilled: {n_status}")
 
     print("Step -0.9: tally Case Status (Disposed/Closed kept per Oren 2026-06-27 — heir-occupied filter handles dead leads)")
     rows, n_non_pending, status_histo = drop_non_pending(rows)
