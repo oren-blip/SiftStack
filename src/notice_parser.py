@@ -134,7 +134,8 @@ class NoticeData:
     run_id: str = ""                   # Unique pipeline run identifier for data lineage
     # NC eCourts case fields (populated by ecourts_scraper after Parties API call)
     case_number: str = ""              # eCourts case# (e.g. "26E001794-590")
-    case_status: str = ""              # "Pending" / "Disposed" / "Closed" — captured from search grid
+    case_status: str = ""              # "Pending" / "Disposed - Clerk of Superior Court" / "Closed" — captured from search grid (full label)
+    case_type: str = ""                # "Decedents' Estate - Small Estate" / "- Full Administration" — captured from search grid
     executor_first_name: str = ""      # Affiant/Executor/Administrator first name
     executor_last_name: str = ""       # Affiant/Executor/Administrator last name
     beneficiaries_json: str = ""       # JSON list of {name, street, city, state, zip}

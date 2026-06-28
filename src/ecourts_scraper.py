@@ -574,29 +574,114 @@ async def _click_next_page(page: Page) -> bool:
     )
 
 
+# ── Estates Case Status / Case Type classification ────────────────────
+# County clerks label a FINISHED estate differently: Mecklenburg + Catawba
+# use "Closed"; the other 5 counties use "Disposed - Clerk of Superior
+# Court". So statuses MUST be matched by PREFIX, never exact equality — a
+# 2026-06-27 live recon of all 7 counties found ~280 "Disposed - Clerk..."
+# rows silently leaking past the old exact-match drop set. The Estates
+# status vocabulary is tiny (Pending / Closed / Disposed-variant / rare
+# "Active Reopened"); see the project_ecourts_estate_status_vocab memory.
+_FINISHED_STATUS_PREFIXES = (
+    "DISPOSED", "CLOSED", "INACTIVE", "ARCHIVED",
+    "ADMINISTRATIVE CLOSURE",
+    "TRANSFER",  # "Transfer to Another County" — case left this county
+)
+# "Active Reopened" starts with ACTIVE; handled as reopened (priority) first.
+_ACTIVE_STATUS_PREFIXES = ("PENDING", "ACTIVE", "OPEN", "FILED", "RECEIVED")
+
+# Case Type column values (Estates category). Only "Decedents' Estate"
+# rows are real probate leads. Guardianship + minor/incapacitated-funds
+# cases are LIVING persons filed under Estates — never a death lead.
+_NON_DECEDENT_TYPE_RE = re.compile(
+    r"GUARDIANSHIP|FUNDS\s+DEPOSITED|\bMINOR\b|\bINCAPACITATED\b|CONSERVATOR", re.I)
+_SMALL_ESTATE_TYPE_RE = re.compile(r"SMALL\s+ESTATE", re.I)
+_DECEDENT_ESTATE_TYPE_RE = re.compile(r"DECEDENT", re.I)
+
+# Legacy exact-match sets — kept only for the _parse_results telemetry
+# counter and external importers (dump_estate_statuses.py). The keep/drop
+# DECISION now flows through _classify_estate_row below, not these.
 _DROP_CASE_STATUSES = {"DISPOSED", "CLOSED", "INACTIVE", "TRANSFERRED"}
-# Known status values that confirm an active case. Captured-but-not-dropped.
 _KEEP_CASE_STATUSES = {"PENDING", "ACTIVE", "OPEN", "REOPENED"}
 _KNOWN_CASE_STATUSES = _DROP_CASE_STATUSES | _KEEP_CASE_STATUSES
 
-# Recent-Disposed carve-out window (days). Small Estate Affidavits get
-# Filed and Disposed the same day — they don't go through full probate.
-# But the heir who filed the affidavit IS the new legal owner of the
-# property, so it's a real lead. Heuristic: any Disposed case with a
-# filing date within this many days is almost certainly a Small Estate
-# Affidavit (regular probate Disposes take months). Outside the window,
-# Disposed means it's been finalized and skip it as before.
+# Fallback window (days) used ONLY when the Case Type column is unreadable.
+# Small Estate Affidavits are Filed and Disposed the same day; a Disposed
+# row filed within this window is almost certainly a Small Estate (regular
+# full-administration probate takes months to Dispose). With the Type
+# column now captured, this is a safety net rather than the primary signal.
 SMALL_ESTATE_RECENT_DAYS = 14
+
+
+def _status_is_finished(status: str) -> bool:
+    s = status.strip().upper()
+    return any(s.startswith(p) for p in _FINISHED_STATUS_PREFIXES)
+
+
+def _status_is_active(status: str) -> bool:
+    s = status.strip().upper()
+    return any(s.startswith(p) for p in _ACTIVE_STATUS_PREFIXES)
+
+
+def _filed_within(filing_date: str, days: int) -> bool:
+    if not filing_date:
+        return False
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(filing_date, fmt).date()
+            return 0 <= (date.today() - d).days <= days
+        except ValueError:
+            continue
+    return False
+
+
+def _classify_estate_row(case_type: str, status: str, filing_date: str) -> tuple[str, str]:
+    """Decide keep/drop for an Estates grid row from its Case Type + Status.
+
+    Returns (action, tag): action is "keep" or "drop"; tag is an optional
+    marker ("priority-reopened" / "small-estate" / a drop-reason) for logs.
+
+    Policy (Oren 2026-06-27, verified against live portal vocabulary):
+      • Guardianship / minor-funds TYPE      → DROP (living person, not a death lead)
+      • Reopened estate                      → KEEP (priority — new asset surfaced)
+      • Active / Pending status              → KEEP (active probate = prime lead)
+      • Finished (Disposed*/Closed/Transfer) → KEEP Small Estate (heir owns it now),
+                                               DROP Full Administration (probate over,
+                                               freshness gone, often sold during admin).
+                                               Type unreadable → SMALL_ESTATE_RECENT_DAYS
+                                               file-date fallback.
+      • Blank / unknown status               → KEEP (never silently drop)
+    """
+    t = (case_type or "").upper()
+    s = (status or "").upper()
+
+    if t and _NON_DECEDENT_TYPE_RE.search(t):
+        return "drop", "non-decedent-type"
+    if "REOPENED" in s:                 # "Active Reopened"
+        return "keep", "priority-reopened"
+    if _status_is_active(s):
+        return "keep", ""
+    if _status_is_finished(s):
+        if _SMALL_ESTATE_TYPE_RE.search(t):
+            return "keep", "small-estate"
+        if _DECEDENT_ESTATE_TYPE_RE.search(t):
+            return "drop", "finished-full-admin"
+        # Type column unreadable — fall back to the file-date heuristic.
+        if _filed_within(filing_date, SMALL_ESTATE_RECENT_DAYS):
+            return "keep", "small-estate"
+        return "drop", "finished-unknown-type"
+    return "keep", ""
 
 
 def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | None:
     """Convert one raw grid row dict into a NoticeData, or None if not a real result row.
 
-    Filters: only Pending / active cases pass through, EXCEPT Disposed
-    cases filed within SMALL_ESTATE_RECENT_DAYS — those are typically
-    Small Estate Affidavits where the heir takes immediate legal
-    ownership of the property, which is a high-quality lead. Polish-
-    side filters honor the same carve-out (see drop_non_pending).
+    Keep/drop is decided by _classify_estate_row from the grid's Case Type +
+    Case Status columns: keep active probate + all Small Estate filings (heir
+    owns the property now); drop finished Full Administration estates,
+    guardianships, and minor/incapacitated-funds cases. Status is matched by
+    prefix so county label variants ("Closed" vs "Disposed - Clerk of Superior
+    Court") are handled uniformly.
     """
     cells = row.get("cells", [])
     if not cells:
@@ -625,35 +710,45 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
             filing_date = m.group(1)
             break
 
-    # Capture case status. Apply the Small-Estate carve-out: a Disposed
-    # row whose filing date is within SMALL_ESTATE_RECENT_DAYS is kept
-    # (it's the Small Estate Affidavit pattern — Filed and Disposed the
-    # same day with the heir as the new legal owner).
+    # Detect Case Type + Case Status by cell content. Column order varies
+    # slightly by county, so match on content rather than fixed offsets.
+    # Skip the case-number cell and the caption cell (case_no_idx + 1) — the
+    # caption is free text and could contain words like "MINOR" that would
+    # spuriously trip the non-decedent type regex.
+    detected_type = ""
     detected_status = ""
-    for c in cells:
-        cu = c.strip().upper()
-        if cu in _KNOWN_CASE_STATUSES:
-            detected_status = c.strip()
-            if cu in _DROP_CASE_STATUSES:
-                recent = False
-                if filing_date:
-                    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
-                        try:
-                            d = datetime.strptime(filing_date, fmt).date()
-                            age = (date.today() - d).days
-                            if 0 <= age <= SMALL_ESTATE_RECENT_DAYS:
-                                recent = True
-                            break
-                        except ValueError:
-                            pass
-                if not recent:
-                    logger.debug("eCourts: dropping row with status=%r filed=%r", c.strip(), filing_date)
-                    return None
-                logger.info(
-                    "eCourts: KEEPING Disposed-recent (Small Estate candidate): %s filed=%s",
-                    case_no, filing_date,
-                )
-            break  # captured a status, stop scanning
+    for j, c in enumerate(cells):
+        if j == case_no_idx or j == case_no_idx + 1:
+            continue
+        cc = c.strip()
+        if not cc:
+            continue
+        if not detected_type and (
+            _SMALL_ESTATE_TYPE_RE.search(cc)
+            or _DECEDENT_ESTATE_TYPE_RE.search(cc)
+            or _NON_DECEDENT_TYPE_RE.search(cc)
+        ):
+            detected_type = cc
+            continue
+        if not detected_status and (
+            _status_is_active(cc) or _status_is_finished(cc) or "REOPENED" in cc.upper()
+        ):
+            detected_status = cc
+
+    action, classify_tag = _classify_estate_row(detected_type, detected_status, filing_date)
+    if action == "drop":
+        logger.debug(
+            "eCourts: dropping %s type=%r status=%r (%s)",
+            case_no, detected_type, detected_status, classify_tag,
+        )
+        return None
+    if classify_tag == "priority-reopened":
+        logger.info("eCourts: KEEPING reopened estate (priority): %s", case_no)
+    elif classify_tag == "small-estate" and _status_is_finished(detected_status):
+        logger.info(
+            "eCourts: KEEPING Small Estate (heir owns it now): %s filed=%s",
+            case_no, filing_date,
+        )
 
     primary_name = style
     for prefix in [
@@ -698,6 +793,7 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
         source_url=href,
         case_number=case_no,
         case_status=detected_status,
+        case_type=detected_type,
     )
     notice._roa_id = case_id_hex  # type: ignore[attr-defined]
     if notice_type == "probate":
@@ -724,17 +820,21 @@ async def _parse_results(page: Page, county: str, notice_type: str) -> list[Noti
 
     # Walk pages — first page is already visible. After each parse, try
     # to click "next page". Stop when next is disabled or no new rows.
+    case_no_re = re.compile(r"\d{2}[A-Z]{1,3}\d{3,6}-?\d{0,3}")
     dropped_status = 0
     for page_idx in range(1, 25):  # hard cap of 25 pages = up to 2500 results
         rows = await _extract_rows_from_grid(page)
         added_on_page = 0
         for row in rows:
-            had_drop_status = any(
-                c.strip().upper() in _DROP_CASE_STATUSES for c in row.get("cells", [])
+            # A "real" case row carries a case number; if _row_to_notice
+            # drops it, that's a policy drop (finished full-admin /
+            # guardianship), not just an empty layout row.
+            is_case_row = any(
+                case_no_re.fullmatch(c.strip().replace(" ", "")) for c in row.get("cells", [])
             )
             n = _row_to_notice(row, county, notice_type)
             if not n:
-                if had_drop_status:
+                if is_case_row:
                     dropped_status += 1
                 continue
             if n.case_number in seen_case_nos:
