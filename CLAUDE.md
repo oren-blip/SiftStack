@@ -235,13 +235,13 @@ python src/main.py nc-daily \
 ```
 
 **Required NC flags (and why):**
-- `--skip-obituary` — kept on by default during the A/B rollout of NC obituary enrichment. The enricher is now state-aware (per-state Tier 1 gate, no more Knoxville fallback baked in), but the default still skips for NC until we've validated heir-discovery hit rate against the "Heirs of [Decedent]" baseline. **To opt in for a given run**, also pass `--nc-obituary` — it overrides `--skip-obituary` for NC notices and runs the Tier 2 path (Serper + Firecrawl + LLM; Knox Tax tier is gated off automatically for non-TN states). Ancestry SSDI stays disabled in NC opt-in (Knox-tested only).
+- `--skip-obituary` / `--nc-obituary` — **NC obituary enrichment is ON by default** as of 2026-06-13 (the A/B rollout flipped). `scripts\nc_weekly_scrape.bat` sets `NC_OBITUARY=1` and passes `--nc-obituary`, which overrides the global `--skip-obituary` for NC notices and runs the Tier 2 path (Serper + Firecrawl + LLM; Knox Tax tier gated off for non-TN states). To opt OUT for a single run, set `NC_OBITUARY=0`. Ancestry SSDI stays disabled in NC (Knox-tested only).
 - `--no-skip-trace` — DataSift's $97/mo unlimited skip-trace (post-upload, auto-tag `skip_traced_YYYY-MM`) handles phones + emails. Tracerfy ($0.02/contact) is reserved for **Phase 2 deep prospecting** where DataSift can't help (heirs identified from obituary search who aren't in the CSV yet).
 
-**`--nc-obituary` A/B rollout (build 1.0.30+):**
-- Off by default. Set `NC_OBITUARY=1` env var before running `scripts\nc_weekly_scrape.bat` to enable it for a single run, OR pass `--nc-obituary` directly to `python src/main.py nc-daily ...`.
-- Plan: run one or two weeks A/B (with vs without). Compare confirmed-heir count against current "Heirs of [Decedent]" placeholder count. If hit rate is healthy, flip default by removing `--skip-obituary` from `nc_weekly_scrape.bat`.
-- Implementation: `obituary_enricher.py` now threads `notice.state` through every lookup helper. The Knox Tax tier is gated on `state == "TN"`; non-TN states go straight to Tier 2 (Serper + Firecrawl + Claude Haiku). `_STATE_FALLBACK_CITY = {"TN": "Knoxville"}` — for NC notices with no city, the lookup runs city-less rather than guessing.
+**`--nc-obituary` (ON by default since 2026-06-13; build 1.0.30+):**
+- Default ON — `nc_weekly_scrape.bat` sets `NC_OBITUARY=1`. Opt OUT for a single run with `NC_OBITUARY=0`. The A/B rollout is complete; NC obituary enrichment is now standard.
+- Search backend: uses **Serper (Google)** as of 2026-06-30 (commit a8257e2). It previously used DuckDuckGo, which had started returning 0 results for every decedent — silently starving the heir-finder so every case fell to "Heirs of". If obit hit-rate ever drops again, check the Serper key/quota first.
+- Implementation: `obituary_enricher.py` threads `notice.state` through every lookup helper. The Knox Tax tier is gated on `state == "TN"`; non-TN states go straight to Tier 2 (Serper + Firecrawl + Claude). `_STATE_FALLBACK_CITY = {"TN": "Knoxville"}` — for NC notices with no city, the lookup runs city-less rather than guessing.
 
 **eCourts-only by default (build 1.0.32+):**
 - The NC scrape pulls **only from Odyssey eCourts** by default. Newspaper scrapers (column.us, Salisbury Post AdHunter, Gannett iPublish Marketplace) are gated behind `--include-newspapers` and stay opt-in.
