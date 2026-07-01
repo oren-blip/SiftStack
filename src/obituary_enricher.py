@@ -534,10 +534,44 @@ def _is_obituary_url(url: str) -> bool:
     return False
 
 
+def _serper_web_search(query: str, num: int = 8) -> list[dict] | None:
+    """General Google web search via Serper.dev.
+
+    Returns a list of {url, title, snippet} dicts. Returns None when Serper is
+    not configured or the request fails, so the caller can fall back to another
+    backend; an empty list means the search ran but matched nothing.
+    """
+    import config as cfg
+    if not cfg.SERPER_API_KEY:
+        return None
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": cfg.SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "num": num},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.debug("Serper web search failed for '%s': %s", query, e)
+        return None
+    return [
+        {"url": item.get("link", ""), "title": item.get("title", ""),
+         "snippet": item.get("snippet", "")}
+        for item in data.get("organic", [])
+    ]
+
+
 def _search_obituary(
     name: str, city: str, extra_terms: str = "", state: str = "TN",
 ) -> list[dict]:
-    """Search DuckDuckGo for obituary pages matching the person.
+    """Search for obituary pages matching the person.
+
+    Uses Serper (Google) as the PRIMARY backend — the DuckDuckGo client has
+    been returning zero results in production, silently starving the whole
+    obituary heir-finder. DDGS is kept only as a fallback for when Serper is
+    unconfigured or errors.
 
     Args:
         name: Person's full name.
@@ -552,39 +586,38 @@ def _search_obituary(
     state_name = _state_full(state)
     query = f'{name} {keyword} {state_name}' if not city else f'{name} {keyword} {city} {state_name}'
 
-    try:
-        results = DDGS().text(query, max_results=8, backend="google,duckduckgo,brave")
-    except Exception as e:
-        logger.debug("Search failed for '%s': %s", query, e)
-        return []
+    # Primary: Serper (Google). Falls back to DuckDuckGo only if unavailable.
+    results = _serper_web_search(query, num=8)
+    if results is None:
+        try:
+            results = [
+                {"url": r.get("href", ""), "title": r.get("title", ""),
+                 "snippet": r.get("body", "")}
+                for r in DDGS().text(query, max_results=8, backend="google,duckduckgo,brave")
+            ]
+        except Exception as e:
+            logger.debug("Obituary search failed for '%s': %s", query, e)
+            return []
 
     obituary_results = []
     for r in results:
-        url = r.get("href", "")
-        if _is_obituary_url(url):
-            obituary_results.append({
-                "url": url,
-                "title": r.get("title", ""),
-                "snippet": r.get("body", ""),
-            })
+        if _is_obituary_url(r.get("url", "")):
+            obituary_results.append(r)
 
-    # Also include non-obituary-domain results that mention "obituary" in title/snippet
+    # Also include non-obituary-domain results that read like an obituary.
+    seen = {o["url"] for o in obituary_results}
     for r in results:
-        url = r.get("href", "")
-        if url in [o["url"] for o in obituary_results]:
+        url = r.get("url", "")
+        if url in seen:
             continue
         title = r.get("title", "").lower()
-        snippet = r.get("body", "").lower()
+        snippet = r.get("snippet", "").lower()
         if ("obituary" in title or "obituary" in snippet or "passed away" in snippet
                 or "death notice" in title or "death notice" in snippet
                 or "funeral" in title or "funeral" in snippet):
-            obituary_results.append({
-                "url": url,
-                "title": r.get("title", ""),
-                "snippet": r.get("body", ""),
-            })
+            obituary_results.append(r)
 
-    return obituary_results[:8]  # Process all DDG results (was 5, raised for coverage)
+    return obituary_results[:8]
 
 
 def _extract_structured_text(html: str, url: str) -> str:
