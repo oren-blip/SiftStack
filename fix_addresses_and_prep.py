@@ -2261,6 +2261,55 @@ _STREET_SUFFIX_NORMALIZE = {
     "southwest": "sw",
 }
 
+# Street-suffix / directional tokens to ignore when comparing the
+# "distinctive" part of two street names (see _same_property_by_number_zip).
+_STREET_SUFFIX_TOKENS = set(_STREET_SUFFIX_NORMALIZE.values()) | {
+    "n", "s", "e", "w", "ne", "nw", "se", "sw",
+}
+
+
+def _leading_house_number(addr: str | None) -> str:
+    """Return the leading house number of an address, or '' if none."""
+    m = re.match(r"\s*(\d+)", addr or "")
+    return m.group(1) if m else ""
+
+
+def _street_core_tokens(addr: str | None) -> set[str]:
+    """Normalized street tokens minus the house number and street
+    suffixes/directionals — the 'distinctive' part of a street name."""
+    toks = (addr or "").lower().split()
+    core: set[str] = set()
+    for i, t in enumerate(toks):
+        t = _STREET_SUFFIX_NORMALIZE.get(t.rstrip(".").strip(","), t.rstrip(".").strip(","))
+        if i == 0 and t.isdigit():
+            continue  # house number
+        if t and t not in _STREET_SUFFIX_TOKENS:
+            core.add(t)
+    return core
+
+
+def _same_property_by_number_zip(
+    a_addr: str | None, a_zip: str | None, b_addr: str | None, b_zip: str | None
+) -> bool:
+    """True when two addresses share the same leading house number AND ZIP
+    AND a distinctive street token (a numeric route or a >=4-char name word).
+
+    Catches route-style renderings that exact-string matching misses, e.g.
+    mailing "2535 Old Highway 27" vs property "2535 Old NC 27 Hwy" (same
+    place) — while NOT false-matching two different streets that merely share
+    a house number in one ZIP ("2535 Main St" vs "2535 Oak Ave" share no
+    distinctive token, so this returns False).
+    """
+    az = (a_zip or "").strip()[:5]
+    bz = (b_zip or "").strip()[:5]
+    if not az or az != bz:
+        return False
+    an = _leading_house_number(a_addr)
+    if not an or an != _leading_house_number(b_addr):
+        return False
+    shared = _street_core_tokens(a_addr) & _street_core_tokens(b_addr)
+    return any(t.isdigit() or len(t) >= 4 for t in shared)
+
 
 def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows where the executor's mailing address matches the property
@@ -2388,6 +2437,19 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
                             seg_tokens = set(t.strip(",.") for t in seg.split())
                             if first in seg_tokens and last in seg_tokens:
                                 return (True, "dq-pr-spouse-coowner")
+        # Fuzzy same-property: executor mailing shares house number + ZIP +
+        # a distinctive street token with the property, but the street text
+        # renders differently (route-style addresses). This is a SWAP-ONLY
+        # signal — the caller will re-point a multi-parcel estate to a non-DQ
+        # sibling, but will NOT drop a single-parcel lead on this alone
+        # (two streets can share a number within one ZIP). Catches Hoover
+        # 26E000875-350: mailing "2535 Old Highway 27" == property "2535 Old
+        # NC 27 Hwy" (son lives in the decedent's house).
+        if _same_property_by_number_zip(
+            r.get("Mailing Address"), r.get("Mailing Zip"),
+            r.get("Property Address"), r.get("Property Zip"),
+        ):
+            return (True, "dq-executor-at-property-hn")
         return (False, "")
 
     kept = []
@@ -2421,6 +2483,13 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
                     tag_reason(r, post_reason)
                     dropped += 1
                     continue
+                kept.append(r)
+                continue
+            # Swap failed. A fuzzy house#+ZIP match alone is not strong enough
+            # to DROP a single-parcel lead (two streets can share a number in
+            # one ZIP) — keep it. Only the exact-address / beneficiary /
+            # app-heir / co-owner signals drop.
+            if _reason == "dq-executor-at-property-hn":
                 kept.append(r)
                 continue
             tag_reason(r, _reason)
