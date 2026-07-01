@@ -53,8 +53,8 @@ _COL_WIDTHS = {
     "Parcel ID": 16, "Property Address": 28, "Property City": 16,
     "Property State": 8, "Property Zip": 8, "Property use": 14,
     "Property Value": 14,
-    "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
-    "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
+    "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Phone 1 Tier": 12, "Tags": 26, "List": 10,
+    "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Phone Tier": 13, "DM Email": 26,
     "DM 2 Name": 22, "DM 2 Relationship": 14,
     "DM 3 Name": 22, "DM 3 Relationship": 14,
 }
@@ -104,27 +104,53 @@ def week_from_csv(rows: list[dict]) -> tuple[int, int]:
 def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
     """Pick the most recent CSV per (year, week) from output/.
 
-    Considers BOTH naming patterns:
+    Considers THREE naming patterns (higher priority wins per week):
       *_weekN_datasift.csv                 (Step 4 output)
       *_weekN_<ts>_ecourts_backfilled.csv  (post-Step-5 eCourts name-search
                                             backfill — has additional Case
                                             No. fills that the datasift CSV
                                             doesn't have yet)
+      *_weekN_dm_enriched.csv              (post-deep-prospect — adds DM
+                                            Name/Phone/Email for no-contact
+                                            rows; built FROM whichever of the
+                                            above consolidate would have picked)
 
-    The backfilled file is strictly more complete (it's built FROM the
-    datasift CSV by adding backfilled Case No. values), so when both
-    exist for the same week we prefer the latest backfilled file.
+    The stage chain (datasift -> backfilled -> dm_enriched) is a superset ONLY
+    within a single scrape run — each stage is built from the prior one of the
+    SAME run. Across runs it is NOT: a fresh scrape's raw datasift can contain
+    cases a stale-but-heavily-enriched file from an earlier run never saw
+    (that's how an 11-row 6/29 dm_enriched shadowed a 17-row 6/30 datasift).
+    But the nightly build ALSO re-buckets past weeks from accumulated raw data,
+    producing a fresh-but-raw datasift with the SAME rows as an already-enriched
+    prior file — there we must keep the enriched one.
+
+    So per week: take the most-enriched file (newest among those) as the
+    baseline — the canonical output of the latest COMPLETED run, carrying its
+    DM enrichment. Override it ONLY when a strictly-newer scrape produced MORE
+    rows (genuinely new cases in the in-progress week) — not when an older run
+    merely carried a since-removed row. This keeps a fresh 17-row current week
+    fresh while protecting a past week's 55-row enriched file from the nightly
+    raw re-bucketing.
     """
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).parent))
     from iso_week_archive import get_archived_weeks
     archived = get_archived_weeks()
 
-    by_week: dict[tuple[int, int], tuple[Path, int]] = {}
-    # Priority 0 = datasift, 1 = ecourts_backfilled (higher wins)
+    def _row_count(fp: Path) -> int:
+        try:
+            with open(fp, newline="", encoding="utf-8-sig") as f:
+                return max(0, sum(1 for _ in csv.reader(f)) - 1)  # minus header
+        except OSError:
+            return 0
+
+    # Gather every candidate per week as (rows, priority, ts, path).
+    # Priority 0 = datasift, 1 = ecourts_backfilled, 2 = dm_enriched.
+    cands: dict[tuple[int, int], list[tuple[int, int, str, Path]]] = {}
     for pattern, priority in [
         ("nc_estates_ftm_*_week*_datasift.csv", 0),
         ("nc_estates_ftm_*_week*_ecourts_backfilled.csv", 1),
+        ("nc_estates_ftm_*_week*_dm_enriched.csv", 2),
     ]:
         for fp in sorted(Path("output").glob(pattern)):
             m = re.search(r"_week(\d+)", fp.name)
@@ -135,13 +161,24 @@ def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
                 continue  # Archived weeks are excluded from the workbook
             ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
             year = int(ym.group(1)) if ym else datetime.now().year
-            key = (year, wk)
-            existing = by_week.get(key)
-            # Pick higher priority. Within same priority, newest filename wins
-            # (sorted ascending, so later iterations overwrite earlier).
-            if existing is None or priority >= existing[1]:
-                by_week[key] = (fp, priority)
-    return {k: v[0] for k, v in by_week.items()}
+            # First timestamp in the name is the originating scrape's stamp,
+            # carried through every enrichment stage.
+            ts_m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", fp.name)
+            ts = ts_m.group(1) if ts_m else ""
+            cands.setdefault((year, wk), []).append((_row_count(fp), priority, ts, fp))
+
+    picked: dict[tuple[int, int], Path] = {}
+    for key, lst in cands.items():
+        # Baseline = most-enriched file, newest among those. It's the canonical
+        # output of the latest completed run and carries its DM enrichment.
+        baseline = max(lst, key=lambda c: (c[1], c[2]))
+        # Override only when a STRICTLY NEWER scrape yielded MORE rows — real new
+        # cases, not an older run carrying a since-removed row. Most rows wins,
+        # newest breaks ties.
+        fuller = [c for c in lst if c[0] > baseline[0] and c[2] > baseline[2]]
+        chosen = max(fuller, key=lambda c: (c[0], c[2])) if fuller else baseline
+        picked[key] = chosen[3]
+    return picked
 
 
 def add_tab(wb, title: str, rows: list[dict]) -> None:
@@ -169,16 +206,30 @@ def add_tab(wb, title: str, rows: list[dict]) -> None:
         for c, h in NC_COUNTY_COLORS.items()
     }
     multiline_cols = {"Notes", "Beneficiaries"}
+    band_fill = PatternFill(start_color=_BAND_FILL, end_color=_BAND_FILL, fill_type="solid")
     for r_idx, r in enumerate(rows, start=2):
+        # Per-county tint applied ONLY to the County column cell — per Oren
+        # 2026-06-26, full-row tinting was visually noisy. Mirrors
+        # nc_ftm_writer.write_ftm_xlsx so the consolidated workbook matches
+        # the weekly file's look.
         row_fill = county_fills.get(r.get("County", ""))
+        # Alternating band: odd data rows get a pale tint for readability;
+        # skip the County column so its per-county color stands out.
+        is_banded = (r_idx - 2) % 2 == 1
         for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
             val = r.get(col_name, "")
-            if col_name in multiline_cols and val:
-                val = " | ".join(s.strip() for s in str(val).split("\n") if s.strip())
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-            if row_fill:
+            # Multi-line columns (Notes, Beneficiaries) keep their newlines and
+            # wrap vertically — one parcel/heir per line — per Oren. Matches
+            # nc_ftm_writer.write_ftm_xlsx so weekly + consolidated look alike.
+            if col_name in multiline_cols:
+                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+            if col_name == "County" and row_fill:
                 cell.fill = row_fill
+            elif is_banded and col_name != "County":
+                cell.fill = band_fill
         ws.row_dimensions[r_idx].height = _DEFAULT_ROW_HEIGHT
 
     county_col_idx = FTM_COLUMNS.index("County") + 1
