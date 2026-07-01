@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +43,12 @@ import config
 from aws_waf_solver import WAFSolveError, solve_aws_waf
 from ecourts_case_api import CaseDetailClient, extract_case_id
 from notice_parser import NoticeData
+
+# Monotonic timestamp of the last FRESH WAF solve (None when a cached cookie
+# is reused). Used to log the token's age at doc-fetch time so we can diagnose
+# HTTP 602 "session invalid" on api/ViewDocument (stale-at-capture vs
+# expires-mid-batch).
+_WAF_SOLVED_AT: float | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +198,9 @@ async def _solve_and_inject_waf(
     voucher = result["voucher"]
     ua = result["userAgent"] or _DEFAULT_UA
     _save_waf_cookie(voucher, ua)
+    global _WAF_SOLVED_AT
+    _WAF_SOLVED_AT = time.monotonic()
+    logger.info("eCourts: WAF token freshly minted (doc-fetch staleness t0)")
 
     # Rebuild context with matching UA + pre-seeded cookie
     await initial_ctx.close()
@@ -1346,6 +1356,12 @@ async def scrape_ecourts(
         all_cookies_for_api = {c["name"]: c["value"] for c in ctx_cookies if c.get("name")}
         logger.info("eCourts: captured %d cookies for API (names: %s)",
                     len(all_cookies_for_api), sorted(all_cookies_for_api.keys()))
+        _tok_age = (time.monotonic() - _WAF_SOLVED_AT) if _WAF_SOLVED_AT else None
+        logger.info(
+            "eCourts: doc-fetch WAF token age=%s, aws-waf-token present=%s",
+            f"{_tok_age:.0f}s" if _tok_age is not None else "unknown(cached cookie reused)",
+            "aws-waf-token" in all_cookies_for_api,
+        )
 
         await ctx.close()
         await browser.close()

@@ -28,6 +28,12 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Doc-fetch batch instrumentation (diagnose HTTP 602 staleness): timestamp of
+# the first ViewDocument fetch this process, and whether we've logged the first
+# success. Lets each 602 report how many seconds into the batch it fired.
+_BATCH_FIRST_TS: float | None = None
+_BATCH_LOGGED_FIRST_OK: bool = False
+
 
 # ── HTTP layer ────────────────────────────────────────────────────────
 
@@ -109,6 +115,13 @@ def download_document_by_fragment(
         raise ValueError("case_id_hex and fragment_id are required")
     if not waf_token:
         raise ValueError("waf_token is required for api/ViewDocument")
+    # Track elapsed time since the first fetch of this batch so a 602 reveals
+    # whether the token is stale from the start (+0s) or expires mid-batch.
+    global _BATCH_FIRST_TS, _BATCH_LOGGED_FIRST_OK
+    _now = time.monotonic()
+    if _BATCH_FIRST_TS is None:
+        _BATCH_FIRST_TS = _now
+    _elapsed = _now - _BATCH_FIRST_TS
     params = {"caseId": case_id_hex, "fragmentId": fragment_id}
     # Build cookie jar — full jar from Playwright if available, else
     # fall back to just the WAF token (legacy behavior).
@@ -122,11 +135,16 @@ def download_document_by_fragment(
     if r.status_code == 602:
         # Tyler Tech's "session invalid" — happens when the WAF cookie expired
         body = r.text[:300] if r.text else ""
-        raise RuntimeError(f"WAF session invalid (HTTP 602). Cookie may have expired. {body}")
+        raise RuntimeError(
+            f"WAF session invalid (HTTP 602) at +{_elapsed:.0f}s into doc-fetch batch. "
+            f"Cookie may have expired. {body}")
     r.raise_for_status()
     ctype = r.headers.get("Content-Type", "").lower()
     if "pdf" not in ctype:
         raise RuntimeError(f"Expected PDF, got Content-Type={ctype!r}, body[:200]={r.content[:200]!r}")
+    if not _BATCH_LOGGED_FIRST_OK:
+        _BATCH_LOGGED_FIRST_OK = True
+        logger.info("case_pdf_extractor: first successful doc fetch at +%.0fs into batch", _elapsed)
     return r.content
 
 
