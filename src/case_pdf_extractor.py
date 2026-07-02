@@ -148,6 +148,54 @@ def download_document_by_fragment(
     return r.content
 
 
+_DISPLAYDOC_URL = _PORTAL_BASE + "/Portal/DocumentViewer/DisplayDoc"
+
+
+def download_document_by_displaydoc(
+    *, fragment_id: str, case_num: str, location_id: str, case_id_num: str,
+    doc_type_id: str, waf_token: str, all_cookies: dict | None = None,
+    timeout: int = 40,
+) -> bytes:
+    """Fetch a document PDF via the portal's DisplayDoc viewer URL — the path
+    the SPA's makeDocumentViewerUrl() actually uses.
+
+    DisplayDoc mints the long_hex server-side and 302-redirects to the
+    UNAUTHENTICATED /Portal/DocumentViewer/Embedded/{long_hex} viewer, which
+    returns the PDF. This needs only the WAF cookie — NOT the Odyssey
+    application "viewer session" that api/ViewDocument demands (that endpoint
+    returns HTTP 602 "Odyssey Request Security: Session is invalid" even from
+    inside a fully-authenticated browser, so cookie freshness was never the
+    real fix). Verified 2026-07-01: returns a real PDF; bypasses the 602 that
+    left ~271 cases queued with 0 fetched.
+
+    All params come from list_case_documents(): documentID=fragment_id,
+    locationId + numeric caseId from the ParentTypeID==1 link, docTypeId from
+    the DocumentType CodeID. caseNum is the human case number.
+    """
+    if not fragment_id:
+        raise ValueError("fragment_id (documentID) is required")
+    params = {
+        "documentID": fragment_id,
+        "caseNum": case_num or "",
+        "locationId": location_id or "",
+        "caseId": case_id_num or "",
+        "docTypeId": doc_type_id or "",
+        "isVersionId": "false",
+    }
+    cookies = dict(all_cookies) if all_cookies else {}
+    if waf_token:
+        cookies["aws-waf-token"] = waf_token
+    r = requests.get(_DISPLAYDOC_URL, params=params, headers=_HEADERS,
+                     cookies=cookies, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    ctype = r.headers.get("Content-Type", "").lower()
+    if "pdf" not in ctype:
+        raise RuntimeError(
+            f"DisplayDoc: expected PDF, got Content-Type={ctype!r} "
+            f"(status {r.status_code}), body[:150]={r.content[:150]!r}")
+    return r.content
+
+
 def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str, Any]]:
     """Return the docket entries for a case along with attached document IDs.
 
@@ -207,11 +255,26 @@ def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str
                         break
                 if fragment_id:
                     break
+            # Extra fields for the DisplayDoc viewer URL (the working
+            # doc-fetch path — see download_document_by_displaydoc). The SPA's
+            # makeDocumentViewerUrl() reads locationId (NodeID) and the numeric
+            # caseId from the ParentLink whose ParentTypeID == "1", plus the
+            # DocumentType CodeID.
+            location_id = ""
+            case_id_num = ""
+            for pl in (doc.get("ParentLinks") or []):
+                if str(pl.get("ParentTypeID")) == "1":
+                    location_id = str(pl.get("NodeID") or "")
+                    case_id_num = str(pl.get("ParentID") or "")
+                    break
             entry["documents"].append({
                 "document_id": str(doc.get("DocumentID") or ""),
                 "document_name": (doc.get("DocumentName") or "").strip(),
                 "document_type_desc": (doc_type.get("Description") or "").strip(),
                 "fragment_id": fragment_id,
+                "location_id": location_id,
+                "case_id_num": case_id_num,
+                "doc_type_id": str(doc_type.get("CodeID") or ""),
             })
         out.append(entry)
     return out
@@ -462,7 +525,7 @@ def fetch_and_parse_will_by_longhex(
 
 def fetch_and_parse_case_docs(
     case_id_hex: str, waf_token: str, doc_types: list[str], *, api_key: str = "",
-    all_cookies: dict | None = None,
+    all_cookies: dict | None = None, case_number: str = "",
 ) -> dict[str, list[dict[str, Any]]]:
     """Fetch + LLM-parse multiple registered doc types from a case in one
     docket round-trip.
@@ -497,15 +560,29 @@ def fetch_and_parse_case_docs(
                 fragment_id = doc.get("fragment_id", "")
                 if not fragment_id:
                     continue
+                # Primary: DisplayDoc viewer URL (WAF-cookie only, bypasses the
+                # api/ViewDocument 602). Fall back to api/ViewDocument only if
+                # DisplayDoc fails for some doc.
                 try:
-                    pdf_bytes = download_document_by_fragment(
-                        case_id_hex, fragment_id, waf_token=waf_token,
-                        all_cookies=all_cookies,
+                    pdf_bytes = download_document_by_displaydoc(
+                        fragment_id=fragment_id, case_num=case_number,
+                        location_id=doc.get("location_id", ""),
+                        case_id_num=doc.get("case_id_num", ""),
+                        doc_type_id=doc.get("doc_type_id", ""),
+                        waf_token=waf_token, all_cookies=all_cookies,
                     )
                 except Exception as e:
-                    logger.warning("PDF fetch failed for %s fragment %s: %s",
-                                   doc_type, fragment_id, e)
-                    continue
+                    logger.warning("DisplayDoc fetch failed for %s fragment %s: %s "
+                                   "— trying api/ViewDocument", doc_type, fragment_id, e)
+                    try:
+                        pdf_bytes = download_document_by_fragment(
+                            case_id_hex, fragment_id, waf_token=waf_token,
+                            all_cookies=all_cookies,
+                        )
+                    except Exception as e2:
+                        logger.warning("api/ViewDocument also failed for %s fragment %s: %s",
+                                       doc_type, fragment_id, e2)
+                        continue
                 text = extract_text(pdf_bytes)
                 if needs_ocr(text):
                     logger.info("%s fragment %s: needs OCR, skipping",

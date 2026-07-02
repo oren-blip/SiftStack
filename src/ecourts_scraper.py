@@ -1094,7 +1094,7 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
         try:
             fetched = fetch_and_parse_case_docs(
                 case_hex, waf_token=waf_token, doc_types=still_needed, api_key=api_key,
-                all_cookies=all_cookies,
+                all_cookies=all_cookies, case_number=n.case_number or "",
             )
         except Exception as e:
             logger.debug("Case-doc fetch failed for %s: %s", n.case_number, e)
@@ -1180,7 +1180,7 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
         try:
             fetched = fetch_and_parse_case_docs(
                 case_hex, waf_token=waf_token, doc_types=needs, api_key=api_key,
-                all_cookies=all_cookies,
+                all_cookies=all_cookies, case_number=entry.get("case_number", ""),
             )
         except Exception as e:
             logger.debug("Queue drain fetch failed for %s: %s", entry.get("case_number"), e)
