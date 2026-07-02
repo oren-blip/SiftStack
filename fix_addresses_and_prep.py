@@ -1669,8 +1669,14 @@ def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], 
         use_cap = _cap_for_use(r.get("Property use", ""))
         if _money(v_str) <= use_cap:
             kept.append(r)
-        else:
-            dropped += 1
+            continue
+        # Over cap. Before dropping, try to repoint a multi-parcel estate to an
+        # under-cap sibling (vacant lot preferred) — keeps Shuford-class estates
+        # whose real lead is a cheap vacant lot next to an over-cap residence.
+        if _try_swap_to_under_cap_sibling(r):
+            kept.append(r)
+            continue
+        dropped += 1
     return kept, dropped
 
 
@@ -2579,6 +2585,24 @@ def _try_swap_to_non_dq_sibling(
     if rank(best)[0] >= 99:
         return False  # every sibling also heir-occupied
 
+    return _apply_sibling_swap(
+        row, best, current_pid,
+        marker=f"[SWAPPED-ON-HEIR-OCCUPIED from {current_pid}: prior main DQ'd]",
+        reason_tag="swap-on-dq", log_label="SWAP-ON-DQ",
+    )
+
+
+def _apply_sibling_swap(row: dict, best, old_pid: str, *,
+                        marker: str, reason_tag: str, log_label: str) -> bool:
+    """Repoint `row`'s main parcel to sibling candidate `best` (mutate in
+    place). Shared by the heir-occupied swap (_try_swap_to_non_dq_sibling) and
+    the over-cap swap (_try_swap_to_under_cap_sibling). Updates
+    address/use/value, keeps Notes coherent (strips the new main from the
+    sibling block, records a marker for the old main), tags the reason, logs,
+    and returns True.
+    """
+    dec = (row.get("Deceased Owner") or "").strip()
+    county = (row.get("County") or "").strip()
     street, city, zipc = _candidate_to_address_parts(best)
     # Vacant/landlocked parcels often have no situs in GIS — fall back to
     # the user's manual convention rather than dumping the mailing-style
@@ -2596,7 +2620,6 @@ def _try_swap_to_non_dq_sibling(
             street = "0 " + situs_text
         else:
             street = "No Address"
-    old_pid = current_pid
     row["Parcel ID"] = best.pid or ""
     row["Property Address"] = street
     row["Property City"] = city
@@ -2610,11 +2633,17 @@ def _try_swap_to_non_dq_sibling(
             new_use = "SFR"
     if new_use:
         row["Property use"] = new_use
+    # Property Value must track the new main — the old value belonged to the
+    # parcel we just swapped away from (e.g. a $720K residence we're leaving
+    # for a cheap vacant lot). Set from the sibling when GIS gave us a value,
+    # else clear so the stale figure doesn't linger (Step 1.7 refills next run;
+    # a blank value is never re-dropped by drop_over_500k).
+    row["Property Value"] = str(int(best.market_value)) if best.market_value else ""
     # Notes coherence: when the sibling-backfill (Step 0.7) already added
     # the new main parcel to Notes as a sibling, we now have it duplicated
     # (Main + Notes both show the same parcel). Strip the new main's PID
-    # from Notes if present, then append a DQ marker for the old main so
-    # the user can still see which parcel got dropped as heir-occupied.
+    # from Notes if present, then append a marker for the old main so
+    # the user can still see which parcel got dropped and why.
     # Taylor 26E000853-350 Week 26: main was Jonathan Dr (heir-occupied),
     # swap moved to 404 S 6th St, but old Notes had 404 S 6th St as PLUS
     # 1 PARCEL while Jonathan Dr disappeared entirely. Both wrong.
@@ -2622,11 +2651,74 @@ def _try_swap_to_non_dq_sibling(
     new_main_pid = (best.pid or "").strip()
     if existing_notes and new_main_pid:
         existing_notes = _strip_parcel_from_notes(existing_notes, new_main_pid)
-    swap_marker = f"[SWAPPED-ON-HEIR-OCCUPIED from {old_pid}: prior main DQ'd]"
-    row["Notes"] = (existing_notes + ("\n" if existing_notes else "") + swap_marker).strip()
-    tag_reason(row, "swap-on-dq")
-    print(f"  SWAP-ON-DQ {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
+    row["Notes"] = (existing_notes + ("\n" if existing_notes else "") + marker).strip()
+    tag_reason(row, reason_tag)
+    print(f"  {log_label} {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
     return True
+
+
+def _try_swap_to_under_cap_sibling(row: dict) -> bool:
+    """For a row whose main parcel exceeds its buy-box value cap, look up the
+    decedent's full estate and swap in a sibling that's under its own cap —
+    preferring a vacant lot. Per Oren's rule, a multi-parcel estate with cheap
+    vacant lots is a live mobile-home-on-land lead even when the residence is
+    over-cap. Mutates `row` and returns True on swap; False when no sibling
+    qualifies.
+
+    Runs at Step 1.8, BEFORE the heir-occupied filter (Step 1.9), which then
+    applies its own vacant-lot exemption to the swapped main.
+
+    Surfaced Week 27: Shuford 26E000779-170 — Step 0 repicked the $720,900
+    residence (1627 Cauble Dairy Rd) as main; over-cap dropped the whole
+    estate, discarding three vacant lots ($308K/$193K/$185K) on Cauble Dairy
+    Rd that are the actual lead.
+    """
+    from nc_gis_lookup import lookup_properties, filter_for_lead_quality
+    dec = (row.get("Deceased Owner") or "").strip()
+    county = (row.get("County") or "").strip()
+    if not dec or not county or "IN THE MATTER" in dec.upper():
+        return False
+    try:
+        cands = lookup_properties(dec, county, min_score=0.7)
+    except Exception:
+        return False
+    kept_cands = filter_for_lead_quality(
+        cands, beneficiaries_json=row.get("Beneficiaries", "") or "", decedent_name=dec,
+    )
+    current_pid = (row.get("Parcel ID") or "").strip()
+    siblings = [c for c in kept_cands if (c.pid or "") and c.pid != current_pid]
+    if not siblings:
+        return False
+
+    def _is_vacant(c) -> bool:
+        use = (c.use_description or c.use_code or "").upper()
+        return "VACANT" in use or "LAND" in use or bool(c.is_vacant_land)
+
+    def _under_cap(c) -> bool:
+        is_vac = _is_vacant(c)
+        cap = _cap_for_use("VACANT LAND" if is_vac
+                           else (simplify_use_code(c.use_code, c.use_description, c.county) or ""))
+        # Unknown value: keep vacant lots (assumed under the $1M vacant cap),
+        # skip unknown-value non-vacant (can't confirm under the $500K cap).
+        if c.market_value is None:
+            return is_vac
+        return float(c.market_value) <= cap
+
+    def rank(c):
+        # vacant first, then situs-present (better main address), then value desc.
+        has_situs = 1 if (c.situs_address or "").strip() else 0
+        return (0 if _is_vacant(c) else 1, 0 if has_situs else 1, -int(c.market_value or 0))
+
+    eligible = [c for c in siblings if _under_cap(c)]
+    if not eligible:
+        return False
+    eligible.sort(key=rank)
+    best = eligible[0]
+    return _apply_sibling_swap(
+        row, best, current_pid,
+        marker=f"[SWAPPED-ON-OVER-CAP from {current_pid}: prior main over buy-box cap]",
+        reason_tag="swap-on-over-cap", log_label="SWAP-ON-CAP",
+    )
 
 
 def _strip_parcel_from_notes(notes: str, pid_to_strip: str) -> str:
@@ -3264,6 +3356,79 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
     return kept, dropped, dm_promoted, promoted, heirs
 
 
+# Low-confidence parcel review band (2B). The scrape/enrichment path accepts a
+# match at >= 0.70. Below that, a blank parcel is normally dropped at Step 4.
+# Instead, when a still-blank row has a DISTINCT front-runner candidate in the
+# review band, keep it with the parcel filled + a loud "Low-Confidence Parcel"
+# flag so Oren can eyeball it rather than silently losing the lead.
+_LOWCONF_MIN = 0.55          # floor: below this is too weak to bother surfacing
+_LOWCONF_MAX = 0.70          # ceiling: the confident accept threshold
+_LOWCONF_SEPARATION = 0.15   # top must be this far ahead of the 2nd candidate
+
+def flag_low_confidence_parcels(rows: list[dict]) -> int:
+    """Keep-and-flag blank-parcel rows whose best GIS candidate sits just under
+    the accept threshold AND is a clear front-runner (a distinct top score in
+    [0.55, 0.70), at least 0.15 ahead of the runner-up). Fills the parcel from
+    that candidate and marks the row 'Low-Confidence Parcel' (Tags + Notes +
+    Match Reason) so it survives Step 4 as a review lead instead of vanishing.
+
+    Deliberately does NOT surface flat ties (e.g. a decedent whose surname
+    yields many equal 0.40 candidates — Owensby-class): with no front-runner
+    there's no signal to pick the right parcel, so those stay blank and drop as
+    before. Oren works those by hand."""
+    from nc_gis_lookup import lookup_properties
+    flagged = 0
+    for r in rows:
+        if (r.get("Parcel ID") or "").strip():
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.4)
+        except Exception:
+            continue
+        if not cands:
+            continue
+        cands = sorted(cands, key=lambda c: (c.match_score or 0), reverse=True)
+        top_score = cands[0].match_score or 0
+        second = (cands[1].match_score or 0) if len(cands) > 1 else 0
+        if not (_LOWCONF_MIN <= top_score < _LOWCONF_MAX):
+            continue
+        if (top_score - second) < _LOWCONF_SEPARATION:
+            continue  # ambiguous — no clear front-runner, don't guess
+        top = cands[0]
+        street, city, zipc = _candidate_to_address_parts(top)
+        if not street:
+            situs = (top.situs_address or "").strip()
+            street = "0 " + situs if (situs and not situs[0].isdigit()) else "No Address"
+        r["Parcel ID"] = top.pid or ""
+        r["Property Address"] = street
+        r["Property City"] = city
+        r["Property State"] = "NC"
+        r["Property Zip"] = zipc
+        use = simplify_use_code(top.use_code, top.use_description, top.county) or ""
+        if not use:
+            use = "Vacant Land" if top.is_vacant_land else ("SFR" if top.is_residential else "")
+        if use:
+            r["Property use"] = use
+        if top.market_value:
+            r["Property Value"] = str(int(top.market_value))
+        pct = int(round(top_score * 100))
+        owner = (top.owner_name or "").strip()
+        tag_reason(r, f"low-confidence-parcel({pct}%)")
+        tags = (r.get("Tags") or "").strip()
+        if "Low-Confidence Parcel" not in tags:
+            r["Tags"] = (tags + ", " if tags else "") + "Low-Confidence Parcel"
+        note = f"[LOW-CONFIDENCE PARCEL {pct}% — VERIFY owner: {owner}]"
+        existing = (r.get("Notes") or "").strip()
+        r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+        print(f"  LOW-CONF {county}/{dec}: pid={top.pid} score={top_score:.2f} owner={owner!r}")
+        flagged += 1
+    return flagged
+
+
 def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"\n=== {tag.upper()}: {src_path.name} ===")
     with src_path.open(newline="", encoding="utf-8-sig") as f:
@@ -3427,6 +3592,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 3.5: clean bad-city / bad-zip leftovers (suffix/state/numeric noise)")
     n_clean_city, n_clean_zip = clean_bad_city_zip_in_place(rows)
     print(f"  Cleaned cities: {n_clean_city}  Reformatted/cleared zips: {n_clean_zip}")
+
+    print("Step 3.7: keep+flag blank-parcel rows with a distinct low-confidence match (review band)")
+    n_lowconf = flag_low_confidence_parcels(rows)
+    print(f"  Low-confidence parcels flagged (kept for review): {n_lowconf}")
 
     print("Step 4: filter to has-parcel; promote DM/beneficiary or apply 'Heirs of' fallback")
     kept, dropped, dm_promoted, promoted, heirs = prep_for_datasift(rows)
