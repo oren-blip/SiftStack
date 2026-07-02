@@ -989,7 +989,15 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "use_desc_field": None,
     },
     "iredell": {
-        "url": "https://maps.iredellcountync.gov/server/rest/services/Data/TaxSQL_Parcels/FeatureServer/0",
+        # FeatureServer/0 started returning HTTP 200 + {"error": 400 "Unable to
+        # perform query operation"} on EVERY query (even where=1=1) around
+        # 2026-07-01 — the layer's query op is broken server-side though it still
+        # advertises the Query capability. The parallel MapServer/0 serves the
+        # same TaxSQL_Parcels data with identical fields and queries fine
+        # (109k parcels, UPPER(Name) LIKE works). Swap back if the FeatureServer
+        # recovers. (MapServer is a touch flaky under rapid-fire requests — the
+        # retry/pagination in _arcgis_query absorbs the occasional 500.)
+        "url": "https://maps.iredellcountync.gov/server/rest/services/Data/TaxSQL_Parcels/MapServer/0",
         "owner_fields": ["Name", "Jan1Own2"],
         "mailing_fields": ["ADD1", "ADD2", "CITY", "STATE", "ZIP"],
         "situs_fields": ["HouseNumber", "SDIR", "STREET", "STYPE", "ST_SUFFIX"],
@@ -1888,7 +1896,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 10  # bumped 2026-06-22 (third bump same day) — estate-marker prefix escape in _name_match_score_one now requires shared 2-char SUFFIX in addition to 4-char prefix (was prefix-only). Blocks Hannah 26E000841-350 DAVID/DAVIS false positive while preserving Sega PAULENE/PAULINE legitimate spelling-drift match. Cache needs invalidation because cached candidate match_scores change for any decedent whose owner had a same-prefix-different-suffix HEIRS entry.
+_PERSIST_VERSION = 11  # bumped 2026-07-01 — Iredell endpoint swapped FeatureServer/0 -> MapServer/0 (FeatureServer query op broke server-side, returning 400 on every query). Cache needs invalidation because cached Iredell entries were all misses (0 candidates) from the broken endpoint and would otherwise mask the now-working lookups.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded

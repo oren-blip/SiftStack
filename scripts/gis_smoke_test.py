@@ -59,7 +59,8 @@ def _owner_strings_from_hits(hits: list[dict]) -> list[str]:
         "CURR_NAME1", "CURR_NAME2",     # Gaston live
         "AcctName1", "AcctName2",        # Cabarrus
         "OwnerName", "OWNER_NAME",       # generic ArcGIS
-        "Name1", "Name2",                # Lincoln/Iredell-ish
+        "Name1", "Name2",                # Lincoln
+        "Name",                          # Iredell (TaxSQL_Parcels)
         "OWN_NAME", "owner",
     ]
     out: list[str] = []

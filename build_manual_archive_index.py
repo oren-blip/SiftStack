@@ -44,12 +44,41 @@ DOWNLOADS_DIR = Path(r"C:\Users\omark\Downloads")
 XLSX_GLOB = "FTM*NC*Estates*.xlsx"
 
 
-def find_latest_xlsx() -> Path:
+CSV_GLOB = "FTM*NC*Estates*Week*.csv"
+
+
+def find_latest_xlsx() -> Path | None:
+    """Latest master workbook in Downloads, or None. The user's workflow moved
+    to per-week CSV exports (see find_weekly_csvs), so a master XLSX is now
+    optional — returning None instead of raising keeps the pipeline from
+    dumping a FileNotFoundError traceback into the daily log."""
     candidates = sorted(DOWNLOADS_DIR.glob(XLSX_GLOB),
                         key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise FileNotFoundError(f"No {XLSX_GLOB} in {DOWNLOADS_DIR}")
-    return candidates[0]
+    return candidates[0] if candidates else None
+
+
+def _week_num(text: str) -> int | None:
+    """Extract the ISO week number from a tab name ('Week 27') or filename
+    ('FTM_2026_NC Estates - Week 27 (1).csv')."""
+    m = re.search(r"week\s*0*(\d+)", text or "", re.I)
+    return int(m.group(1)) if m else None
+
+
+def find_weekly_csvs() -> list[Path]:
+    """Per-week manual CSV exports in Downloads, one Path per ISO week (the
+    most recently modified file wins when a week has multiple '(N)' copies).
+
+    The user exports one CSV per week (e.g. 'FTM_2026_NC Estates - Week 27
+    (1).csv') rather than maintaining a single master workbook, so these are
+    the primary archive source now."""
+    by_week: dict[int, Path] = {}
+    for p in DOWNLOADS_DIR.glob(CSV_GLOB):
+        wk = _week_num(p.name)
+        if wk is None:
+            continue
+        if wk not in by_week or p.stat().st_mtime > by_week[wk].stat().st_mtime:
+            by_week[wk] = p
+    return [by_week[w] for w in sorted(by_week)]
 
 
 def name_token_key(name: str) -> str:
@@ -69,94 +98,130 @@ def cell(v) -> str:
     return str(v).strip()
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--xlsx", default=None, help="Path to the manual XLSX file")
-    args = ap.parse_args()
+def _ingest_table(
+    headers: list[str],
+    rows: list[tuple],
+    week_label: str,
+    index: dict[str, dict],
+    counters: dict[str, int],
+) -> int:
+    """Fold one table (xlsx tab or csv) into the shared index. Returns the
+    number of NEW unique (county, decedent) entries added. First occurrence
+    across all tables wins (tables are ingested oldest-week-first)."""
+    try:
+        col_county = headers.index("County")
+        col_case = headers.index("Case No.")
+        col_dec = headers.index("Deceased Owner")
+    except ValueError:
+        logger.warning("Skipping %s (missing required column)", week_label)
+        return 0
 
-    xlsx_path = Path(args.xlsx) if args.xlsx else find_latest_xlsx()
-    logger.info("Reading manual archive: %s", xlsx_path)
+    def maybe(name: str) -> int | None:
+        return headers.index(name) if name in headers else None
+    optional = {
+        "first_name": maybe("First Name"), "last_name": maybe("Last Name"),
+        "mailing_address": maybe("Mailing Address"), "mailing_city": maybe("Mailing City"),
+        "mailing_state": maybe("Mailing State"), "mailing_zip": maybe("Mailing Zip"),
+        "parcel_id": maybe("Parcel ID"),
+        "property_address": maybe("Property Address"), "property_city": maybe("Property City"),
+        "property_zip": maybe("Property Zip"),
+    }
+
+    added = 0
+    for r in rows:
+        county = cell(r[col_county]) if col_county < len(r) else ""
+        case_no = cell(r[col_case]) if col_case < len(r) else ""
+        dec = cell(r[col_dec]) if col_dec < len(r) else ""
+        if not dec:
+            continue
+        if not case_no:
+            counters["skipped_no_case"] += 1
+            continue
+        key = f"{county.upper()}||{name_token_key(dec)}"
+        if key in index:
+            continue  # first occurrence (oldest week) wins
+        entry = {"case_no": case_no, "week": week_label,
+                 "deceased_owner": dec, "county": county}
+        for name, idx in optional.items():
+            if idx is not None and idx < len(r):
+                val = cell(r[idx])
+                if val:
+                    entry[name] = val
+        index[key] = entry
+        added += 1
+    return added
+
+
+def _load_xlsx_tables(xlsx_path: Path) -> list[tuple[int, str, list[str], list[tuple]]]:
+    """Return (week_num, label, headers, rows) for each 'Week N' tab."""
     wb = load_workbook(xlsx_path, data_only=True)
-
-    week_tabs = [s for s in wb.sheetnames if s.lower().startswith("week ")]
-    logger.info("Found %d week tabs", len(week_tabs))
-
-    index: dict[str, dict] = {}  # key: "COUNTY||sorted-name-tokens"
-    skipped_no_case = 0
-    by_week_counts: dict[str, int] = {}
-
-    for tab in week_tabs:
+    tables = []
+    for tab in (s for s in wb.sheetnames if s.lower().startswith("week ")):
         ws = wb[tab]
         headers = [cell(c.value) for c in ws[1]]
-        try:
-            col_county = headers.index("County")
-            col_case = headers.index("Case No.")
-            col_dec = headers.index("Deceased Owner")
-        except ValueError:
-            logger.warning("Skipping tab %s (missing required column)", tab)
-            continue
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wk = _week_num(tab)
+        tables.append((wk if wk is not None else 9999, f"{tab} (xlsx)", headers, rows))
+    return tables
 
-        # Optional columns — best effort
-        def maybe(name: str) -> int | None:
-            return headers.index(name) if name in headers else None
-        col_first = maybe("First Name")
-        col_last = maybe("Last Name")
-        col_mail_addr = maybe("Mailing Address")
-        col_mail_city = maybe("Mailing City")
-        col_mail_state = maybe("Mailing State")
-        col_mail_zip = maybe("Mailing Zip")
-        col_parcel = maybe("Parcel ID")
-        col_prop_addr = maybe("Property Address")
-        col_prop_city = maybe("Property City")
-        col_prop_zip = maybe("Property Zip")
 
-        added_this_tab = 0
-        for r in ws.iter_rows(min_row=2, values_only=True):
-            county = cell(r[col_county]) if col_county < len(r) else ""
-            case_no = cell(r[col_case]) if col_case < len(r) else ""
-            dec = cell(r[col_dec]) if col_dec < len(r) else ""
-            if not dec:
-                continue
-            if not case_no:
-                skipped_no_case += 1
-                continue
-            key = f"{county.upper()}||{name_token_key(dec)}"
-            entry = {
-                "case_no": case_no,
-                "week": tab,
-                "deceased_owner": dec,
-                "county": county,
-            }
-            for name, idx in [
-                ("first_name", col_first), ("last_name", col_last),
-                ("mailing_address", col_mail_addr), ("mailing_city", col_mail_city),
-                ("mailing_state", col_mail_state), ("mailing_zip", col_mail_zip),
-                ("parcel_id", col_parcel),
-                ("property_address", col_prop_addr), ("property_city", col_prop_city),
-                ("property_zip", col_prop_zip),
-            ]:
-                if idx is not None and idx < len(r):
-                    val = cell(r[idx])
-                    if val:
-                        entry[name] = val
-            # First occurrence wins (oldest week — closer to file date)
-            if key not in index:
-                index[key] = entry
-                added_this_tab += 1
-        by_week_counts[tab] = added_this_tab
+def _load_csv_table(csv_path: Path) -> tuple[int, str, list[str], list[tuple]]:
+    """Return (week_num, label, headers, rows) for one per-week CSV."""
+    import csv as _csv
+    with csv_path.open(encoding="utf-8-sig", newline="") as f:
+        reader = list(_csv.reader(f))
+    headers = [cell(h) for h in reader[0]] if reader else []
+    rows = [tuple(r) for r in reader[1:]]
+    wk = _week_num(csv_path.name)
+    label = f"Week {wk}" if wk is not None else csv_path.stem
+    return (wk if wk is not None else 9999, f"{label} (csv)", headers, rows)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xlsx", default=None, help="Path to a manual XLSX file")
+    args = ap.parse_args()
+
+    # Gather every source table: master XLSX tabs (if any) + per-week CSVs.
+    tables: list[tuple[int, str, list[str], list[tuple]]] = []
+    sources: list[str] = []
+
+    xlsx_path = Path(args.xlsx) if args.xlsx else find_latest_xlsx()
+    if xlsx_path:
+        logger.info("Reading manual XLSX: %s", xlsx_path)
+        tables.extend(_load_xlsx_tables(xlsx_path))
+        sources.append(str(xlsx_path))
+
+    for csv_path in find_weekly_csvs():
+        logger.info("Reading manual CSV: %s", csv_path.name)
+        tables.append(_load_csv_table(csv_path))
+        sources.append(str(csv_path))
+
+    if not tables:
+        logger.warning("No manual archive found in %s (looked for %s and %s). "
+                       "Writing empty index.", DOWNLOADS_DIR, XLSX_GLOB, CSV_GLOB)
+
+    # Oldest week first so first-occurrence-wins keeps the earliest filing.
+    tables.sort(key=lambda t: t[0])
+
+    index: dict[str, dict] = {}  # key: "COUNTY||sorted-name-tokens"
+    counters = {"skipped_no_case": 0}
+    by_label_counts: list[tuple[str, int]] = []
+    for _wk, label, headers, rows in tables:
+        added = _ingest_table(headers, rows, label, index, counters)
+        by_label_counts.append((label, added))
 
     INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     with INDEX_PATH.open("w", encoding="utf-8") as f:
-        json.dump({"_source_xlsx": str(xlsx_path), "_entries": index}, f,
+        json.dump({"_sources": sources, "_entries": index}, f,
                   separators=(",", ":"), ensure_ascii=False)
 
     logger.info("Wrote index: %s", INDEX_PATH)
     logger.info("  Total unique (county, decedent) entries: %d", len(index))
-    logger.info("  Skipped rows without Case No.: %d", skipped_no_case)
-    logger.info("Per-week additions (new unique decedents per tab):")
-    for tab in week_tabs:
-        n = by_week_counts.get(tab, 0)
-        logger.info("  %s: %d", tab, n)
+    logger.info("  Skipped rows without Case No.: %d", counters["skipped_no_case"])
+    logger.info("Per-source additions (new unique decedents):")
+    for label, n in by_label_counts:
+        logger.info("  %s: %d", label, n)
 
 
 if __name__ == "__main__":

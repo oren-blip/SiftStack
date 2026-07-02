@@ -69,6 +69,18 @@ echo [4/6] Polish pipeline (audit, repair, filters, beneficiary promotion)...
 echo [5/6] eCourts name-search backfill for remaining blank Case No....
 "D:\SiftStack\.venv\Scripts\python.exe" backfill_case_numbers_from_ecourts.py >> "logs\nc_daily_run.log" 2>&1
 
+REM Deep prospecting -- ON by default. --all-cases: Tracerfy + Trestle EVERY
+REM row's contact (PR or discovered heir) so the whole sheet has phones +
+REM dial-priority before DataSift upload; heir research still runs on no-contact
+REM rows. NC_DP_MAX_ROWS caps the research subset (tracing itself is uncapped).
+REM To turn OFF for a run:  set NC_DEEP_PROSPECT=0
+echo [5.5/6] Deep prospecting + all-cases skip trace/score...
+if "%NC_DEEP_PROSPECT%"=="0" (
+    echo   skipped -- NC_DEEP_PROSPECT=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" nc_deep_prospect.py --all-cases >> "logs\nc_daily_run.log" 2>&1
+)
+
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_daily_run.log" 2>&1
 echo [7/7] Daily report (file + email)...

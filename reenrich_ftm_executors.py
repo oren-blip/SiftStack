@@ -405,7 +405,7 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
         "Property Value": 14,
-        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Phone 1 Tier": 12, "Tags": 26, "List": 10,
     }
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(col_name, 14)

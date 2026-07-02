@@ -54,6 +54,9 @@ FTM_COLUMNS = [
     "Notes",
     "Beneficiaries",
     "Phone 1",
+    # Trestle dial-priority for Phone 1 (the main contact / PR). Populated by
+    # nc_deep_prospect.py --all-cases when phone scoring runs; blank otherwise.
+    "Phone 1 Tier",
     "Tags",
     "List",
     # Audit aid: how each row landed in its current state. Empty = parcel +
@@ -73,6 +76,9 @@ FTM_COLUMNS = [
     "DM Name",
     "DM Relationship",
     "DM Phone",
+    # Trestle dial-priority for DM Phone (Dial First/Second/Third/Fourth/Drop).
+    # Populated by nc_deep_prospect.py when phone scoring runs; blank otherwise.
+    "DM Phone Tier",
     "DM Email",
     "DM 2 Name",
     "DM 2 Relationship",
@@ -388,11 +394,13 @@ def notice_to_ftm_row(
         "Notes":            _build_notes(extra_parcels=extra_parcels),
         "Beneficiaries":    _build_beneficiaries(notice),
         "Phone 1":          notice.primary_phone,
+        "Phone 1 Tier":     "",
         "Tags":             tag,
         "List":             "PROBATE",
         "DM Name":          notice.decision_maker_name or "",
         "DM Relationship":  notice.decision_maker_relationship or "",
         "DM Phone":         "",
+        "DM Phone Tier":    "",
         "DM Email":         "",
         "DM 2 Name":        notice.decision_maker_2_name or "",
         "DM 2 Relationship": notice.decision_maker_2_relationship or "",
@@ -604,11 +612,11 @@ def write_ftm_xlsx(
         "Parcel ID": 16, "Property Address": 28, "Property City": 16,
         "Property State": 8, "Property Zip": 8, "Property use": 14,
         "Property Value": 14,
-        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Tags": 26, "List": 10,
+        "Notes": 40, "Beneficiaries": 80, "Phone 1": 14, "Phone 1 Tier": 12, "Tags": 26, "List": 10,
         "Match Reason": 24,
         "Zillow URL": 50,
         # Heir / Decision Maker columns
-        "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Email": 26,
+        "DM Name": 22, "DM Relationship": 14, "DM Phone": 14, "DM Phone Tier": 13, "DM Email": 26,
         "DM 2 Name": 22, "DM 2 Relationship": 14,
         "DM 3 Name": 22, "DM 3 Relationship": 14,
         # Will-extracted PR (visible 2026-06-23) — full middle names + relationship
