@@ -1887,6 +1887,15 @@ def _current_iso_week(rows: list[dict]) -> str | None:
     return f"Week {counts.most_common(1)[0][0]}"
 
 
+def _week_number(label: str) -> int | None:
+    """Extract the ISO week number from any week label. Archive entries store
+    the week in several shapes depending on source — 'Week 27', 'Week 27 2026'
+    (legacy XLSX tab), 'Week 27 (csv)' (per-week CSV) — so cross-week dedup
+    must compare NUMBERS, not raw strings, or the same week reads as different."""
+    m = re.search(r"week\s*0*(\d+)", label or "", re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
 def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
     """Compare each row against the manual XLSX archive of prior pulls.
 
@@ -1924,12 +1933,22 @@ def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
             if not (r.get("Case No.") or "").strip():
                 no_match += 1
             continue
-        # Match found — decide whether it's a cross-week duplicate
+        # Match found — decide whether it's a cross-week duplicate. Compare by
+        # ISO WEEK NUMBER (not raw label): the archive stores weeks as
+        # "Week 27 (csv)" / "Week 27 2026" / "Week 27" depending on source, so a
+        # string compare treats the SAME week as different and wrongly drops
+        # current-week cases the user pulled by hand this week (Shuford/Deal/
+        # Ramsey 26E000779/780-170, 26E000647-480 — Week 27).
         archive_week = entry.get("week", "")
+        cur_wk = _week_number(current_week or "")
+        arc_wk = _week_number(archive_week)
         is_blank_case = not (r.get("Case No.") or "").strip()
-        is_prior_week = current_week and archive_week and archive_week != current_week
-        if not is_blank_case and not is_prior_week:
-            continue  # current week archive match — keep, not a dupe
+        is_prior_week = cur_wk is not None and arc_wk is not None and arc_wk < cur_wk
+        # Note: we do NOT skip same-week matches. The manual pull is
+        # authoritative, so we still backfill BLANK fields from it below (fills
+        # only gaps, never overrides scraped data) — this heals scrape-time
+        # misses like a parcel a GIS outage dropped (Ramsey/Iredell, Week 27).
+        # Only the DROP is gated on a genuinely prior week (see below).
 
         if is_blank_case:
             # Backfill the case number from archive
@@ -1954,13 +1973,15 @@ def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
         marker = f"manual-archive:{entry.get('week', '?')}"
         if marker not in existing_tags:
             r["Tags"] = f"{existing_tags} | {marker}" if existing_tags else marker
-        # Mark for drop — these are cross-week duplicates: the case was
-        # filed weeks ago and the user already has it in their pipeline.
-        # The current row is just the newspaper-published Notice-to-
-        # Creditors which doesn't add value.
-        r["_archive_duplicate"] = True
-        print(f"  Archive match (drop as cross-week dupe): {county}/{dec!r} -> "
-              f"case {entry['case_no']} (from {entry.get('week', '?')})")
+        # Drop ONLY for a genuinely PRIOR week: the case was filed weeks ago and
+        # the user already has it in an earlier week's pipeline, so this row is
+        # just the later newspaper Notice-to-Creditors. A same-week match is the
+        # user's own current pull of the same case — keep it (same-week dupes are
+        # handled by the soft-dedup and collapse steps, not here).
+        if is_prior_week:
+            r["_archive_duplicate"] = True
+            print(f"  Archive match (drop as cross-week dupe): {county}/{dec!r} -> "
+                  f"case {entry['case_no']} (from {entry.get('week', '?')})")
         backfilled += 1
     return backfilled, no_match
 
@@ -2223,6 +2244,15 @@ def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
         if (r.get("Property Zip") or "").strip():
             r["Mailing Zip"] = r["Property Zip"]
         tag_reason(r, "mailing-from-property")
+        # Keep-but-flag (Oren 2026-07-01): we had NO independent address for this
+        # PR / interested person, so we're mailing to the property itself. That
+        # often means they live there (heir-occupied) — but we can't confirm
+        # without the court Application. Surface it for manual review rather than
+        # dropping or silently mailing. Austin 26E000883-350 (Cantler @ 119 Cane
+        # Forest Dr) is the motivating case.
+        tags = (r.get("Tags") or "").strip()
+        if "Verify: No PR Address" not in tags:
+            r["Tags"] = (tags + ", " if tags else "") + "Verify: No PR Address"
         filled += 1
     return filled
 
@@ -2292,6 +2322,29 @@ def _street_core_tokens(addr: str | None) -> set[str]:
         if t and t not in _STREET_SUFFIX_TOKENS:
             core.add(t)
     return core
+
+
+def _streets_near_identical(a_addr: str | None, b_addr: str | None) -> bool:
+    """True when two street names are the SAME modulo a typo/abbreviation —
+    every distinctive core token in the shorter name has an exact or fuzzy
+    (>=0.80 similarity) match in the longer one. Catches 'Swallow Trail Lane'
+    vs 'Swallow Tail Ln' (Walsh 26E002459-590: heir Cook's mailing == property,
+    just misspelled) while rejecting genuinely different streets that merely
+    share a house number ('Main' vs 'Oak'). Caller must also confirm the house
+    number + ZIP match before treating this as heir-occupied.
+    """
+    import difflib
+    ca, cb = _street_core_tokens(a_addr), _street_core_tokens(b_addr)
+    if not ca or not cb:
+        return False
+    small, big = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
+    for t in small:
+        if t in big:
+            continue
+        if any(difflib.SequenceMatcher(None, t, u).ratio() >= 0.80 for u in big):
+            continue
+        return False  # a distinctive token with no near-match — different street
+    return True
 
 
 def _same_property_by_number_zip(
@@ -2451,10 +2504,17 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         # (two streets can share a number within one ZIP). Catches Hoover
         # 26E000875-350: mailing "2535 Old Highway 27" == property "2535 Old
         # NC 27 Hwy" (son lives in the decedent's house).
+        m_addr, p_addr = r.get("Mailing Address"), r.get("Property Address")
         if _same_property_by_number_zip(
-            r.get("Mailing Address"), r.get("Mailing Zip"),
-            r.get("Property Address"), r.get("Property Zip"),
+            m_addr, r.get("Mailing Zip"), p_addr, r.get("Property Zip"),
         ):
+            # Same house# + ZIP. If the street names are also near-identical
+            # (typo/abbrev, e.g. "Swallow Trail Lane" vs "Swallow Tail Ln"),
+            # it's confidently the same property — DROP (heir lives there). If
+            # only one distinctive token is shared, it's weaker — swap-only, so
+            # a single-parcel lead survives (two streets can share a number).
+            if _streets_near_identical(m_addr, p_addr):
+                return (True, "dq-executor-at-property-street-typo")
             return (True, "dq-executor-at-property-hn")
         return (False, "")
 
