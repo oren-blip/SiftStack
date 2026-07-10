@@ -104,13 +104,16 @@ FTM_COLUMNS = [
     # Internal — needed by case_doc_queue to update this row on a
     # future daily run when a delayed PDF finally lands.
     "Case ID (hex)",
+    # Internal — the decedent's own address from Odyssey. Feeds the
+    # same-name tiebreaker in nc_gis_lookup._situs_affinity.
+    "Decedent Address",
 ]
 
 # Columns that exist in the data but are hidden from the xlsx display.
 # Case Status is a silent guardrail — every kept row should be "Pending"
 # (polish drops Disposed/Closed). Hiding it removes visual noise but
 # preserves the field for audit / debugging / future use.
-HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)"}
+HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address"}
 
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
@@ -415,6 +418,7 @@ def notice_to_ftm_row(
         "Attorney (App)":          getattr(notice, "application_attorney_name", "") or "",
         "Heirs (App)":             getattr(notice, "application_heirs_json", "") or "",
         "Case ID (hex)":           getattr(notice, "case_id_hex", "") or "",
+        "Decedent Address":        getattr(notice, "decedent_address", "") or "",
     }
 
 

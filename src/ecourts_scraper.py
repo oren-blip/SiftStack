@@ -916,6 +916,13 @@ def _enrich_with_parties(
             )
             if looks_bad:
                 n.decedent_name = dec.full_name
+            # Keep the decedent's OWN address. The executor's and the
+            # beneficiaries' addresses are captured below; the decedent's used
+            # to be thrown away, even though it is the single best signal for
+            # telling two same-named people apart (nc_gis_lookup._situs_affinity).
+            dec_addr = dec.first_address
+            if not dec_addr.is_blank() and dec_addr.line1:
+                n.decedent_address = dec_addr.line1
         else:
             # Parties came back but none matched _DECEDENT_TYPES. Surface
             # the actual connection types so we can extend the set.

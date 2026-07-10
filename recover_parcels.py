@@ -171,9 +171,10 @@ def main() -> None:
             kept = filter_for_lead_quality(results)
             if not kept:
                 continue
-            # Pick the best parcel (suffix > use_tier > value > acres) —
-            # collapse_by_case will treat it as main and list extras in Notes.
-            best = pick_best_candidate(kept, dec)
+            # Pick the best parcel (suffix > score > decedent-address affinity >
+            # middle name > use_tier > value > acres) — collapse_by_case will
+            # treat it as main and list extras in Notes.
+            best = pick_best_candidate(kept, dec, r.get("Decedent Address") or "")
             if not best:
                 continue
             found = best

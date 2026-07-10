@@ -62,6 +62,10 @@ class NoticeData:
     lot_size: str = ""             # Lot size in sqft
     # Probate-specific fields
     decedent_name: str = ""        # Deceased person's name (probate only)
+    # The decedent's OWN address, straight from Odyssey's Parties response.
+    # Not the executor's. Used as a positive tiebreaker when two same-named
+    # people both match a deed — see nc_gis_lookup._situs_affinity.
+    decedent_address: str = ""     # Street line only ("1320 Bear Poplar Rd")
     owner_street: str = ""         # PR/contact mailing street address
     owner_city: str = ""           # PR/contact mailing city
     owner_state: str = ""          # PR/contact mailing state

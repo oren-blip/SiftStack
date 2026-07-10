@@ -209,7 +209,7 @@ def research_blank_parcels(
             kept = [c for c in kept if (county.lower(), c.pid or "") not in rejected]
             if not kept:
                 continue
-            best = pick_best_candidate(kept, dec)
+            best = pick_best_candidate(kept, dec, r.get("Decedent Address") or "")
             if not best:
                 continue
             found = best
@@ -1180,7 +1180,7 @@ def validate_existing_matches(
                 beneficiaries_json=r.get("Beneficiaries", "") or "",
                 decedent_name=dec,
             )
-            best = pick_best_candidate(kept, dec)
+            best = pick_best_candidate(kept, dec, r.get("Decedent Address") or "")
             if best is None or best.pid == pid:
                 continue
             # Only swap if the rank really moved (don't churn on equal tuples).
