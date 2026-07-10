@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -1035,19 +1036,27 @@ _DOC_APPLIERS = {
 
 def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
                             all_cookies: dict | None = None) -> int:
-    """For each probate notice with a case_id, fetch + LLM-parse all
-    registered doc types (will, application). On miss, add to pending
-    queue for retry on subsequent daily runs. Mutates notice fields in
-    place; persists case_id_hex onto the notice so polish can find the
-    right row to update if a delayed PDF lands later.
+    """Apply already-fetched case docs (will, application) to this run's
+    probate notices, and queue the ones we still don't have.
 
-    Returns count of notices where at least one doc type was successfully
-    parsed (either fresh or from prior-run cache).
+    Does NOT fetch. Odyssey throttles document downloads to ~6 then ~1 per 50s
+    (per-IP), and at this point in the run we don't yet know whether a case
+    will survive polish or already has a PR from the Parties API — measured
+    2026-07-08, two thirds of queued cases get dropped by polish and most
+    survivors already have a PR, so eager fetching spent the whole quota on
+    rows that never reach the sheet. drain_pending_case_docs() runs earlier in
+    the same run and spends the quota only on rows that actually lack a PR.
+
+    Mutates notice fields in place; persists case_id_hex onto the notice so
+    polish can find the right row to update if a delayed PDF lands later.
+
+    `waf_token` / `all_cookies` are unused now but kept so the call sites (and
+    a future same-run fetch) don't have to change.
+
+    Returns count of notices where at least one doc type was applied from cache.
     """
-    import time as _time
     try:
-        import case_pdf_extractor  # triggers DocTypeSpec registration
-        from case_pdf_extractor import fetch_and_parse_case_docs
+        import case_pdf_extractor  # noqa: F401 — triggers DocTypeSpec registration
         import case_doc_queue as cdq
         import config as cfg
     except Exception as e:
@@ -1088,44 +1097,15 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
                 enriched += 1
             continue
 
-        if i > 0 and not cached_types:
-            _time.sleep(1.5)  # polite cadence on fresh fetches
-
-        try:
-            fetched = fetch_and_parse_case_docs(
-                case_hex, waf_token=waf_token, doc_types=still_needed, api_key=api_key,
-                all_cookies=all_cookies, case_number=n.case_number or "",
-            )
-        except Exception as e:
-            logger.debug("Case-doc fetch failed for %s: %s", n.case_number, e)
-            fetched = {dt: [] for dt in still_needed}
-
-        misses: list[str] = []
-        for dt in still_needed:
-            results = fetched.get(dt) or []
-            if not results:
-                misses.append(dt)
-                continue
-            # Multiple matching docs (rare — codicil, amended application).
-            # Take the first; cache + apply.
-            parsed = results[0]
-            cdq.record_fetched(case_hex, dt, parsed)
-            cdq.mark_fetched(case_hex, dt)  # in case it was previously pending
-            applier = _DOC_APPLIERS[dt]
-            applier(n, parsed)
-            applied_any = True
-            logger.info("eCourts: %s -> %s extracted (%s)",
-                        n.case_number, dt, parsed.get("_meta", {}).get("event_label", ""))
-
-        # Queue any misses for retry on subsequent runs
-        if misses:
-            cdq.add_to_pending(
-                case_hex,
-                case_number=n.case_number,
-                county=n.county,
-                notice_type=n.notice_type,
-                needed_doc_types=misses,
-            )
+        # Queue whatever we don't already have. The drain spends the throttled
+        # quota on these, filtered down to rows that still lack a PR.
+        cdq.add_to_pending(
+            case_hex,
+            case_number=n.case_number,
+            county=n.county,
+            notice_type=n.notice_type,
+            needed_doc_types=still_needed,
+        )
 
         if applied_any:
             enriched += 1
@@ -1138,6 +1118,52 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
         logger.info("eCourts: pending case-docs queue = %d cases, by type: %s",
                     summary["total_cases"], summary["by_doc_type"])
     return enriched
+
+
+def cases_needing_docs(max_age_days: int = 30) -> set[str]:
+    """Case numbers whose polished row still has no named Personal
+    Representative — the only rows a court document can improve.
+
+    A case document is worth ~50s of Odyssey's throttled quota, so we only
+    spend it where it changes the sheet. Two thirds of the queue is cases the
+    polish pipeline later drops (no parcel, over buy-box cap, heir-occupied),
+    and most survivors already got a PR from the OData Parties API. Measured
+    2026-07-08: 389 queued cases -> 13 that actually need a document.
+
+    Reads the most recent polished CSVs (including archived weeks — Oren wants
+    a 30-day window regardless of archive state). A case scraped tonight won't
+    appear until tomorrow's polish, so its doc lands one run later; that is
+    well ahead of when the row gets worked.
+    """
+    import csv as _csv
+    cutoff = time.time() - max_age_days * 86400
+    # case_no -> (mtime of the file it came from, has_pr). Newest file wins:
+    # a case that lacked a PR last week but has one now must NOT be re-fetched.
+    latest: dict[str, tuple[float, bool]] = {}
+    for root, _dirs, files in os.walk("output"):
+        for fn in files:
+            if not (fn.endswith("_dm_enriched.csv") or fn.endswith("_datasift.csv")):
+                continue
+            fp = os.path.join(root, fn)
+            try:
+                mtime = os.path.getmtime(fp)
+                if mtime < cutoff:
+                    continue
+                with open(fp, newline="", encoding="utf-8-sig") as f:
+                    for r in _csv.DictReader(f):
+                        case_no = (r.get("Case No.") or "").strip().upper()
+                        if not case_no:
+                            continue
+                        prev = latest.get(case_no)
+                        if prev and prev[0] >= mtime:
+                            continue
+                        pr = (r.get("Personal Representative")
+                              or r.get("Executor Full Name") or "").strip()
+                        has_pr = bool(pr) and not pr.lower().startswith("heirs of")
+                        latest[case_no] = (mtime, has_pr)
+            except (OSError, UnicodeDecodeError, _csv.Error) as e:
+                logger.debug("cases_needing_docs: skipping %s (%s)", fp, e)
+    return {c for c, (_mtime, has_pr) in latest.items() if not has_pr}
 
 
 def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) -> int:
@@ -1155,7 +1181,7 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
     import time as _time
     try:
         import case_pdf_extractor  # triggers registration
-        from case_pdf_extractor import fetch_and_parse_case_docs
+        from case_pdf_extractor import DocRateLimited, fetch_and_parse_case_docs
         import case_doc_queue as cdq
         import config as cfg
     except Exception as e:
@@ -1169,25 +1195,47 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
     pending = cdq.load_pending()
     if not pending:
         return 0
-    logger.info("eCourts: draining pending-doc queue — %d case(s) to retry", len(pending))
+
+    # Odyssey's document quota is ~6 fetches then ~1 per 50s, so spend it only
+    # on rows a document can actually improve. Everything else stays queued.
+    needed = cases_needing_docs()
+    targets = [(h, e) for h, e in pending.items()
+               if (e.get("case_number") or "").strip().upper() in needed and e.get("needs")]
+    logger.info("eCourts: pending-doc queue = %d case(s); %d still lack a PR "
+                "and will be fetched", len(pending), len(targets))
+    if not targets:
+        return 0
+
     fetches = 0
-    for i, (case_hex, entry) in enumerate(pending.items()):
+    throttled = False
+    for i, (case_hex, entry) in enumerate(targets):
+        if throttled:
+            break
         if i > 0:
             _time.sleep(1.5)
-        needs = entry.get("needs", [])
-        if not needs:
-            continue
-        try:
-            fetched = fetch_and_parse_case_docs(
-                case_hex, waf_token=waf_token, doc_types=needs, api_key=api_key,
-                all_cookies=all_cookies, case_number=entry.get("case_number", ""),
-            )
-        except Exception as e:
-            logger.debug("Queue drain fetch failed for %s: %s", entry.get("case_number"), e)
-            continue
-        for dt, results in fetched.items():
-            if not results:
+        # Application carries applicant + relationship + mailing address + DOD +
+        # heirs; the will only adds PR + relationship. Try the richer one first
+        # and stop as soon as one lands — filling the PR drops this case out of
+        # cases_needing_docs() next run, so the will costs nothing.
+        for dt in sorted(entry.get("needs", []), key=lambda d: d != "application"):
+            try:
+                fetched = fetch_and_parse_case_docs(
+                    case_hex, waf_token=waf_token, doc_types=[dt], api_key=api_key,
+                    all_cookies=all_cookies, case_number=entry.get("case_number", ""),
+                )
+            except DocRateLimited:
+                logger.warning("eCourts: document quota exhausted after %d fetch(es) — "
+                               "%d case(s) stay queued for the next run",
+                               fetches, len(targets) - i)
+                throttled = True
+                break
+            except Exception as e:
+                logger.debug("Queue drain fetch failed for %s (%s): %s",
+                             entry.get("case_number"), dt, e)
                 continue
+            results = fetched.get(dt) or []
+            if not results:
+                continue  # doc type absent from this docket — try the next one
             parsed = results[0]
             cdq.record_fetched(case_hex, dt, parsed)
             cdq.mark_fetched(case_hex, dt)
@@ -1195,6 +1243,7 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
             logger.info("Queue drain: %s -> %s landed (%s)",
                         entry.get("case_number"), dt,
                         parsed.get("_meta", {}).get("event_label", ""))
+            break  # one good document is enough for this case
     return fetches
 
 

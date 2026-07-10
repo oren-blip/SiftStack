@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from io import BytesIO
@@ -33,6 +34,27 @@ logger = logging.getLogger(__name__)
 # success. Lets each 602 report how many seconds into the batch it fired.
 _BATCH_FIRST_TS: float | None = None
 _BATCH_LOGGED_FIRST_OK: bool = False
+
+
+class DocRateLimited(RuntimeError):
+    """Odyssey is throttling document downloads.
+
+    The DocumentViewer/Embedded endpoint answers HTTP 202 with an empty
+    body once the caller is over quota. Measured 2026-07-08: the bucket
+    holds ~6 documents and refills at roughly one per 50s. It is keyed on
+    client IP, not on the WAF token — a stale token behaves identically to
+    a fresh one, and re-solving the WAF does not reset it.
+
+    This is NOT a per-document failure: the same fragment returns a real
+    PDF once the bucket refills. So never fall through to api/ViewDocument
+    on this (that endpoint always 602s) and never mark the doc as missing.
+    """
+
+
+# Backoff applied when Odyssey throttles a document fetch. One refill token
+# lands roughly every 50s, so 60s is a little over one token.
+DOC_BACKOFF_SECONDS = int(os.environ.get("NC_DOC_BACKOFF_SECONDS", "60"))
+DOC_MAX_RETRIES = int(os.environ.get("NC_DOC_MAX_RETRIES", "2"))
 
 
 # ── HTTP layer ────────────────────────────────────────────────────────
@@ -188,12 +210,39 @@ def download_document_by_displaydoc(
     r = requests.get(_DISPLAYDOC_URL, params=params, headers=_HEADERS,
                      cookies=cookies, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
+    # DisplayDoc 302s to DocumentViewer/Embedded; that endpoint answers 202 +
+    # empty body when we're over the per-IP document quota. Distinguish it from
+    # a genuine "this document is unreadable" so callers can back off instead
+    # of burning the doc's retry budget.
+    if r.status_code == 202 and not r.content:
+        raise DocRateLimited(
+            f"throttled by Odyssey (HTTP 202, empty body) on fragment {fragment_id}")
     ctype = r.headers.get("Content-Type", "").lower()
     if "pdf" not in ctype:
         raise RuntimeError(
             f"DisplayDoc: expected PDF, got Content-Type={ctype!r} "
             f"(status {r.status_code}), body[:150]={r.content[:150]!r}")
     return r.content
+
+
+def _displaydoc_with_backoff(**kwargs) -> bytes:
+    """download_document_by_displaydoc, retrying while Odyssey throttles us.
+
+    Raises DocRateLimited if the quota never frees up within the retry budget —
+    the caller should stop the batch and leave the doc queued rather than grind
+    through hundreds of guaranteed-202 fetches (which is what produced the
+    190-218 nightly "failures" before 2026-07-08).
+    """
+    for attempt in range(1, DOC_MAX_RETRIES + 2):
+        try:
+            return download_document_by_displaydoc(**kwargs)
+        except DocRateLimited:
+            if attempt > DOC_MAX_RETRIES:
+                raise
+            logger.info("Doc fetch throttled — backing off %ds (attempt %d/%d)",
+                        DOC_BACKOFF_SECONDS, attempt, DOC_MAX_RETRIES + 1)
+            time.sleep(DOC_BACKOFF_SECONDS)
+    raise DocRateLimited("unreachable")  # pragma: no cover
 
 
 def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str, Any]]:
@@ -564,13 +613,18 @@ def fetch_and_parse_case_docs(
                 # api/ViewDocument 602). Fall back to api/ViewDocument only if
                 # DisplayDoc fails for some doc.
                 try:
-                    pdf_bytes = download_document_by_displaydoc(
+                    pdf_bytes = _displaydoc_with_backoff(
                         fragment_id=fragment_id, case_num=case_number,
                         location_id=doc.get("location_id", ""),
                         case_id_num=doc.get("case_id_num", ""),
                         doc_type_id=doc.get("doc_type_id", ""),
                         waf_token=waf_token, all_cookies=all_cookies,
                     )
+                except DocRateLimited:
+                    # Quota exhausted. The doc is fine — we're not allowed to
+                    # read it right now. Propagate so the batch stops; the doc
+                    # stays queued for the next run.
+                    raise
                 except Exception as e:
                     logger.warning("DisplayDoc fetch failed for %s fragment %s: %s "
                                    "— trying api/ViewDocument", doc_type, fragment_id, e)
