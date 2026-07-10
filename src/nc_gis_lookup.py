@@ -101,6 +101,35 @@ def _normalize_name(name: str) -> str:
     return n
 
 
+# Odyssey sometimes returns a caption name rather than a bare person name:
+#   "Dorothy Lee Cline Pierce, The Estate of Dorothy L. Pierce aka"
+# Left alone, split_decedent_name() reads that as first="THE",
+# last="DOROTHY LEE CLINE PIERCE" and every score collapses to 0.00 — the
+# decedent becomes unfindable. Week 28: Pierce 26E000799-170 was dropped for
+# "no parcel" even though her deed ("PIERCE DOROTHY L TRUSTEE") scores 1.00
+# against the cleaned name.
+_ESTATE_TAIL_RE = re.compile(r",?\s*\bthe\s+estate\s+of\b.*$", re.I)
+_ESTATE_LEAD_RE = re.compile(r"^\s*(?:the\s+)?estate\s+of\s+", re.I)
+_AKA_TAIL_RE = re.compile(
+    r"[,;]?\s*\b(?:a[./]?k[./]?a[./]?|f[./]?k[./]?a[./]?|n[./]?k[./]?a[./]?|formerly)(?:\b|\s|$).*$",
+    re.I,
+)
+
+
+def clean_decedent_name(name: str) -> str:
+    """Strip 'Estate of' captions and aka/fka tails from a decedent name."""
+    if not name:
+        return ""
+    # Lead first: "The Estate of John Smith" -> "John Smith". If the tail rule
+    # ran first it would swallow the whole string.
+    s = _ESTATE_LEAD_RE.sub("", name)
+    s = _ESTATE_TAIL_RE.sub("", s)
+    s = _AKA_TAIL_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip().strip(",").strip()
+    # Never return empty — a caption we don't understand is better than nothing.
+    return s or name.strip()
+
+
 def split_decedent_name(name: str) -> tuple[str, str, str]:
     """Best-effort split into (first, middle, last).
 
@@ -109,11 +138,13 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
     - "Barlow, Helen Barbara"       → ("HELEN", "BARBARA", "BARLOW")  (Odyssey API)
     - "Thrower, James W Jr."        → ("JAMES", "W", "THROWER")        (suffix stripped first)
     Single-token names → ("", "", name).
+
+    Estate-of captions and aka tails are stripped first (clean_decedent_name).
     """
     if not name:
         return ("", "", "")
     # Comma format: "Last, First Middle" — split on comma BEFORE normalizing
-    raw = name.strip()
+    raw = clean_decedent_name(name)
     if "," in raw:
         last_part, _, first_part = raw.partition(",")
         # Suffixes in first_part are handled by _normalize_name's noise strip
@@ -133,8 +164,10 @@ def split_decedent_name(name: str) -> tuple[str, str, str]:
         if len(first_tokens) == 1:
             return (first_tokens[0], "", last)
         return (first_tokens[0], " ".join(first_tokens[1:]), last)
-    # No comma — treat as "First Middle Last"
-    norm = _normalize_name(name)
+    # No comma — treat as "First Middle Last". Must use the CLEANED string:
+    # stripping an estate caption often removes the only comma, so this branch
+    # is exactly where a polluted name lands.
+    norm = _normalize_name(raw)
     if not norm:
         return ("", "", "")
     parts = norm.split()
@@ -1001,12 +1034,19 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "use_desc_field": "DESC1_DESC",
     },
     "catawba": {
-        "url": "https://services1.arcgis.com/aT1T0pU1ZdpuDk1t/arcgis/rest/services/PP3_Q1_Map_WFL1/FeatureServer/5",
+        # NOTE: Catawba does NOT use ArcGIS. Name search goes through the PHP
+        # endpoint (_lookup_catawba) and address search + valuation through
+        # GeoServer WFS (_catawba_wfs_query). No `url` here on purpose — the old
+        # services1.arcgis.com/PP3_Q1_Map_WFL1 snapshot is dead, and leaving it
+        # in place invited callers to query it. The remaining keys describe the
+        # WFS `catawba:parcels_plus` field names, which is what
+        # lookup_by_address() hands back for this county.
+        "url": None,
         "owner_fields": ["owner", "owner2"],
-        "mailing_fields": ["address", "address2", "city", "state", "zip"],
+        "mailing_fields": ["oaddress", "ocity", "ozip"],
         "situs_fields": ["paddress"],
-        "parcel_field": "PIN",
-        "use_field": "zoning",
+        "parcel_field": "pin",   # GeoServer returns lowercase
+        "use_field": None,       # no use code; vacancy comes from bldg_value == 0
         "use_desc_field": None,
     },
     "iredell": {
@@ -1707,11 +1747,93 @@ def _lookup_catawba(decedent_name: str, min_score: float = 0.7) -> list[Property
         if existing is None or c.match_score > existing.match_score:
             best_by_pid[pid] = c
     candidates = sorted(best_by_pid.values(), key=lambda c: -c.match_score)
+    # The PHP owner table carries no valuation, so every Catawba candidate used
+    # to arrive with market_value=None — which silently disabled BOTH the $500K
+    # buy-box cap and the $10K standalone floor for the entire county. Enrich
+    # from the county's GeoServer parcel layer.
+    _catawba_enrich_values(candidates)
     logger.info(
         "Catawba GIS (PHP): %r → %d raw rows → %d unique parcels matching (min_score=%.2f)",
         decedent_name, len(rows), len(candidates), min_score,
     )
     return candidates
+
+
+# Catawba's public viewer is OpenLayers over GeoServer — there is no ArcGIS
+# REST here (/arcgis/rest/services 404s). `catawba:parcels_plus` is the only
+# layer carrying owner + property address + mailing + valuation.
+_CATAWBA_WFS_URL = "https://gis.catawbacountync.gov/geoserver/wfs"
+_CATAWBA_WFS_LAYER = "catawba:parcels_plus"
+_CATAWBA_WFS_FIELDS = (
+    "pin,paddress,pcity,pzip,owner,oaddress,ocity,ozip,"
+    "bldg_value,land_value,total_valu"
+)
+
+
+def _catawba_wfs_query(cql: str, *, max_features: int = 200) -> list[dict]:
+    """Run a CQL query against Catawba's GeoServer WFS. Returns property dicts.
+
+    GeoServer speaks `cql_filter` (not ArcGIS `where`) and returns GeoJSON
+    `features[].properties` (not `features[].attributes`), so this cannot reuse
+    _arcgis_query.
+    """
+    if not cql:
+        return []
+    params = {
+        "service": "WFS", "version": "1.1.0", "request": "GetFeature",
+        "typeName": _CATAWBA_WFS_LAYER, "outputFormat": "application/json",
+        "propertyName": _CATAWBA_WFS_FIELDS, "cql_filter": cql,
+        "maxFeatures": str(max_features),
+    }
+    try:
+        r = requests.get(_CATAWBA_WFS_URL, params=params, headers=_ARCGIS_HEADERS, timeout=45)
+    except requests.RequestException as e:
+        logger.warning("Catawba WFS: query failed: %s", e)
+        return []
+    if r.status_code != 200:
+        logger.warning("Catawba WFS: HTTP %d", r.status_code)
+        return []
+    try:
+        data = r.json()
+    except ValueError:
+        logger.warning("Catawba WFS: invalid JSON")
+        return []
+    return [f.get("properties", {}) for f in (data.get("features") or [])]
+
+
+def _catawba_enrich_values(candidates: list[PropertyCandidate]) -> None:
+    """Fill market_value + vacancy on Catawba candidates, in place.
+
+    Vacancy: `bldg_value == 0`. Catawba exposes no use code (zoning R-* maps
+    everything to SFR today), so this is the only reliable vacant signal.
+    Verified on Titterington's $2,000 lot at Forrest Creek Dr vs his two
+    improved parcels.
+    """
+    pins = [c.pid for c in candidates if c.pid]
+    if not pins:
+        return
+    by_pin: dict[str, dict] = {}
+    for i in range(0, len(pins), 50):  # keep the CQL IN() list sane
+        chunk = pins[i:i + 50]
+        cql = "pin IN (" + ",".join(f"'{p}'" for p in chunk) + ")"
+        for props in _catawba_wfs_query(cql, max_features=len(chunk)):
+            if props.get("pin"):
+                by_pin[str(props["pin"])] = props
+    if not by_pin:
+        logger.warning("Catawba WFS: no valuation returned for %d parcel(s) — "
+                       "buy-box cap and value floor will not apply", len(pins))
+        return
+    for c in candidates:
+        props = by_pin.get(c.pid)
+        if not props:
+            continue
+        c.market_value = _safe_float(props.get("total_valu"))
+        bldg = _safe_float(props.get("bldg_value")) or 0.0
+        if bldg == 0.0:
+            c.is_vacant_land = True
+            c.is_residential = False
+            if not c.use_description:
+                c.use_description = "Vacant"
 
 
 def _lookup_iredell(decedent_name: str, min_score: float = 0.7) -> list[PropertyCandidate]:
@@ -1777,14 +1899,22 @@ def lookup_by_address(address: str, county: str) -> list[dict]:
     decedent's last-known address from Odyssey Party Information.
 
     Returns raw attribute dicts (caller chooses how to score / present).
-    Only supports ArcGIS counties for now; Catawba PHP / Mecklenburg
-    polaris3g would need separate paths.
+
+    Catawba goes through GeoServer WFS (`catawba:parcels_plus`), whose property
+    names match _ARCGIS_CONFIG["catawba"] (owner / paddress / pin), so callers
+    need no special-casing. Mecklenburg (polaris3g) and Cabarrus still have no
+    address path — Cabarrus's parcel layer exposes only MailAddr1, no situs.
     """
     if not address:
         return []
     county_key = county.lower()
+    if county_key == "catawba":
+        prefix = _street_token_pattern(address)
+        if not prefix:
+            return []
+        return _catawba_wfs_query(f"paddress LIKE '{prefix}%'", max_features=50)
     cfg = _ARCGIS_CONFIG.get(county_key)
-    if not cfg or county_key in {"catawba", "mecklenburg"}:
+    if not cfg or not cfg.get("url") or county_key == "mecklenburg":
         return []
     pattern = _street_token_pattern(address)
     if not pattern:
@@ -1940,7 +2070,10 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 13  # bumped 2026-07-09 — Week 28 audit matcher + classification fixes: (a) stop flattening " | " between co-owners before scoring ("BARBEE DONALD RAY | BARBEE LORETTA B" scored 1.00 for decedent "Barbee, Ray Buford"); (b) stop treating a lone "V" as a generational suffix when the decedent has none (it is a middle initial far more often); (c) graded _middle_match_strength so a full middle name beats a bare initial (Jones, Michael Gregory took a stranger's house at 1866 Fairway Dr); (d) Gaston code=RES + desc='Vacant' now classifies as Vacant Land, not SFR. Cached candidates carry pre-fix match_scores AND pre-fix use classifications.
+_PERSIST_VERSION = 14  # bumped 2026-07-09 (second pass) — clean_decedent_name() strips "The Estate of ... aka" captions (Pierce 26E000799-170 scored 0.00 and vanished); _suffix_match_score no longer harvests a suffix from an entity segment ("THE PIERCE SR FAMILY TRUST" yielded a bogus "SR"); pick_best_candidate gained a decedent-address affinity tiebreaker; Catawba candidates now carry market_value + vacancy from GeoServer WFS (previously always None, which disabled the buy-box cap and value floor for the whole county). Cached candidates predate all of it.
+# v13 (same day, earlier pass): stopped flattening " | " between co-owners before
+# scoring; stopped treating a lone "V" as a generational suffix; graded
+# _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
@@ -2067,6 +2200,34 @@ def _owner_has_suffix(owner_name: str, suffix: str) -> bool:
     return suffix in tokens
 
 
+# Tokens that mark an owner segment as an organisation rather than a person.
+# "TRUSTEE" is deliberately absent — "PIERCE DOROTHY L TRUSTEE" is a person.
+_ENTITY_SEGMENT_TOKENS = {
+    "TRUST", "LLC", "LLP", "INC", "CORP", "CORPORATION", "PARTNERSHIP",
+    "FOUNDATION", "ASSOCIATION", "CHURCH", "MINISTRIES", "COMPANY",
+}
+
+
+def _person_tokens(owner_name: str) -> list[str]:
+    """Uppercase tokens from the PERSON segments of an owner string.
+
+    Segments naming an organisation are dropped, so a generational suffix
+    can't be harvested out of "THE PIERCE SR FAMILY TRUST".
+    """
+    if not owner_name:
+        return []
+    out: list[str] = []
+    for seg in re.split(r"\s*[|&]\s*", owner_name.upper()):
+        toks = re.sub(r"[^\w\s]", " ", seg).split()
+        if any(t in _ENTITY_SEGMENT_TOKENS for t in toks):
+            continue
+        out.extend(toks)
+    # If EVERY segment is an organisation there is no person suffix to find.
+    # Return nothing rather than falling back to the raw tokens — otherwise a
+    # single-segment "SMITH JOHN SR FAMILY TRUST" still yields a bogus "SR".
+    return out
+
+
 def _suffix_match_score(owner_name: str, decedent_suffix: str) -> int:
     """3-way suffix preference for the picker tiebreaker. Higher = better.
 
@@ -2081,8 +2242,13 @@ def _suffix_match_score(owner_name: str, decedent_suffix: str) -> int:
     decedent). Old _owner_has_suffix tiebreaker returned False for both
     when decedent had no suffix, so the picker fell through to value
     and picked the wrong one.
+
+    Entity segments are excluded before looking for a suffix: "THE PIERCE SR
+    FAMILY TRUST" is a trust name, not a man called Pierce Sr. Week 28: that
+    stray "SR" scored Dorothy Pierce's real deed a 0 here, and since suffix is
+    the TOP tiebreaker it sank the correct parcel beneath a namesake.
     """
-    o_tokens = re.sub(r"[^\w\s]", " ", (owner_name or "").upper()).split()
+    o_tokens = _person_tokens(owner_name)
     o_suffix = ""
     for t in o_tokens:
         if t in _GENERATIONAL_SUFFIXES:
@@ -2154,9 +2320,69 @@ def _middle_match_strength(owner_name: str, decedent_name: str) -> int:
     return 0
 
 
+def _situs_affinity(candidate: PropertyCandidate, decedent_address: str) -> int:
+    """How well a parcel's situs matches the decedent's own known address.
+
+      2 = same house number AND same street
+      1 = same street, different number (lot clusters, adjacent parcels)
+      0 = no address known, or no match
+
+    POSITIVE SIGNAL ONLY — never a penalty. Measured 2026-07-09 against Oren's
+    24 hand-verified Week-28 rows: only 15 decedents have an address on the
+    Odyssey Parties response, and only 7 of those addresses equal the true
+    property. Several point at the EXECUTOR's house instead (Gallimore's
+    decedent address is 235 Noodle Way — Angela Kiser's — while the property is
+    180 Noodle Way). So a match is near-proof; a non-match proves nothing, and
+    must not push a candidate down.
+
+    Ranked below match_score so a low-scoring stranger on the right street can
+    never outrank a correctly-named deed.
+    """
+    if not decedent_address or not candidate.situs_address:
+        return 0
+    a = _street_tokens(decedent_address)
+    b = _street_tokens(candidate.situs_address)
+    if not a or not b:
+        return 0
+    a_num, a_street = a
+    b_num, b_street = b
+    if not a_street or a_street != b_street:
+        return 0
+    if a_num and b_num and a_num == b_num:
+        return 2
+    return 1
+
+
+def _street_tokens(addr: str) -> tuple[str, str] | None:
+    """('1433', 'POSTON') from '1433 Poston Dr'. Suffix + unit dropped so
+    Odyssey's '3435 Huie S' still matches the deed's '3435 HUIE ST'."""
+    if not addr:
+        return None
+    toks = re.sub(r"[^\w\s]", " ", addr.upper()).split()
+    if not toks:
+        return None
+    num = toks[0] if toks[0].isdigit() else ""
+    rest = toks[1:] if num else toks
+    rest = [t for t in rest if t not in _STREET_SUFFIX_TOKENS and not t.isdigit()]
+    if not rest:
+        return None
+    return (num, " ".join(rest))
+
+
+# Suffixes and directionals stripped before comparing street names. Odyssey
+# truncates ("Huie S" for "Huie St") and counties abbreviate inconsistently.
+_STREET_SUFFIX_TOKENS = {
+    "RD", "ROAD", "ST", "STREET", "DR", "DRIVE", "LN", "LANE", "CT", "COURT",
+    "AVE", "AVENUE", "AV", "CIR", "CIRCLE", "HWY", "HIGHWAY", "WAY", "WY",
+    "BLVD", "BOULEVARD", "PL", "PLACE", "TRL", "TRAIL", "PKWY", "TER", "TERRACE",
+    "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+}
+
+
 def pick_best_candidate(
     candidates: list[PropertyCandidate],
     decedent_name: str = "",
+    decedent_address: str = "",
 ) -> PropertyCandidate | None:
     """Pick the best parcel for a decedent. Tiebreak order (descending):
 
@@ -2187,6 +2413,8 @@ def pick_best_candidate(
         return (
             _suffix_match_score(c.owner_name, suffix),
             c.match_score,
+            # Below match_score on purpose — see _situs_affinity's docstring.
+            _situs_affinity(c, decedent_address),
             _middle_match_strength(c.owner_name, decedent_name),
             _use_tier(c),
             float(c.market_value or 0),

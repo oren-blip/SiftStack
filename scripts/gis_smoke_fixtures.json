@@ -50,6 +50,24 @@
       "expected_pid": "55293496350000",
       "verified_on": "2026-07-09",
       "notes": "Case 26E000709-120, property 109 Trantham St SW. Uses the NAME path: the Cabarrus Parcels layer has no situs-address field (only MailAddr1), so lookup_by_address can never match there. Cabarrus had NO smoke coverage until now; its ArcGIS server was found DOWN on 2026-07-09 (HTTP 200 + {\"status\":\"error\"}), which silently dropped every Cabarrus row as 'no parcel found'. Also guards the co-owner scoring fix: before it, 'BARBEE DONALD RAY | BARBEE LORETTA B' outranked this parcel."
+    },
+    {
+      "id": "pierce_dorothy_catawba",
+      "county": "Catawba",
+      "address": "3435 HUIE ST",
+      "owner_contains": "PIERCE",
+      "expected_pid": "371119505521",
+      "verified_on": "2026-07-09",
+      "notes": "Decedent Dorothy Lee Cline Pierce (case 26E000799-170), a Week 28 miss. Catawba had NO smoke coverage. Guards the new GeoServer WFS address path (catawba:parcels_plus) — lookup_by_address returned [] for Catawba until 2026-07-09. The deed reads 'PIERCE DOROTHY L TRUSTEE | THE PIERCE SR FAMILY TRUST'; that stray 'SR' used to poison _suffix_match_score and sink this parcel beneath a namesake at 2661 Robinson Rd."
+    },
+    {
+      "id": "titterington_catawba_value",
+      "county": "Catawba",
+      "decedent": "Titterington, Wesley P",
+      "owner_contains": "TITTERINGTON",
+      "expected_pid": "369802983203",
+      "verified_on": "2026-07-09",
+      "notes": "Guards Catawba VALUATION enrichment. Catawba's PHP owner table carries no value, so every candidate arrived with market_value=None and both the $500K buy-box cap and the $10K floor were silently inert county-wide. Values now come from GeoServer. This estate also has a $2,000 vacant lot (369802981611, bldg_value=0) which exercises the bldg_value==0 vacancy rule."
     }
   ]
 }

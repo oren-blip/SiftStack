@@ -74,7 +74,9 @@ def _owner_strings_from_hits(hits: list[dict]) -> list[str]:
 
 
 def _pid_strings_from_hits(hits: list[dict]) -> list[str]:
-    pid_field_candidates = ["PIN", "ParcelID", "ParcelId", "PARID", "PARCEL", "PARCEL_ID", "PARCELID"]
+    # "pin" (lowercase) is Catawba's GeoServer WFS field; the rest are ArcGIS.
+    pid_field_candidates = ["PIN", "pin", "ParcelID", "ParcelId", "PARID", "PARCEL",
+                            "PARCEL_ID", "PARCELID"]
     out: list[str] = []
     for h in hits:
         for f in pid_field_candidates:
