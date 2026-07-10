@@ -841,6 +841,136 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
     return recovered
 
 
+def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
+    """For rows with a blank Parcel ID, look up the DECEDENT'S OWN address —
+    the one Odyssey already returns on the Parties API — in county GIS.
+
+    This is the strongest signal we have and it was going unused. Name search
+    fails whenever the deed spells the middle name differently from the court
+    record. Iredell 26E000660-480: court says "Pierce, Gail H" (Hope), the deed
+    says "PIERCE GAIL P HEIRS" (P = Pennell, her maiden name used as a middle
+    initial — confirmed by her obituary, "Gail Hope Pennell Pierce"). The name
+    matcher scores that 0.60 and auto-drops it. But the decedent's address on
+    the case, 680 Lippard Farm Rd, resolves straight to both of her parcels.
+
+    Distinct from address_fallback_from_beneficiaries (Step 0.65), which reads
+    heir addresses out of the Beneficiaries blob. That cannot help here: every
+    Pierce beneficiary lives at the executor's house, not at the property.
+
+    Guarded by the same surname check as the beneficiary fallback, because a
+    decedent's last address may be a rental or a nursing home. Requires the
+    owner-of-record's surname to contain the decedent's last name.
+
+    Needs a cached WAF cookie; silently no-ops without one.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from nc_gis_lookup import (
+        lookup_by_address, split_decedent_name, _ARCGIS_CONFIG, _compose_address,
+        simplify_use_code,
+    )
+
+    targets = [r for r in rows
+               if not (r.get("Parcel ID") or "").strip()
+               and (r.get("Case ID (hex)") or "").strip()
+               and (r.get("Deceased Owner") or "").strip()
+               and (r.get("County") or "").strip()]
+    if not targets:
+        return 0
+
+    waf_path = _Path("ecourts_waf_cookies.json")
+    if not waf_path.exists():
+        print("  (no cached WAF cookie — skipping decedent-address fallback)")
+        return 0
+    try:
+        waf = _json.loads(waf_path.read_text())
+        from ecourts_case_api import CaseDetailClient
+        client = CaseDetailClient(waf_token=waf["aws_waf_token"],
+                                  user_agent=waf.get("user_agent") or "Mozilla/5.0")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (decedent-address fallback unavailable: {e})")
+        return 0
+
+    recovered = 0
+    for r in targets:
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        cfg = _ARCGIS_CONFIG.get(county.lower())
+        if not cfg:
+            continue
+        _, _, dec_last = split_decedent_name(dec)
+        if not dec_last:
+            continue
+        try:
+            detail = client.fetch_detail((r.get("Case ID (hex)") or "").strip())
+        except Exception as e:  # noqa: BLE001
+            print(f"  decedent-addr: Parties fetch failed for {r.get('Case No.')}: {e}")
+            continue
+        dec_party = detail.decedent
+        if not dec_party:
+            continue
+        addr = dec_party.first_address
+        if addr.is_blank() or not addr.line1:
+            continue
+        try:
+            hits = lookup_by_address(addr.line1, county)
+        except Exception as e:  # noqa: BLE001
+            print(f"  decedent-addr: GIS lookup failed for {addr.line1!r}: {e}")
+            continue
+
+        owner_fields = cfg.get("owner_fields") or []
+        pid_field = cfg.get("parcel_field") or "PIN"
+
+        # Keep every parcel at that address whose owner-of-record carries the
+        # decedent's surname. A single address routinely resolves to the house
+        # AND its adjacent lot (Pierce: 680 Lippard Farm Rd + the lot behind it).
+        matched: list[tuple[str, str, dict]] = []
+        for attrs in hits:
+            owner_str = " ".join(str(attrs.get(of) or "") for of in owner_fields).upper()
+            if dec_last.upper() not in re.split(r"[^A-Z]+", owner_str):
+                continue
+            pid = str(attrs.get(pid_field) or "").strip()
+            # ArcGIS hands back float-ish ids ("4705686222.000"); Oren records
+            # the bare number. Mirrors nc_gis_lookup._arcgis_to_candidate.
+            if re.fullmatch(r"\d+\.0+", pid):
+                pid = pid.split(".", 1)[0]
+            if not pid:
+                continue
+            matched.append((pid, _compose_address(attrs, cfg.get("situs_fields") or []), attrs))
+        if not matched:
+            continue
+
+        # Main parcel = the one with a street number (the house). Siblings —
+        # typically vacant lots — go to Notes, per Oren's PLUS convention.
+        matched.sort(key=lambda m: (not re.match(r"\s*\d", m[1] or ""), m[0]))
+        pid, situs, attrs = matched[0]
+        owner_str = " ".join(str(attrs.get(of) or "") for of in owner_fields).upper().strip()
+
+        r["Parcel ID"] = pid
+        if situs:
+            r["Property Address"] = situs
+        uc, ud = cfg.get("use_field") or "", cfg.get("use_desc_field") or ""
+        use = simplify_use_code(
+            str(attrs.get(uc) or "") if uc else "",
+            str(attrs.get(ud) or "") if ud else "",
+            county.lower(),
+        )
+        if use:
+            r["Property use"] = use
+
+        note_lines = [f"[ADDR-FALLBACK from decedent address {addr.line1}]"]
+        for sib_pid, sib_situs, _a in matched[1:]:
+            note_lines.append(f"PLUS {sib_pid}\n{sib_situs or '(no situs)'}")
+        existing = (r.get("Notes") or "").strip()
+        r["Notes"] = (existing + ("\n" if existing else "") + "\n".join(note_lines)).strip()
+        tag_reason(r, "decedent-address")
+        extra = f" (+{len(matched)-1} sibling parcel(s))" if len(matched) > 1 else ""
+        print(f"  DECEDENT-ADDR {county}/{dec}: matched {pid} at {situs!r} "
+              f"via decedent address {addr.line1!r} (owner {owner_str!r}){extra}")
+        recovered += 1
+    return recovered
+
+
 def address_lookup_for_small_estate_disposed(rows: list[dict]) -> int:
     """For Small Estate Disposed-recent rows with blank Parcel ID, look up
     the row's Mailing Address (populated from the Interested Person on
@@ -1060,11 +1190,21 @@ def validate_existing_matches(
             # decedent had no suffix, leaving them tied — then audit-repick
             # fell through to value tiebreaker and picked the higher-value JR
             # (the wrong person). Smith Thomas Edward 26E000638-480 Week 26.
-            from nc_gis_lookup import _suffix_match_score, _use_tier, _extract_suffix
+            # Key must mirror nc_gis_lookup.pick_best_candidate.sort_key exactly,
+            # including the middle-name term. Without it, repick could swap away
+            # from a parcel whose deed carries the decedent's middle initial to a
+            # higher-value parcel that merely shares first+last (Week 28: decedent
+            # "Miller, David Allen", correct deed "MILLER DAVID A", competing deed
+            # "MILLER DAVID & GINGER REVOCABLE TRUST" — both score 1.00 because a
+            # deed that omits the middle name is not penalized).
+            from nc_gis_lookup import (
+                _suffix_match_score, _use_tier, _extract_suffix, _middle_match_strength,
+            )
             suffix = _extract_suffix(dec)
             current_key = (
                 _suffix_match_score(cand.owner_name, suffix),
                 cand.match_score,
+                _middle_match_strength(cand.owner_name, dec),
                 _use_tier(cand),
                 float(cand.market_value or 0),
                 float(cand.lot_area or 0),
@@ -1072,6 +1212,7 @@ def validate_existing_matches(
             best_key = (
                 _suffix_match_score(best.owner_name, suffix),
                 best.match_score,
+                _middle_match_strength(best.owner_name, dec),
                 _use_tier(best),
                 float(best.market_value or 0),
                 float(best.lot_area or 0),
@@ -1584,6 +1725,93 @@ def _cap_for_use(use: str) -> float:
     if "VACANT" in u or u == "LAND":
         return _VALUE_CAP_BY_USE["VACANT LAND"]
     return _VALUE_CAP_BY_USE.get(u, _DEFAULT_VALUE_CAP)
+
+
+# Floor for a STANDALONE main parcel. Per Oren (Week 28 audit): a lone scrap
+# of land isn't a lead — Hutchins 26E000897-350 was a $400 landlocked strip on
+# Wellington Dr. But the floor must NOT touch multi-parcel estates: a cheap lot
+# beside two more cheap lots is the mobile-home-on-land play, and there the
+# individual value is irrelevant. So: only drop when the row has no siblings.
+_MIN_STANDALONE_VALUE = 10_000
+
+
+def _has_sibling_parcels(row: dict) -> bool:
+    """True when the row's Notes list additional parcels for the same estate.
+
+    Both notations appear: the legacy horizontal 'PLUS 2 PARCELS' block and the
+    vertical 'PLUS <pid>' lines written by the multi-parcel collapse and the
+    decedent-address fallback.
+    """
+    return "PLUS " in (row.get("Notes") or "").upper()
+
+
+def drop_under_min_value(rows: list[dict], floor: float = _MIN_STANDALONE_VALUE) -> tuple[list[dict], int]:
+    """Drop rows whose ONLY parcel is worth less than `floor`.
+
+    Skips rows with no priced value (never drop what we couldn't price) and
+    skips any multi-parcel estate — see _MIN_STANDALONE_VALUE.
+    """
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        v_str = (r.get("Property Value") or "").strip()
+        if not v_str or _has_sibling_parcels(r):
+            kept.append(r)
+            continue
+        if _money(v_str) >= floor:
+            kept.append(r)
+            continue
+        print(f"  MIN-VALUE DROP {r.get('County')}/{r.get('Deceased Owner')}: "
+              f"{r.get('Property Address')!r} valued {v_str} < {floor:,.0f} (standalone parcel)")
+        dropped += 1
+    return kept, dropped
+
+
+# Rowan publishes no use code at all — simplify_use_code() defaults every Rowan
+# parcel to SFR. Its LEG_DESC field is the only type hint: a condo carries a unit
+# number ("U102"), while houses/land carry lot numbers ("L23-24"), acreage
+# ("15.23AC"), or "-". Verified on 5 known parcels 2026-07-09.
+#
+# Per Oren: FLAG, do not drop. One confirmed example isn't enough to start
+# silently deleting rows from his third-largest county; a wrong guess would be
+# invisible. Revisit once the flag has proven itself over a few weeks.
+_ROWAN_UNIT_RE = re.compile(r"\bU\d{1,4}\b")
+
+
+def flag_rowan_possible_condos(rows: list[dict]) -> int:
+    """Annotate Rowan rows whose legal description carries a unit number."""
+    from nc_gis_lookup import lookup_by_address
+
+    flagged = 0
+    for r in rows:
+        if (r.get("County") or "").strip().lower() != "rowan":
+            continue
+        if (r.get("Property use") or "").strip().upper() in ("CONDO", "TOWNHOUSE"):
+            continue  # already classified
+        if "POSSIBLE CONDO" in (r.get("Notes") or "").upper():
+            continue  # idempotent across nightly re-polish
+        addr = (r.get("Property Address") or "").strip()
+        if not addr:
+            continue
+        try:
+            hits = lookup_by_address(addr, "Rowan")
+        except Exception:  # noqa: BLE001
+            continue
+        pid = (r.get("Parcel ID") or "").strip()
+        match = next((h for h in hits if pid and str(h.get("PARCEL_ID") or "").strip() == pid),
+                     hits[0] if hits else None)
+        if not match:
+            continue
+        leg = str(match.get("LEG_DESC") or "").upper()
+        if not _ROWAN_UNIT_RE.search(leg):
+            continue
+        note = f"[POSSIBLE CONDO — VERIFY: Rowan legal description {leg!r} carries a unit number]"
+        existing = (r.get("Notes") or "").strip()
+        r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+        tag_reason(r, "possible-condo")
+        print(f"  POSSIBLE CONDO Rowan/{r.get('Deceased Owner')}: {addr!r} (LEG_DESC={leg!r})")
+        flagged += 1
+    return flagged
 
 
 def drop_recently_sold(rows: list[dict], months: int = 24, min_price: float = 50_000) -> tuple[list[dict], int]:
@@ -3543,6 +3771,13 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_refound = research_blank_parcels(rows, audit_rejected_pids=audit_rejected_pids)
     print(f"  Re-found correct parcels: {n_refound}")
 
+    # Runs BEFORE the beneficiary fallback: the decedent's own address is a
+    # far stronger signal than an heir's, and it rescues the deed-spells-the-
+    # middle-name-differently class that name search can never match.
+    print("Step 0.64: parcel-fallback lookup using the decedent's address (Odyssey Parties)")
+    n_dec_recovered = parcel_fallback_from_decedent_address(rows)
+    print(f"  Recovered via decedent-address GIS lookup: {n_dec_recovered}")
+
     print("Step 0.65: address-fallback lookup using Beneficiaries column")
     n_addr_recovered = address_fallback_from_beneficiaries(rows)
     print(f"  Recovered via beneficiary-address GIS lookup: {n_addr_recovered}")
@@ -3607,9 +3842,17 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_over_500k = drop_over_500k(rows, cap=500_000)
     print(f"  Dropped over-cap: {n_over_500k}  Remaining: {len(rows)}")
 
+    print("Step 1.82: drop standalone parcels under $10K (scrap land — multi-parcel estates exempt)")
+    rows, n_under_min = drop_under_min_value(rows)
+    print(f"  Dropped under-min-value: {n_under_min}  Remaining: {len(rows)}")
+
     print("Step 1.85: drop properties sold within last 24 months for $50K+ (already-in-market filter)")
     rows, n_recently_sold = drop_recently_sold(rows, months=24, min_price=50_000)
     print(f"  Dropped recently-sold: {n_recently_sold}  Remaining: {len(rows)}")
+
+    print("Step 1.87: flag possible Rowan condos (unit number in legal description) — flag only, no drop")
+    n_condo_flagged = flag_rowan_possible_condos(rows)
+    print(f"  Flagged possible condos: {n_condo_flagged}")
 
     # Step order rationale: people search FIRST (fills legit PR mailing),
     # THEN heir-occupied drop (now mailing is populated for the check),

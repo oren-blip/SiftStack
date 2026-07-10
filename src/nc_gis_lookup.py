@@ -405,7 +405,16 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
                     first_seen = True
                     continue
             if t in _MIDDLE_NOISE_TOKENS:
-                continue
+                # "V" is ambiguous. As a lone token between first and last it
+                # is a middle initial ("MILLER DAVID V") far more often than
+                # the generational suffix "the Fifth". Only swallow it as a
+                # suffix when the decedent actually carries one. Week 28 audit:
+                # decedent "Miller, David Allen" scored 1.00 against a stranger,
+                # "MILLER DAVID V", because V was dropped here and the owner
+                # then looked like it had no middle name at all.
+                # II/III/IV/JR/SR are never middle initials — leave them noise.
+                if t != "V" or dec_suffix == "V":
+                    continue
             # HEIRS/ESTATE/ESTATEOF aren't middle names — they're trust-
             # status markers. Skip so they don't get scored as a
             # competing middle (e.g. "SMITH JOHN HEIRS" for decedent
@@ -745,6 +754,13 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
                 return "Townhouse"
             if "CONDO" in desc:
                 return "Condo"
+            # Gaston tags a vacant residential lot as code=RES, desc='Vacant'.
+            # Without this it fell through to SFR — which not only mislabels
+            # the row but disables the vacant-land exemption inside the
+            # heir-occupancy filter. Week 28: Hutchins 26E000897-350, a $400
+            # landlocked strip on Wellington Dr, was published as SFR.
+            if "VACANT" in desc:
+                return "Vacant Land"
             return "SFR"
         if code in ("COM", "IND"):
             return "Commercial"
@@ -975,7 +991,12 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         # owner mailing CURR_ZIPCODE is FL=325703762 on both). Without these,
         # swap-on-DQ rewrites Property Address but leaves City/Zip blank.
         "situs_zip_field": "ZIP",
-        "parcel_field": "PIN",
+        # Gaston exposes BOTH: PIN is the 10-digit dashed grid id
+        # ("3539-83-1095"); PID is the 6-digit parcel/account number
+        # ("167236") that appears on the county's own property card and is
+        # what Oren records by hand. Per his Week 28 audit answer, PID is
+        # canonical. Changing this rewrites the Parcel ID on every Gaston row.
+        "parcel_field": "PID",
         "use_field": "property_use",
         "use_desc_field": "DESC1_DESC",
     },
@@ -1076,6 +1097,17 @@ def _arcgis_query(
             break
         if "error" in data:
             logger.warning("ArcGIS error at %s: %s", url, data["error"])
+            break
+        # ArcGIS Server reports a dead backend as HTTP 200 with
+        # {"status":"error","messages":[...]} — no "error" key. Without this
+        # branch an outage is indistinguishable from "this owner has no
+        # parcels", and every row for that county is silently dropped as
+        # "no parcel found in county GIS". Cabarrus was down like this on
+        # 2026-07-09 ("Could not access any server machines").
+        if data.get("status") == "error":
+            logger.error("ArcGIS SERVER DOWN at %s: %s — results for this county "
+                         "will be empty; do NOT treat as 'no parcels found'",
+                         url, "; ".join(data.get("messages") or []))
             break
         feats = data.get("features") or []
         if not feats:
@@ -1195,7 +1227,13 @@ def _arcgis_to_candidate(
     joint_parts = [p for p in re.split(r"\s*[|&]\s*", owner_full) if p.strip()]
     is_jointly_owned = len(joint_parts) > 1
 
-    score = _name_match_score(decedent_name, owner_full.replace(" | ", " "))
+    # Score the PIPED owner string. Flattening " | " to " " merged co-owners
+    # into a single bag of tokens, so "BARBEE DONALD RAY | BARBEE LORETTA B"
+    # scored 1.00 against decedent "Barbee, Ray Buford" — BARBEE and RAY are
+    # both present, but they come from different people. _split_owner_segments
+    # needs the separator to tell the owners apart. Week 28 audit: this put
+    # Barbee on a stranger's parcel and the row was dropped.
+    score = _name_match_score(decedent_name, owner_full)
     if score == 0.0:
         return None
 
@@ -1575,7 +1613,13 @@ def _catawba_php_to_candidate(
     joint_parts = [p for p in re.split(r"\s*[|&]\s*", owner_full) if p.strip()]
     is_jointly_owned = len(joint_parts) > 1
 
-    score = _name_match_score(decedent_name, owner_full.replace(" | ", " "))
+    # Score the PIPED owner string. Flattening " | " to " " merged co-owners
+    # into a single bag of tokens, so "BARBEE DONALD RAY | BARBEE LORETTA B"
+    # scored 1.00 against decedent "Barbee, Ray Buford" — BARBEE and RAY are
+    # both present, but they come from different people. _split_owner_segments
+    # needs the separator to tell the owners apart. Week 28 audit: this put
+    # Barbee on a stranger's parcel and the row was dropped.
+    score = _name_match_score(decedent_name, owner_full)
     if score == 0.0:
         return None
 
@@ -1896,7 +1940,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 11  # bumped 2026-07-01 — Iredell endpoint swapped FeatureServer/0 -> MapServer/0 (FeatureServer query op broke server-side, returning 400 on every query). Cache needs invalidation because cached Iredell entries were all misses (0 candidates) from the broken endpoint and would otherwise mask the now-working lookups.
+_PERSIST_VERSION = 13  # bumped 2026-07-09 — Week 28 audit matcher + classification fixes: (a) stop flattening " | " between co-owners before scoring ("BARBEE DONALD RAY | BARBEE LORETTA B" scored 1.00 for decedent "Barbee, Ray Buford"); (b) stop treating a lone "V" as a generational suffix when the decedent has none (it is a middle initial far more often); (c) graded _middle_match_strength so a full middle name beats a bare initial (Jones, Michael Gregory took a stranger's house at 1866 Fairway Dr); (d) Gaston code=RES + desc='Vacant' now classifies as Vacant Land, not SFR. Cached candidates carry pre-fix match_scores AND pre-fix use classifications.
 _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
@@ -2072,17 +2116,42 @@ def _owner_has_middle_match(owner_name: str, decedent_name: str) -> bool:
     Dr beats 'JAMES GAITHER' at Chestnut Oak Ln because decedent is
     'James Israel' and 'I' matches Israel's initial).
     """
+    return _middle_match_strength(owner_name, decedent_name) > 0
+
+
+def _middle_match_strength(owner_name: str, decedent_name: str) -> int:
+    """Graded middle-name agreement between a deed and the decedent.
+
+      2 = deed carries the decedent's FULL middle word ("JONES MICHAEL GREGORY")
+      1 = deed carries only a matching initial          ("JONES MICHAEL G")
+      0 = no middle information, or it disagrees
+
+    A full middle name is far stronger evidence than a bare initial, and the
+    boolean version couldn't say so. Week 28: decedent "Jones, Michael Gregory"
+    (Catawba) matched THREE parcels at 1.00 — "JONES MICHAEL GREGORY | JONES
+    SUSAN B" (his, with his wife/PR Susan), "JONES CHRISTY P | JONES MICHAEL G"
+    (a different Michael, different spouse), and a bare "JONES MICHAEL". The
+    boolean tiebreaker rated the first two equal, and the picker took the
+    stranger's house at 1866 Fairway Dr.
+    """
     if not owner_name or not decedent_name:
-        return False
+        return 0
     _d_first, d_middle, _d_last = split_decedent_name(decedent_name)
     if not d_middle:
-        return False
+        return 0
     d_middle_words = [w for w in d_middle.split() if w]
     d_middle_initials = {w[0] for w in d_middle_words}
     o_tokens = set(_normalize_name(owner_name).split())
-    if any(w in o_tokens for w in d_middle_words):
-        return True
-    return any(len(t) == 1 and t in d_middle_initials for t in o_tokens)
+    if any(len(w) > 1 and w in o_tokens for w in d_middle_words):
+        return 2
+    if any(len(t) == 1 and t in d_middle_initials for t in o_tokens):
+        return 1
+    # Decedent's middle is itself a single letter that matches a full owner word
+    # ("Gaither, James I" vs deed "JAMES ISRAEL GAITHER").
+    if any(len(w) == 1 and any(t[0] == w and len(t) > 1 for t in o_tokens)
+           for w in d_middle_words):
+        return 1
+    return 0
 
 
 def pick_best_candidate(
@@ -2118,7 +2187,7 @@ def pick_best_candidate(
         return (
             _suffix_match_score(c.owner_name, suffix),
             c.match_score,
-            _owner_has_middle_match(c.owner_name, decedent_name),
+            _middle_match_strength(c.owner_name, decedent_name),
             _use_tier(c),
             float(c.market_value or 0),
             float(c.lot_area or 0),

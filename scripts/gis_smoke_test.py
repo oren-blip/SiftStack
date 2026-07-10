@@ -61,6 +61,7 @@ def _owner_strings_from_hits(hits: list[dict]) -> list[str]:
         "OwnerName", "OWNER_NAME",       # generic ArcGIS
         "Name1", "Name2",                # Lincoln
         "Name",                          # Iredell (TaxSQL_Parcels)
+        "OWNNAME",                       # Rowan
         "OWN_NAME", "owner",
     ]
     out: list[str] = []
@@ -88,11 +89,38 @@ def run_fixture(fixture: dict) -> tuple[str, str]:
     fid = fixture.get("id", "?")
     county = fixture.get("county", "")
     address = fixture.get("address", "")
+    decedent = fixture.get("decedent", "")
     owner_contains = (fixture.get("owner_contains") or "").upper()
     expected_pid = (fixture.get("expected_pid") or "").upper()
 
+    # A fixture keyed on `decedent` exercises the NAME path (lookup_properties)
+    # instead of the address path. Required for Cabarrus and Mecklenburg, whose
+    # parcel layers expose no situs-address field at all — lookup_by_address
+    # can never match there, so an address fixture would fail even when the
+    # county is perfectly healthy.
+    if county and decedent:
+        try:
+            from nc_gis_lookup import lookup_properties
+            cands = lookup_properties(decedent, county)
+        except Exception as e:  # noqa: BLE001
+            return "FAIL", f"{fid}: lookup_properties raised {type(e).__name__}: {e}"
+        if not cands:
+            return "FAIL", f"{fid}: lookup_properties({decedent!r}, {county!r}) returned 0 candidates"
+        owners = [(c.owner_name or "").upper() for c in cands]
+        pids = [(c.pid or "").upper() for c in cands]
+        owner_ok = (not owner_contains) or any(owner_contains in o for o in owners)
+        pid_ok = (not expected_pid) or any(expected_pid in p for p in pids)
+        if owner_ok and pid_ok:
+            return "PASS", f"{fid}: matched owner=[{owners[0][:60]}] pid=[{pids[0]}]"
+        reasons = []
+        if not owner_ok:
+            reasons.append(f"owner expected {owner_contains!r} but got {(owners[0] if owners else '(empty)')!r}")
+        if not pid_ok:
+            reasons.append(f"pid expected {expected_pid!r} but got {(pids[0] if pids else '(empty)')!r}")
+        return "FAIL", f"{fid}: " + "; ".join(reasons)
+
     if not (county and address):
-        return "SKIP", f"{fid}: missing county/address"
+        return "SKIP", f"{fid}: missing county/address (or decedent)"
 
     try:
         hits = lookup_by_address(address, county)

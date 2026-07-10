@@ -123,6 +123,7 @@ _DROP_PATTERNS = {
     "non_pending":   re.compile(r"Dropped non-Pending: (\d+)"),
     "repick":        re.compile(r"REPICK "),
     "refound":       re.compile(r"Re-found correct parcels: (\d+)"),
+    "under_min_value": re.compile(r"Dropped under-min-value: (\d+)"),
 }
 
 
@@ -353,6 +354,7 @@ def render_report(
     lines.append("POLISH DROPS")
     drop_labels = [
         ("over_500k",     "Over $500K (buy-box cap)"),
+        ("under_min_value", "Under $10K (standalone scrap parcel)"),
         ("heir_occupied", "Heir-occupied (PR mailing = property)"),
         ("commercial",    "Commercial/industrial"),
         ("no_parcel",     "No parcel found in county GIS"),

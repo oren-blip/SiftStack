@@ -43,11 +43,38 @@ class CaseAddress:
     state: str = ""
     zip: str = ""
 
+    # Odyssey returns a street either as a flat AddressLine1 OR — far more
+    # often — as structured components with AddressLine1 = null:
+    #   {"Block": "1433", "PrefixDirection": null, "Street": "Poston",
+    #    "AddressSuffixKey": "DR", "PostfixDirection": null,
+    #    "UnitKey": null, "UnitNumber": null, "AddressLine1": null, ...}
+    # Reading only AddressLine1 silently threw away every street in that form.
+    # That is why heir-occupancy never fired (it compares street to the
+    # property address), why the Beneficiaries column had no streets, and why
+    # PR mailing addresses fell through to a people-search guess.
+    _LINE1_PARTS = ("Block", "PrefixDirection", "Street", "AddressSuffixKey", "PostfixDirection")
+
+    @staticmethod
+    def _compose_line1(obj: dict) -> str:
+        """Rebuild '1433 Poston Dr' / '410 S Thompson St' from components."""
+        parts = [str(obj.get(k) or "").strip() for k in CaseAddress._LINE1_PARTS]
+        return " ".join(p for p in parts if p)
+
+    @staticmethod
+    def _compose_line2(obj: dict) -> str:
+        """'APT 614' from UnitKey + UnitNumber."""
+        unit = " ".join(
+            str(obj.get(k) or "").strip() for k in ("UnitKey", "UnitNumber")
+        ).strip()
+        return unit
+
     @classmethod
     def from_json(cls, obj: dict) -> "CaseAddress":
+        line1 = (obj.get("AddressLine1") or "").strip() or cls._compose_line1(obj)
+        line2 = (obj.get("AddressLine2") or "").strip() or cls._compose_line2(obj)
         return cls(
-            line1=(obj.get("AddressLine1") or "").strip(),
-            line2=(obj.get("AddressLine2") or "").strip(),
+            line1=line1,
+            line2=line2,
             city=(obj.get("City") or "").strip(),
             state=(obj.get("State") or "").strip(),
             zip=(obj.get("PostalCode") or "").strip(),

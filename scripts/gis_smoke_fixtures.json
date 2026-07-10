@@ -32,6 +32,24 @@
       "expected_pid": "4746712629",
       "verified_on": "2026-07-01",
       "notes": "Decedent Ramsey Maude Lou (case 26E000647-480). Guards the FeatureServer->MapServer swap: FeatureServer/0 query op broke server-side 2026-07-01, MapServer/0 serves the same data."
+    },
+    {
+      "id": "miller_david_rowan",
+      "county": "Rowan",
+      "address": "1320 BEAR POPLAR RD",
+      "owner_contains": "MILLER DAVID A",
+      "expected_pid": "275 012",
+      "verified_on": "2026-07-09",
+      "notes": "Decedent Miller David Allen (case 26E000707-790). Confirmed by Oren against the Rowan County GIS owner search during the Week 28 audit. Also guards the co-owner scoring fix — before it, 'MILLER DAVID & GINGER REVOCABLE TRUST' outranked this parcel."
+    },
+    {
+      "id": "barbee_ray_cabarrus",
+      "county": "Cabarrus",
+      "decedent": "Barbee, Ray Buford",
+      "owner_contains": "BARBEE RAY B",
+      "expected_pid": "55293496350000",
+      "verified_on": "2026-07-09",
+      "notes": "Case 26E000709-120, property 109 Trantham St SW. Uses the NAME path: the Cabarrus Parcels layer has no situs-address field (only MailAddr1), so lookup_by_address can never match there. Cabarrus had NO smoke coverage until now; its ArcGIS server was found DOWN on 2026-07-09 (HTTP 200 + {\"status\":\"error\"}), which silently dropped every Cabarrus row as 'no parcel found'. Also guards the co-owner scoring fix: before it, 'BARBEE DONALD RAY | BARBEE LORETTA B' outranked this parcel."
     }
   ]
 }
