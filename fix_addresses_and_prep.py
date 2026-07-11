@@ -1087,6 +1087,18 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
         r["Parcel ID"] = pid
         if situs:
             r["Property Address"] = situs
+        # The matched parcel IS the decedent's address, and Odyssey gives that
+        # address's city + zip cleanly. Carry them — authoritative, no absentee
+        # risk (unlike the county GIS, which has no reliable situs-city field:
+        # Iredell's CityLocationDescription is often just "00", and CITY tracks
+        # owner mailing). Fills Pierce Gail 26E000660-480 -> Statesville 28625.
+        sf_city = cfg.get("situs_city_field")
+        situs_city = str(attrs.get(sf_city) or "").strip() if sf_city else ""
+        city = (addr.city or situs_city).strip()
+        if not (r.get("Property City") or "").strip() and city:
+            r["Property City"] = city.title()
+        if not (r.get("Property Zip") or "").strip() and addr.zip:
+            r["Property Zip"] = str(addr.zip)[:5]
         uc, ud = cfg.get("use_field") or "", cfg.get("use_desc_field") or ""
         use = simplify_use_code(
             str(attrs.get(uc) or "") if uc else "",
