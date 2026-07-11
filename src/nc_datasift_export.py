@@ -20,20 +20,14 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-# Structure Type: map the pipeline's use codes to DataSift's structure vocabulary.
-# ⚠️ Best-guess wording — verify against the options in DataSift's Structure Type
-# field and adjust if they differ.
-_STRUCTURE_TYPE = {
-    "SFR": "Single Family Residential",
-    "MH": "Mobile Home",
-    "MH/VACANT": "Mobile Home",
-    "VACANT LAND": "Vacant Land",
-    "VACANT": "Vacant Land",
-    "LAND": "Vacant Land",
-    "CONDO": "Condominium",
-    "TOWNHOUSE": "Townhouse",
-    "COMMERCIAL": "Commercial",
-}
+# Our property classification (SFR/MH/Vacant Land) goes to a DataSift CUSTOM
+# field named "Property Type", NOT the built-in "Structure Type". DataSift's
+# built-in Structure Type is enrichment-controlled — it derives it from its own
+# property database and ignores an uploaded value (Oren confirmed it wouldn't
+# populate). A custom text field preserves our own buy-box classification, so we
+# send the raw value as-is. Oren must create the "Property Type" custom field in
+# DataSift once for this column to auto-map.
+_PROPERTY_TYPE_FIELD = "Property Type"
 
 # Empty phone/email slots so Tracerfy / DataSift skip-trace numbers map cleanly.
 _PHONE_SLOTS = [f"Phone {i}" for i in range(1, 10)]   # Phone 1-9
@@ -55,7 +49,7 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     *[(p, None) for p in _PHONE_SLOTS],
     *[(e, None) for e in _EMAIL_SLOTS],
     ("Estimated Value",         "Property Value"),
-    ("Structure Type",          None),   # mapped from Property use
+    ("Property Type",           None),   # custom field <- raw Property use
     ("Parcel ID",               "Parcel ID"),
     ("Personal Representative", "Personal Representative"),
     ("County",                  "County"),
@@ -108,8 +102,7 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
         out["Phone 1"] = dm_phone
     out["Email 1"] = (r.get("DM Email") or "").strip()
 
-    out["Structure Type"] = _STRUCTURE_TYPE.get(
-        (r.get("Property use") or "").strip().upper(), "")
+    out[_PROPERTY_TYPE_FIELD] = (r.get("Property use") or "").strip()
     out["Notice Type"] = "Probate"
     out["Owner Deceased"] = "Yes"
     out["Tags"] = tags
