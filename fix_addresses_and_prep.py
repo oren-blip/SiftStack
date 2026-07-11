@@ -1483,6 +1483,120 @@ _US_STATE_CODES = {
 }
 
 
+_CENTROID_GEOCODE_CACHE = Path("output") / ".nc_centroid_geocode_cache.json"
+
+
+def _nominatim_forward(query: str) -> dict | None:
+    """Forward-geocode a full address string to {city, postcode} via Nominatim.
+
+    Fallback for parcels with no map geometry (Mecklenburg polaris3g). Needs a
+    city in the query to be unambiguous. 1 req/sec — caller paces.
+    """
+    import requests
+    try:
+        r = requests.get("https://nominatim.openstreetmap.org/search", params={
+            "q": query, "countrycodes": "us", "format": "json",
+            "addressdetails": "1", "limit": "1",
+        }, headers={"User-Agent": "SiftStack-NC/1.0"}, timeout=10)
+        if r.status_code != 200:
+            return None
+        hits = r.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if not hits:
+        return None
+    a = hits[0].get("address", {})
+    city = a.get("city") or a.get("town") or a.get("village") or a.get("hamlet") or ""
+    return {"city": city, "postcode": a.get("postcode", "")}
+
+
+def fill_property_location_via_centroid(rows: list[dict]) -> int:
+    """Fill blank Property City/Zip by reverse-geocoding the parcel centroid.
+
+    DataSift marks a property record "Incomplete" without a zip, which keeps it
+    out of marketing — so a blank Property Zip is not cosmetic. The county GIS
+    has no reliable situs city/zip (Iredell's is "00"; CITY is owner mailing),
+    but the parcel's map location is authoritative and absentee-proof: take the
+    polygon centroid (WGS84) and reverse-geocode it via Nominatim. Verified
+    2026-07-11: 1016 Sunset Dr -> Salisbury 28147, 342 Glenwood Dr ->
+    Mooresville 28115, both exact.
+
+    ArcGIS counties only (Cabarrus/Catawba have no situs geometry path here;
+    Mecklenburg's city comes from polaris3g). Rate-limited to Nominatim's
+    1 req/sec and cached across runs so the same parcel isn't re-hit.
+    """
+    import json as _json
+    import time as _time
+    from nc_gis_lookup import parcel_centroid
+    try:
+        from address_standardizer import _reverse_geocode
+    except Exception as e:  # noqa: BLE001
+        print(f"  (centroid geocode unavailable: {e})")
+        return 0
+
+    targets = [r for r in rows
+               if (r.get("Parcel ID") or "").strip()
+               and (r.get("Property Address") or "").strip()
+               and not (r.get("Property Zip") or "").strip()]
+    if not targets:
+        return 0
+
+    cache: dict[str, dict] = {}
+    if _CENTROID_GEOCODE_CACHE.exists():
+        try:
+            cache = _json.loads(_CENTROID_GEOCODE_CACHE.read_text())
+        except (ValueError, OSError):
+            cache = {}
+
+    filled = 0
+    dirty = False
+    for r in targets:
+        county = (r.get("County") or "").strip()
+        addr = (r.get("Property Address") or "").strip()
+        key = f"{county.upper()}||{addr.upper()}"
+        geo = cache.get(key)
+        if geo is None:
+            ll = parcel_centroid(county, addr, pid=(r.get("Parcel ID") or "").strip())
+            if ll:
+                _time.sleep(1.1)         # Nominatim: 1 req/sec
+                geo = _reverse_geocode(str(ll[0]), str(ll[1])) or {}
+            else:
+                # No parcel geometry (Mecklenburg polaris3g, or a centroid miss).
+                # Forward-geocode the address instead — needs a city to be
+                # unambiguous, which Meck rows already have (Charlotte).
+                have_city = (r.get("Property City") or "").strip()
+                if have_city:
+                    _time.sleep(1.1)
+                    geo = _nominatim_forward(f"{addr}, {have_city}, NC") or {}
+                else:
+                    geo = {}
+            cache[key] = geo
+            dirty = True
+        city = (geo.get("city") or "").strip()
+        zipc = (geo.get("postcode") or "").strip()[:5]
+        # Nominatim sometimes returns a zip but no city for rural points —
+        # derive the city from the zip via the local lookup.
+        if zipc and not city:
+            city = _NC_ZIP_TO_CITY.get(zipc, "")
+        if not city and not zipc:
+            continue
+        if city and not (r.get("Property City") or "").strip():
+            r["Property City"] = city
+        if zipc and not (r.get("Property Zip") or "").strip():
+            r["Property Zip"] = zipc
+        tag_reason(r, "centroid-geocode")
+        print(f"  CENTROID-GEOCODE {county}/{r.get('Deceased Owner')}: "
+              f"{addr!r} -> {city} {zipc}")
+        filled += 1
+
+    if dirty:
+        try:
+            _CENTROID_GEOCODE_CACHE.write_text(_json.dumps(cache, separators=(",", ":")))
+        except OSError:
+            pass
+    return filled
+
+
 def clean_bad_city_zip_in_place(rows: list[dict]) -> tuple[int, int]:
     """Final cleanup: when Property City contains a street-type suffix
     (Dr/St/Rd/Ln/etc.), a state code (Ga/Ny/etc.), or a numeric value,
@@ -4057,6 +4171,11 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 3.5: clean bad-city / bad-zip leftovers (suffix/state/numeric noise)")
     n_clean_city, n_clean_zip = clean_bad_city_zip_in_place(rows)
     print(f"  Cleaned cities: {n_clean_city}  Reformatted/cleared zips: {n_clean_zip}")
+
+    print("Step 3.6: fill blank Property City/Zip via parcel-centroid reverse-geocode "
+          "(DataSift needs the zip)")
+    n_centroid = fill_property_location_via_centroid(rows)
+    print(f"  Filled via centroid geocode: {n_centroid}")
 
     print("Step 3.7: keep+flag blank-parcel rows with a distinct low-confidence match (review band)")
     n_lowconf = flag_low_confidence_parcels(rows)

@@ -2015,6 +2015,60 @@ def _street_token_pattern(addr: str) -> str | None:
     return " ".join(parts[:take])
 
 
+def parcel_centroid(county: str, situs_address: str = "",
+                    pid: str = "") -> tuple[float, float] | None:
+    """(lat, lon) of a parcel's centroid, for reverse-geocoding its city/zip.
+
+    The county GIS has no reliable situs CITY/ZIP field (Iredell's is often
+    "00"; CITY tracks OWNER mailing — wrong for absentee owners). The parcel's
+    map location does not lie, so we take the polygon centroid and reverse-
+    geocode it. Requests geometry in WGS84 (outSR=4326) so no reprojection is
+    needed. Matches by Parcel ID first (works for vacant "0 <street>" and
+    number-less situs like "WELLINGTON DR"), then by street prefix. ArcGIS
+    counties only (Cabarrus/Catawba/Mecklenburg use other APIs).
+    """
+    cfg = _ARCGIS_CONFIG.get(county.lower())
+    if not cfg or not cfg.get("url"):
+        return None
+
+    wheres: list[str] = []
+    if pid:
+        pf = cfg.get("parcel_field") or "PIN"
+        wheres.append(f"{pf}='{pid}'")
+    pattern = _street_token_pattern(situs_address)
+    if pattern:
+        for fld in (_ADDRESS_FIELDS_BY_COUNTY.get(county.lower())
+                    or cfg.get("situs_fields") or []):
+            wheres.append(f"UPPER({fld}) LIKE '{pattern}%'")
+
+    for where in wheres:
+        try:
+            r = requests.get(cfg["url"] + "/query", params={
+                "where": where, "returnGeometry": "true", "outSR": "4326",
+                "f": "json", "resultRecordCount": 1,
+            }, headers=_ARCGIS_HEADERS, timeout=30)
+        except requests.RequestException:
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            feats = r.json().get("features") or []
+        except ValueError:
+            continue
+        if not feats:
+            continue
+        rings = (feats[0].get("geometry") or {}).get("rings")
+        if not rings or not rings[0]:
+            continue
+        pts = rings[0]
+        n = len(pts)
+        lat = sum(p[1] for p in pts) / n
+        lon = sum(p[0] for p in pts) / n
+        if -90 < lat < 90 and -180 < lon < 0:
+            return (lat, lon)
+    return None
+
+
 def lookup_by_address(address: str, county: str, city_hint: str = "") -> list[dict]:
     """Find parcels in `county` whose situs starts with the given address
     prefix. Useful as a fallback when name-search fails — e.g. a beneficiary
