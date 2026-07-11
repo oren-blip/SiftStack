@@ -1042,6 +1042,12 @@ _ARCGIS_HEADERS = {
     "Accept": "application/json,*/*",
 }
 
+# Transient-failure retries for ArcGIS Server queries (connection reset, 5xx,
+# {"status":"error"}). Cabarrus is the flaky one. A 200 + zero features is NOT
+# a transient failure and is never retried.
+_ARCGIS_QUERY_RETRIES = int(os.environ.get("NC_ARCGIS_RETRIES", "2"))
+_ARCGIS_QUERY_BACKOFF = float(os.environ.get("NC_ARCGIS_BACKOFF", "2.0"))
+
 
 # Per-county config: how to query + which fields to read.
 # - url:        FeatureServer/MapServer layer URL ending in /<layer_index>
@@ -1216,32 +1222,55 @@ def _arcgis_query(
             "resultOffset": str(offset),
             "resultRecordCount": str(page_size),
         }
-        try:
-            r = requests.get(url + "/query", params=params, headers=_ARCGIS_HEADERS, timeout=30)
-        except requests.RequestException as e:
-            logger.warning("ArcGIS: query failed at %s: %s", url, e)
+        # Cabarrus (and other ArcGIS Server counties) flake intermittently:
+        # a connection reset, a 5xx, or a {"status":"error"} on one call, then
+        # a clean result on the next. Retry transient failures with backoff so
+        # a single bad response doesn't drop a real lead (Barbee 26E000709-120
+        # kept vanishing on empty Cabarrus responses). A genuine 200 + zero
+        # features is NOT retried — that's a real "no such owner".
+        data = None
+        for attempt in range(_ARCGIS_QUERY_RETRIES + 1):
+            try:
+                r = requests.get(url + "/query", params=params,
+                                 headers=_ARCGIS_HEADERS, timeout=30)
+            except requests.RequestException as e:
+                if attempt < _ARCGIS_QUERY_RETRIES:
+                    time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
+                    continue
+                logger.warning("ArcGIS: query failed at %s after %d tries: %s",
+                               url, attempt + 1, e)
+                break
+            if r.status_code != 200:
+                if r.status_code >= 500 and attempt < _ARCGIS_QUERY_RETRIES:
+                    time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
+                    continue
+                logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
+                break
+            try:
+                parsed = r.json()
+            except ValueError:
+                if attempt < _ARCGIS_QUERY_RETRIES:
+                    time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
+                    continue
+                logger.warning("ArcGIS: invalid JSON at %s", url)
+                break
+            # Dead backend: HTTP 200 with {"status":"error",...} and no "error"
+            # key — indistinguishable from "no parcels" without this check.
+            # Cabarrus was fully down like this on 2026-07-09.
+            if parsed.get("status") == "error":
+                if attempt < _ARCGIS_QUERY_RETRIES:
+                    time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
+                    continue
+                logger.error("ArcGIS SERVER DOWN at %s: %s — results empty; do "
+                             "NOT treat as 'no parcels found'",
+                             url, "; ".join(parsed.get("messages") or []))
+                break
+            data = parsed
             break
-        if r.status_code != 200:
-            logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
-            break
-        try:
-            data = r.json()
-        except ValueError:
-            logger.warning("ArcGIS: invalid JSON at %s", url)
+        if data is None:
             break
         if "error" in data:
             logger.warning("ArcGIS error at %s: %s", url, data["error"])
-            break
-        # ArcGIS Server reports a dead backend as HTTP 200 with
-        # {"status":"error","messages":[...]} — no "error" key. Without this
-        # branch an outage is indistinguishable from "this owner has no
-        # parcels", and every row for that county is silently dropped as
-        # "no parcel found in county GIS". Cabarrus was down like this on
-        # 2026-07-09 ("Could not access any server machines").
-        if data.get("status") == "error":
-            logger.error("ArcGIS SERVER DOWN at %s: %s — results for this county "
-                         "will be empty; do NOT treat as 'no parcels found'",
-                         url, "; ".join(data.get("messages") or []))
             break
         feats = data.get("features") or []
         if not feats:
