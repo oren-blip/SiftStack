@@ -231,6 +231,45 @@ _DEFAULT_UA = (
 )
 
 
+async def refresh_waf_cookie(*, force: bool = False, headless: bool = True) -> dict:
+    """Get a usable AWS-WAF session for standalone (non-scrape) jobs.
+
+    Returns {"waf_token", "all_cookies", "user_agent"}. Reuses the cached
+    cookie when fresh (unless force=True), otherwise launches Playwright,
+    passes the WAF gate (solving via CapSolver if needed), and saves the new
+    cookie. Used by the paced document drainer, which runs for hours and must
+    re-mint the token as it ages out.
+    """
+    cached = None if force else _load_cached_waf_cookie()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless)
+        ua = (cached.get("user_agent") if cached else None) or _DEFAULT_UA
+        ctx = await browser.new_context(viewport={"width": 1440, "height": 900}, user_agent=ua)
+        ctx.set_default_timeout(60_000)
+        if cached:
+            await ctx.add_cookies([{
+                "name": "aws-waf-token", "value": cached["aws_waf_token"],
+                "domain": ".tylertech.cloud", "path": "/", "httpOnly": False,
+                "secure": True, "sameSite": "Lax",
+            }])
+        page = await ctx.new_page()
+        try:
+            await page.goto(PORTAL_URL, wait_until="domcontentloaded", timeout=45_000)
+            await page.wait_for_timeout(2000)
+            if await _is_waf_gate(page):
+                ctx, page = await _solve_and_inject_waf(browser, ctx, page)
+            ctx_cookies = await ctx.cookies("https://portal-nc.tylertech.cloud/")
+            waf = next((c for c in ctx_cookies if c["name"] == "aws-waf-token"), None)
+            token = waf["value"] if waf else (cached["aws_waf_token"] if cached else "")
+            all_cookies = {c["name"]: c["value"] for c in ctx_cookies if c.get("name")}
+            if token and not cached:
+                _save_waf_cookie(token, ua)
+            return {"waf_token": token, "all_cookies": all_cookies, "user_agent": ua}
+        finally:
+            await ctx.close()
+            await browser.close()
+
+
 # ── Smart Search form driving ────────────────────────────────────────
 
 
