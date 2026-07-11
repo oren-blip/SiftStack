@@ -4192,10 +4192,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_full, n_name, n_tried = second_pass_obituary_for_heirs_of(kept)
     print(f"  Tried: {n_tried}  Promoted with address: {n_full}  Promoted name-only: {n_name}")
 
-    print("Step 4.7: populate Zillow URL column for each kept row "
-          "(listing-status manual-check link)")
-    n_zillow = populate_zillow_urls(kept)
-    print(f"  Zillow URLs populated: {n_zillow}")
+    # Step 4.7 (populate_zillow_urls) removed 2026-07-11 per Oren — DataSift
+    # provides the Zillow/listing link in the property record after upload, so
+    # generating one per row here is redundant. The function is retained (unused)
+    # in case the standalone workbook ever wants it again.
 
     out_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.csv"
     out_xlsx = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift.xlsx"
@@ -4203,6 +4203,15 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     write_xlsx(kept, out_xlsx)
     print(f"  Wrote: {out_csv}")
     print(f"  Wrote: {out_xlsx}")
+
+    # DataSift-native upload file: headers match DataSift's field names so the
+    # upload wizard auto-maps every column (no manual dragging), and Tags / List
+    # / Zillow are dropped (Oren tags by week in DataSift). The FTM csv+xlsx above
+    # stay as-is for the review workbook.
+    from nc_datasift_export import write_datasift_upload_csv
+    upload_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift_upload.csv"
+    n_up = write_datasift_upload_csv(kept, upload_csv)
+    print(f"  Wrote: {upload_csv}  ({n_up} rows, DataSift-native headers)")
 
 
 def main() -> None:
