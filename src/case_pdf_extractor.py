@@ -391,8 +391,59 @@ def extract_text(pdf_bytes: bytes) -> str:
 
 def needs_ocr(text: str) -> bool:
     """Heuristic — short or empty text after native extraction means the
-    PDF is scanned and an OCR pass is needed (not yet wired here)."""
+    PDF is scanned and an OCR pass is needed."""
     return len(text.strip()) < 100
+
+
+def ocr_pdf_bytes(pdf_bytes: bytes, *, dpi: int = 200, max_pages: int = 8) -> str:
+    """Render a PDF's pages to images and OCR them with Tesseract.
+
+    For the scanned applications/wills that have no native text layer — the
+    majority of the fetchable case-doc backlog (2026-07-12: the top no-PR
+    cases with a fragment all returned empty because they're scanned images).
+    Reuses the same pypdfium2 render + image_utils.ocr_page path as the PDF
+    import pipeline. Caps pages so a long filing with attachments doesn't
+    stall the drain.
+    """
+    try:
+        import pypdfium2 as pdfium
+        from image_utils import ocr_page, fix_rotation
+    except ImportError as e:
+        logger.warning("OCR unavailable (%s) — cannot read scanned PDF", e)
+        return ""
+    out: list[str] = []
+    try:
+        pdf = pdfium.PdfDocument(BytesIO(pdf_bytes))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("OCR: could not open PDF: %s", e)
+        return ""
+    try:
+        for i in range(min(len(pdf), max_pages)):
+            try:
+                img = pdf[i].render(scale=dpi / 72).to_pil()
+                try:
+                    img = fix_rotation(img)
+                except Exception:  # noqa: BLE001
+                    pass  # OSD is flaky; OCR the un-rotated page rather than fail
+                out.append(ocr_page(img, psm=3))
+            except Exception as e:  # noqa: BLE001
+                logger.debug("OCR: page %d failed: %s", i, e)
+    finally:
+        pdf.close()
+    return "\n".join(out)
+
+
+def extract_text_with_ocr(pdf_bytes: bytes) -> str:
+    """Native text layer, falling back to Tesseract OCR for scanned PDFs.
+
+    Returns the OCR text only when it recovers more than the native layer, so
+    a partial native layer is never replaced by worse OCR.
+    """
+    text = extract_text(pdf_bytes)
+    if not needs_ocr(text):
+        return text
+    ocr = ocr_pdf_bytes(pdf_bytes)
+    return ocr if len(ocr.strip()) > len(text.strip()) else text
 
 
 # ── LLM parsing ───────────────────────────────────────────────────────
@@ -564,9 +615,9 @@ def fetch_and_parse_will_by_longhex(
     except Exception as e:
         logger.warning("PDF download failed for long_hex %s...: %s", long_hex[:16], e)
         return {}
-    text = extract_text(pdf_bytes)
+    text = extract_text_with_ocr(pdf_bytes)
     if needs_ocr(text):
-        logger.info("long_hex %s...: native extraction yielded %d chars; OCR fallback not yet wired",
+        logger.info("long_hex %s...: no usable text even after OCR (%d chars)",
                     long_hex[:16], len(text))
         return {}
     return parse_will(text, api_key=api_key)
@@ -637,9 +688,9 @@ def fetch_and_parse_case_docs(
                         logger.warning("api/ViewDocument also failed for %s fragment %s: %s",
                                        doc_type, fragment_id, e2)
                         continue
-                text = extract_text(pdf_bytes)
+                text = extract_text_with_ocr(pdf_bytes)
                 if needs_ocr(text):
-                    logger.info("%s fragment %s: needs OCR, skipping",
+                    logger.info("%s fragment %s: no usable text even after OCR",
                                 doc_type, fragment_id)
                     continue
                 parsed = spec.parser(text, api_key=api_key)
@@ -687,9 +738,9 @@ def fetch_and_parse_case_wills(
             except Exception as e:
                 logger.warning("Will fetch failed for fragment %s: %s", fragment_id, e)
                 continue
-            text = extract_text(pdf_bytes)
+            text = extract_text_with_ocr(pdf_bytes)
             if needs_ocr(text):
-                logger.info("Will fragment %s: needs OCR, skipping", fragment_id)
+                logger.info("Will fragment %s: no usable text even after OCR", fragment_id)
                 continue
             parsed = parse_will(text, api_key=api_key)
             if parsed:
