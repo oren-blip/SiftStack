@@ -841,6 +841,136 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
     return recovered
 
 
+def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
+    """Validate a NAME-matched parcel against the decedent's OWN address.
+
+    Targets the common-name false positive (Week 28: Morris, Michael and
+    Adams, James). On a common surname the name matcher picks one of several
+    same-named people's parcels essentially at random, and the decedent's real
+    home is not among the candidates, so the address tiebreaker can't help —
+    it only ranks WITHIN the name-match set. This runs a second, independent
+    check against the decedent's listed address.
+
+    Two outcomes:
+
+    SWAP ("addr-corrected") — the decedent's address resolves to a parcel whose
+      owner carries the decedent's surname, and it differs from the picked
+      parcel. The decedent literally owned the home they lived in; that beats
+      any namesake guess. Repoint the row (value cleared so Step 1.6/1.7
+      re-derive; flows through the rest of the pipeline normally).
+
+    FLAG ("addr-uncorroborated") — the decedent's address is NOT surname-owned,
+      the picked parcel is not on that street, AND the name search is ambiguous
+      (2+ parcels tied at the top score). We can't corroborate the pick, so
+      flag it for review rather than silently ship a maybe-wrong address. This
+      is the Morris case (lived at 485 Cornwall, owned by Lenkiewicz; picked a
+      different Morris) and Adams (lived at 204 Buckskin, owned by Rollinson;
+      picked one of four James Adamses).
+
+    Skips rows already sourced from the decedent's address (Step 0.64). Runs
+    before sibling backfill / value / filters so a swap flows through cleanly.
+    """
+    from nc_gis_lookup import (
+        lookup_by_address, lookup_properties, split_decedent_name,
+        _ARCGIS_CONFIG, _compose_address, _name_match_score,
+    )
+
+    def owner_str(hit: dict, owner_fields: list[str]) -> str:
+        return " ".join(str(hit.get(f) or "") for f in owner_fields).upper()
+
+    def pid_of(hit: dict, pid_field: str) -> str:
+        v = str(hit.get(pid_field) or "").strip()
+        return v.split(".", 1)[0] if re.fullmatch(r"\d+\.0+", v) else v
+
+    def _distinctive(addr: str) -> set[str]:
+        # Street-name words only — drop the house number, suffix, and BOTH
+        # spelled-out and abbreviated directionals, so "901 North Oakland St"
+        # and "N Oakland St" compare equal on {oakland}.
+        return {t for t in _street_core_tokens(addr)
+                if t.isalpha() and len(t) > 1 and t not in _DIRECTIONAL_WORDS}
+
+    def same_street(a: str, b: str) -> bool:
+        da, db = _distinctive(a), _distinctive(b)
+        return bool(da and db and (da & db))
+
+    swapped = flagged = 0
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        dec_addr = (r.get("Decedent Address") or "").strip()
+        if not (pid and dec and county and dec_addr):
+            continue
+        # Already sourced from the decedent's address — nothing to corroborate.
+        if "decedent-address" in (r.get("Match Reason") or ""):
+            continue
+        cfg = _ARCGIS_CONFIG.get(county.lower())
+        if not cfg:
+            continue
+        _f, _m, last = split_decedent_name(dec)
+        if not last:
+            continue
+        try:
+            addr_hits = lookup_by_address(dec_addr, county)
+        except Exception:  # noqa: BLE001
+            continue
+        owner_fields = cfg.get("owner_fields") or []
+        pid_field = cfg.get("parcel_field") or "PIN"
+        last_u = last.upper()
+        surname_hits = [h for h in addr_hits
+                        if last_u in re.split(r"[^A-Z]+", owner_str(h, owner_fields))]
+        # A swap must match the decedent's FULL name, not just the surname.
+        # Families cluster: Samuel Morrison (26E000672-480) lived at 1911 Old
+        # Wilkesboro, a parcel owned by MORRISON RUBY B HEIRS — a DIFFERENT
+        # decedent (Ruby, 26E000673-480, next door). The surname gate matched
+        # the wrong Morrison; a full-name gate rejects it.
+        fullname_hits = [h for h in surname_hits
+                         if _name_match_score(dec, owner_str(h, owner_fields)) >= 0.9]
+
+        # ── SWAP: the decedent owned the home they lived in ──
+        if fullname_hits:
+            home = fullname_hits[0]
+            home_pid = pid_of(home, pid_field)
+            if home_pid and home_pid != pid:
+                situs = _compose_address(home, cfg.get("situs_fields") or [])
+                note = f"[ADDR-CORRECTED to decedent's home {dec_addr}; was parcel {pid}]"
+                r["Parcel ID"] = home_pid
+                if situs:
+                    r["Property Address"] = situs
+                r["Property Value"] = ""   # re-derived by Step 1.6/1.7
+                existing = (r.get("Notes") or "").strip()
+                r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+                tag_reason(r, "addr-corrected")
+                print(f"  ADDR-CORRECT {county}/{dec}: {pid} -> {home_pid} "
+                      f"at {situs!r} (decedent's own address {dec_addr!r})")
+                swapped += 1
+            continue
+
+        # ── FLAG: uncorroborated namesake pick ──
+        if same_street(r.get("Property Address", ""), dec_addr):
+            continue  # picked the street the decedent lived on — good enough
+        try:
+            top = [c for c in lookup_properties(dec, county) if c.match_score >= 0.99]
+        except Exception:  # noqa: BLE001
+            top = []
+        if len(top) < 2:
+            continue  # unique-ish name — not a coin-flip, don't cry wolf
+        who = owner_str(addr_hits[0], owner_fields).title().strip() if addr_hits else ""
+        note = (f"[VERIFY LOW-CONFIDENCE: matched on common name among {len(top)} "
+                f"{last.title()} parcels; decedent's address {dec_addr} "
+                + (f"is owned by {who}" if who else "was not found in GIS")
+                + f", not a {last.title()}]")
+        existing = (r.get("Notes") or "").strip()
+        if "VERIFY LOW-CONFIDENCE" not in existing.upper():
+            r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+            tag_reason(r, "addr-uncorroborated")
+            print(f"  ADDR-FLAG {county}/{dec}: pick {pid} at "
+                  f"{r.get('Property Address')!r} not corroborated by decedent "
+                  f"address {dec_addr!r} ({len(top)} namesakes)")
+            flagged += 1
+    return swapped, flagged
+
+
 def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
     """For rows with a blank Parcel ID, look up the DECEDENT'S OWN address —
     the one Odyssey already returns on the Parties API — in county GIS.
@@ -2538,6 +2668,14 @@ def _leading_house_number(addr: str | None) -> str:
     return m.group(1) if m else ""
 
 
+# Directionals in both forms, so "North Oakland" and "N Oakland" match.
+_DIRECTIONAL_WORDS = {
+    "n", "s", "e", "w", "ne", "nw", "se", "sw",
+    "north", "south", "east", "west",
+    "northeast", "northwest", "southeast", "southwest",
+}
+
+
 def _street_core_tokens(addr: str | None) -> set[str]:
     """Normalized street tokens minus the house number and street
     suffixes/directionals — the 'distinctive' part of a street name."""
@@ -3785,6 +3923,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.66: Small Estate Disposed-recent — match parcel via Interested Person mailing")
     n_se_recovered = address_lookup_for_small_estate_disposed(rows)
     print(f"  Small Estate parcels recovered via Interested-Person address: {n_se_recovered}")
+
+    print("Step 0.68: cross-check name-matched parcels against the decedent's own address")
+    n_addr_swap, n_addr_flag = crosscheck_parcel_vs_decedent_address(rows)
+    print(f"  Corrected to decedent's home: {n_addr_swap}  Flagged uncorroborated: {n_addr_flag}")
 
     print("Step 0.6: scan blank-parcel rows for heir-transfer candidates (embedded surname)")
     heir_transfer_rows = collect_heir_transfer_candidates(rows)
