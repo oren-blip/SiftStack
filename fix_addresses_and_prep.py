@@ -4209,9 +4209,12 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     # / Zillow are dropped (Oren tags by week in DataSift). The FTM csv+xlsx above
     # stay as-is for the review workbook.
     from nc_datasift_export import write_datasift_upload_csv
+    _wk_m = re.search(r"week(\d+)", tag)
+    _wk = int(_wk_m.group(1)) if _wk_m else None
     upload_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift_upload.csv"
-    n_up = write_datasift_upload_csv(kept, upload_csv)
-    print(f"  Wrote: {upload_csv}  ({n_up} rows, DataSift-native headers)")
+    n_up = write_datasift_upload_csv(kept, upload_csv, week=_wk)
+    print(f"  Wrote: {upload_csv}  ({n_up} rows, DataSift-native headers, "
+          f"Tags=Courthouse Data + Week {_wk})")
 
 
 def main() -> None:

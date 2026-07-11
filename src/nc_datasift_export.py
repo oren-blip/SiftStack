@@ -6,21 +6,41 @@ every upload needed manual column-mapping in the wizard. This writes a CSV whose
 headers ARE DataSift's field names, so the upload auto-maps with no dragging.
 
 Per Oren (2026-07-11):
-  - drop Tags and List — he uploads to a master "Probate" list and tags by week
-    inside DataSift, so those columns are redundant.
-  - drop the Zillow URL — DataSift shows the listing in the property record after
-    upload.
-
-The header order below is the emit order. Beneficiaries is a custom field Oren
-added in DataSift; DataSift maps a header of the same name to it.
+  - drop the List column — he selects the master "PROBATE" list in the wizard.
+  - drop the Zillow URL — DataSift shows the listing in the property record.
+  - Tags column auto-populated with exactly "Courthouse Data" and
+    "NC Estates Week <N> 2026" so he no longer types them in the wizard.
+  - File Date maps to DataSift's custom "Probate Open Date" field.
+  - Owner First/Last = the PR (the mail contact), Decedent Name = the deceased.
+  - Phone 2-9 / Email 2-5 emitted empty so Tracerfy / DataSift skip-trace numbers
+    land in the right built-in fields.
 """
 from __future__ import annotations
 
 import csv
 from pathlib import Path
 
-# (DataSift header, source FTM key or None). None => constant/derived, handled
-# in _row_to_datasift. Order = column order in the file.
+# Structure Type: map the pipeline's use codes to DataSift's structure vocabulary.
+# ⚠️ Best-guess wording — verify against the options in DataSift's Structure Type
+# field and adjust if they differ.
+_STRUCTURE_TYPE = {
+    "SFR": "Single Family Residential",
+    "MH": "Mobile Home",
+    "MH/VACANT": "Mobile Home",
+    "VACANT LAND": "Vacant Land",
+    "VACANT": "Vacant Land",
+    "LAND": "Vacant Land",
+    "CONDO": "Condominium",
+    "TOWNHOUSE": "Townhouse",
+    "COMMERCIAL": "Commercial",
+}
+
+# Empty phone/email slots so Tracerfy / DataSift skip-trace numbers map cleanly.
+_PHONE_SLOTS = [f"Phone {i}" for i in range(1, 10)]   # Phone 1-9
+_EMAIL_SLOTS = [f"Email {i}" for i in range(1, 6)]    # Email 1-5
+
+# (DataSift header, source FTM key or None). None => constant/derived in
+# _row_to_datasift. Order = column order in the file.
 _FIELD_MAP: list[tuple[str, str | None]] = [
     ("Property Street Address", "Property Address"),
     ("Property City",           "Property City"),
@@ -32,16 +52,16 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     ("Mailing City",            "Mailing City"),
     ("Mailing State",           "Mailing State"),
     ("Mailing ZIP Code",        "Mailing Zip"),
-    ("Phone 1",                 None),   # Phone 1, else DM Phone
-    ("Email 1",                 "DM Email"),
+    *[(p, None) for p in _PHONE_SLOTS],
+    *[(e, None) for e in _EMAIL_SLOTS],
     ("Estimated Value",         "Property Value"),
-    ("Structure Type",          "Property use"),
+    ("Structure Type",          None),   # mapped from Property use
     ("Parcel ID",               "Parcel ID"),
     ("Personal Representative", "Personal Representative"),
     ("County",                  "County"),
     ("Notice Type",             None),   # constant "Probate"
     ("Owner Deceased",          None),   # constant "Yes"
-    ("Date Added",              "File Date"),
+    ("Probate Open Date",       "File Date"),
     ("Decedent Name",           "Deceased Owner"),
     ("Date of Death",           "Date of Death (App)"),
     ("Decision Maker",          "DM Name"),
@@ -52,34 +72,62 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     ("DM 3 Relationship",       "DM 3 Relationship"),
     ("Beneficiaries",           "Beneficiaries"),   # Oren's DataSift custom field
     ("Notes",                   "Notes"),
+    ("Tags",                    None),   # "Courthouse Data,NC Estates Week N 2026"
 ]
 
 DATASIFT_UPLOAD_COLUMNS = [h for h, _ in _FIELD_MAP]
 
 
-def _row_to_datasift(r: dict) -> dict:
+def _tags_for_week(week: int | None, year: int) -> str:
+    tags = ["Courthouse Data"]
+    if week:
+        tags.append(f"NC Estates Week {week} {year}")
+    return ",".join(tags)   # DataSift CSV tag separator is a comma
+
+
+def _row_to_datasift(r: dict, tags: str) -> dict:
     out: dict[str, str] = {}
     for header, src in _FIELD_MAP:
         if src is not None:
             out[header] = (r.get(src) or "").strip()
-    # Phone 1: prefer the pipeline's Phone 1; fall back to the DM's phone.
-    out["Phone 1"] = (r.get("Phone 1") or r.get("DM Phone") or "").strip()
-    # Constants — every NC row is a probate with a deceased owner.
+
+    # Phones: Phone 1 = pipeline Phone 1, else the DM's phone. Phone 2 = the DM
+    # phone if it wasn't already used as Phone 1. The rest stay empty for
+    # Tracerfy / DataSift skip-trace to fill.
+    for p in _PHONE_SLOTS:
+        out[p] = ""
+    for e in _EMAIL_SLOTS:
+        out[e] = ""
+    p1 = (r.get("Phone 1") or "").strip()
+    dm_phone = (r.get("DM Phone") or "").strip()
+    if p1:
+        out["Phone 1"] = p1
+        if dm_phone and dm_phone != p1:
+            out["Phone 2"] = dm_phone
+    elif dm_phone:
+        out["Phone 1"] = dm_phone
+    out["Email 1"] = (r.get("DM Email") or "").strip()
+
+    out["Structure Type"] = _STRUCTURE_TYPE.get(
+        (r.get("Property use") or "").strip().upper(), "")
     out["Notice Type"] = "Probate"
     out["Owner Deceased"] = "Yes"
+    out["Tags"] = tags
     return out
 
 
-def write_datasift_upload_csv(rows: list[dict], path: str | Path) -> int:
+def write_datasift_upload_csv(rows: list[dict], path: str | Path,
+                              week: int | None = None, year: int = 2026) -> int:
     """Write `rows` (polished FTM dicts) to a DataSift-native upload CSV.
 
-    Returns the number of rows written.
+    `week`/`year` populate the per-week Tags. Returns rows written.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    tags = _tags_for_week(week, year)
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS)
         w.writeheader()
         for r in rows:
-            w.writerow(_row_to_datasift(r))
+            w.writerow(_row_to_datasift(r, tags))
     return len(rows)
