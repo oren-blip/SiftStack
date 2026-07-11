@@ -694,6 +694,86 @@ def _polaris3g_search(
     return out
 
 
+# Street-suffix abbreviations Mecklenburg's polaris3g `situs` field uses. Odyssey
+# sometimes spells the suffix out ("DRIVE", "COURT"); bolt situs is exact-match,
+# so we must abbreviate before querying. Verified 2026-07-11: normalizing lifted
+# the Week 28 Meck decedent-address hit rate from 2/7 to 5/7.
+_SITUS_SUFFIX_ABBR = {
+    "DRIVE": "DR", "COURT": "CT", "PLACE": "PL", "LANE": "LN", "ROAD": "RD",
+    "STREET": "ST", "AVENUE": "AVE", "BOULEVARD": "BLVD", "CIRCLE": "CIR",
+    "TERRACE": "TER", "TRAIL": "TRL", "PARKWAY": "PKWY", "HIGHWAY": "HWY",
+    "COVE": "CV", "SQUARE": "SQ",
+}
+# Mecklenburg municipalities to try when the row's city is unknown/wrong.
+# Charlotte first (the overwhelming majority of parcels).
+_MECK_MUNICIPALITIES = (
+    "CHARLOTTE", "HUNTERSVILLE", "MATTHEWS", "MINT HILL", "CORNELIUS",
+    "DAVIDSON", "PINEVILLE",
+)
+
+
+def _polaris3g_address_search(address: str, city_hint: str = "") -> list[dict]:
+    """Mecklenburg address lookup via polaris3g bolt's `situs` param.
+
+    bolt has no fuzzy address search — `situs` is an EXACT match on the full
+    "NUM STREET SUFFIX CITY STATE" string. So reconstruct that string from the
+    decedent's Odyssey address (uppercase, suffix abbreviated) and try each
+    plausible municipality until one hits. Returns FLAT dicts shaped for
+    _ARCGIS_CONFIG["mecklenburg"] (owner / pin / situs_street / situs_city /
+    land_use_desc / market_value).
+    """
+    if not address:
+        return []
+    toks = [_SITUS_SUFFIX_ABBR.get(t, t)
+            for t in re.sub(r"[^\w\s]", " ", address.upper()).split()]
+    street = " ".join(toks).strip()
+    if not street:
+        return []
+    cities: list[str] = []
+    for c in [city_hint, *_MECK_MUNICIPALITIES]:
+        c = (c or "").upper().strip()
+        if c and c not in cities:
+            cities.append(c)
+
+    session = requests.Session()
+    for city in cities:
+        try:
+            r = session.get(_POLARIS3G_BASE, params={"situs": f"{street} {city} NC", "page": 1},
+                            headers=_POLARIS3G_HEADERS, timeout=30)
+        except requests.RequestException as e:
+            logger.warning("polaris3g situs: request failed (%s): %s", city, e)
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            recs = r.json()
+        except ValueError:
+            continue
+        if not isinstance(recs, list) or not recs:
+            continue
+        out: list[dict] = []
+        for rec in recs:
+            owners = rec.get("owner") or []
+            owner_str = " | ".join(
+                str(o.get("fullname") or "").strip() for o in owners if o.get("fullname")
+            ) if isinstance(owners, list) else str(owners)
+            situs_full = rec.get("situs")
+            situs_full = situs_full[0] if isinstance(situs_full, list) and situs_full else (situs_full or "")
+            # Strip the trailing "CITY NC [zip]" so situs_street is just the street.
+            m = re.match(r"(.*?)\s+" + re.escape(city) + r"\s+NC\b", str(situs_full))
+            situs_street = (m.group(1).strip() if m else str(situs_full)).strip()
+            out.append({
+                "owner": owner_str,
+                "pin": str(rec.get("pid") or rec.get("gisid") or ""),
+                "situs_street": situs_street,
+                "situs_city": (rec.get("municipality") or city).title(),
+                "land_use_desc": rec.get("land_use_desc") or "",
+                "market_value": rec.get("market_value"),
+            })
+        return out
+    return []
+
+
 # Polaris3g land_use_code prefixes (simplified — see Mecklenburg county docs)
 _POLARIS3G_VACANT_PREFIXES = ("V", "AGV", "00")  # vacant land
 _POLARIS3G_RESIDENTIAL_PREFIXES = ("R",)          # R100, R122, ...
@@ -1048,6 +1128,20 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "parcel_field": "pin",   # GeoServer returns lowercase
         "use_field": None,       # no use code; vacancy comes from bldg_value == 0
         "use_desc_field": None,
+    },
+    "mecklenburg": {
+        # Name search uses polaris3g bolt directly (_lookup_mecklenburg, NOT this
+        # config). This entry only describes the FLAT dicts _polaris3g_address_search
+        # returns, so lookup_by_address-based steps (0.64 fallback, 0.68 cross-check)
+        # can read owner / pin / situs for Mecklenburg. url: None — no ArcGIS here.
+        "url": None,
+        "owner_fields": ["owner"],
+        "mailing_fields": [],
+        "situs_fields": ["situs_street"],
+        "situs_city_field": "situs_city",
+        "parcel_field": "pin",
+        "use_field": None,
+        "use_desc_field": "land_use_desc",
     },
     "iredell": {
         # FeatureServer/0 started returning HTTP 200 + {"error": 400 "Unable to
@@ -1892,11 +1986,14 @@ def _street_token_pattern(addr: str) -> str | None:
     return " ".join(parts[:take])
 
 
-def lookup_by_address(address: str, county: str) -> list[dict]:
+def lookup_by_address(address: str, county: str, city_hint: str = "") -> list[dict]:
     """Find parcels in `county` whose situs starts with the given address
     prefix. Useful as a fallback when name-search fails — e.g. a beneficiary
     in the case data lives at the inherited property, or the user has the
     decedent's last-known address from Odyssey Party Information.
+
+    `city_hint` — optional municipality, used only by Mecklenburg (polaris3g's
+    situs search is exact-match and needs the city). Ignored elsewhere.
 
     Returns raw attribute dicts (caller chooses how to score / present).
 
@@ -1913,6 +2010,8 @@ def lookup_by_address(address: str, county: str) -> list[dict]:
         if not prefix:
             return []
         return _catawba_wfs_query(f"paddress LIKE '{prefix}%'", max_features=50)
+    if county_key == "mecklenburg":
+        return _polaris3g_address_search(address, city_hint=city_hint)
     cfg = _ARCGIS_CONFIG.get(county_key)
     if not cfg or not cfg.get("url") or county_key == "mecklenburg":
         return []
