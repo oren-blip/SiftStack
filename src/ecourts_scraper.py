@@ -1258,14 +1258,18 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
     api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
     if not api_key:
         return 0
-    cdq.expire_old()
+    # Keep high-priority (no-PR survivor) cases in the queue longer — the court
+    # scans the Application/Will on a lag and the executor name matters most on
+    # these. Everything else expires at the 30-day default.
+    needed = cases_needing_docs()
+    cdq.expire_old(keep_case_numbers=set(needed))
     pending = cdq.load_pending()
     if not pending:
         return 0
 
     # Odyssey's document quota is ~6 fetches then ~1 per 50s, so spend it only
     # on rows a document can actually improve. Everything else stays queued.
-    needed = cases_needing_docs()
+    # (`needed` was computed just above for the priority-aware expiry.)
     targets = [(h, e) for h, e in pending.items()
                if (e.get("case_number") or "").strip().upper() in needed and e.get("needs")]
     # Fetch the highest-value leads first — the quota (~1 doc/min) rarely

@@ -375,6 +375,26 @@ def render_report(
         lines.append(f"  Step 0.5 Re-found correct parcels:        {polish_stats['refound']}")
     lines.append("")
 
+    # Documents the court still hasn't scanned for high-priority leads. We retry
+    # nightly for months, but if the Application/Will never appears the only way
+    # to the executor name is a manual courthouse pull — surface the oldest so
+    # Oren can grab them by hand.
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        import case_doc_queue as _cdq  # noqa: E402
+        from ecourts_scraper import cases_needing_docs as _cnd  # noqa: E402
+        stale_docs = _cdq.long_pending_high_priority(set(_cnd()), min_age_days=21)
+        if stale_docs:
+            lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
+            for e in stale_docs[:15]:
+                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
+                             f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
+            if len(stale_docs) > 15:
+                lines.append(f"  ... and {len(stale_docs) - 15} more")
+            lines.append("")
+    except Exception:
+        pass
+
     # Tracerfy spend (when funded). One-line summary of this week's burn
     # vs cap — useful for catching runaway costs before they hit the cap.
     try:

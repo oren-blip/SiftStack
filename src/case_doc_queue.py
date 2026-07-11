@@ -44,6 +44,9 @@ _PENDING_PATH = Path("output") / "pending_case_docs.json"
 _FETCHED_PATH = Path("output") / "fetched_case_docs.json"
 
 MAX_PENDING_DAYS = int(os.environ.get("CASE_DOC_QUEUE_MAX_DAYS", "30"))
+# High-priority cases (no-PR survivors) are kept longer — the court may scan the
+# Application/Will months after filing, and the executor name matters most here.
+PRIORITY_PENDING_DAYS = int(os.environ.get("CASE_DOC_QUEUE_PRIORITY_DAYS", "90"))
 
 # Schema version — bump when the JSON shape changes so we know to re-derive.
 _SCHEMA_VERSION = 1
@@ -209,9 +212,22 @@ def mark_fetched(case_id_hex: str, doc_type: str) -> None:
     _save_pending(entries)
 
 
-def expire_old(max_days: int = MAX_PENDING_DAYS) -> int:
-    """Drop queue entries older than max_days. Returns count expired."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max_days)
+def expire_old(max_days: int = MAX_PENDING_DAYS, *,
+               keep_case_numbers: set[str] | None = None,
+               keep_days: int = PRIORITY_PENDING_DAYS) -> int:
+    """Drop queue entries older than max_days. Returns count expired.
+
+    Courts scan the Application/Will into Odyssey on a lag (days to weeks, or
+    never for paper-only filings), so we keep retrying — nightly — for a window
+    rather than giving up after one miss. High-priority cases get a LONGER
+    window: pass `keep_case_numbers` (the no-PR survivors from
+    cases_needing_docs) and those are kept `keep_days` instead of `max_days`.
+    The missing executor name matters most on exactly those, so it's worth
+    chasing a late scan for months before writing the case off to a manual
+    courthouse pull.
+    """
+    keep_case_numbers = {c.strip().upper() for c in (keep_case_numbers or set())}
+    now = datetime.now(timezone.utc)
     entries = load_pending()
     expired_ids = []
     for cid, e in entries.items():
@@ -221,14 +237,44 @@ def expire_old(max_days: int = MAX_PENDING_DAYS) -> int:
                 first = first.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
-        if first < cutoff:
+        cn = (e.get("case_number") or "").strip().upper()
+        limit = keep_days if cn in keep_case_numbers else max_days
+        if first < now - timedelta(days=limit):
             expired_ids.append(cid)
     for cid in expired_ids:
         del entries[cid]
     if expired_ids:
         _save_pending(entries)
-        logger.info("case_doc_queue: expired %d entries past %d days", len(expired_ids), max_days)
+        logger.info("case_doc_queue: expired %d entries (%d-day default, %d-day priority)",
+                    len(expired_ids), max_days, keep_days)
     return len(expired_ids)
+
+
+def long_pending_high_priority(keep_case_numbers: set[str],
+                               min_age_days: int = 21) -> list[dict]:
+    """High-priority cases whose document the court still hasn't scanned after
+    `min_age_days`. These are the manual-courthouse-pull candidates — we've
+    retried nightly for weeks and the PDF never appeared. Returns entry dicts
+    with an added `age_days`, oldest first.
+    """
+    keep = {c.strip().upper() for c in keep_case_numbers}
+    now = datetime.now(timezone.utc)
+    out = []
+    for e in load_pending().values():
+        cn = (e.get("case_number") or "").strip().upper()
+        if cn not in keep:
+            continue
+        try:
+            first = datetime.fromisoformat(e.get("first_seen_iso", ""))
+            if first.tzinfo is None:
+                first = first.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        age = (now - first).days
+        if age >= min_age_days:
+            out.append({**e, "age_days": age})
+    out.sort(key=lambda e: e["age_days"], reverse=True)
+    return out
 
 
 def pending_summary() -> dict[str, Any]:
