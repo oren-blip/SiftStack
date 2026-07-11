@@ -997,7 +997,7 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
     from pathlib import Path as _Path
     from nc_gis_lookup import (
         lookup_by_address, split_decedent_name, _ARCGIS_CONFIG, _compose_address,
-        simplify_use_code,
+        simplify_use_code, _name_match_score,
     )
 
     targets = [r for r in rows
@@ -1051,13 +1051,21 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
         owner_fields = cfg.get("owner_fields") or []
         pid_field = cfg.get("parcel_field") or "PIN"
 
-        # Keep every parcel at that address whose owner-of-record carries the
-        # decedent's surname. A single address routinely resolves to the house
-        # AND its adjacent lot (Pierce: 680 Lippard Farm Rd + the lot behind it).
+        # Keep every parcel at that address whose owner-of-record NAME-matches
+        # the decedent. A single address routinely resolves to the house AND its
+        # adjacent lot (Pierce: 680 Lippard Farm Rd + the lot behind it).
+        #
+        # Score against the full name, not just the surname: families cluster,
+        # and a surname-only gate would assign a same-surname RELATIVE's parcel.
+        # Samuel Morrison (26E000672-480) lived at 1911 Old Wilkesboro, owned by
+        # MORRISON RUBY B HEIRS — a different decedent (Ruby, 26E000673-480). The
+        # 0.5 floor accepts a decedent's own deed even when the middle initial
+        # differs (Pierce "Gail H" vs deed "GAIL P" = 0.60) while rejecting a
+        # wrong-first-name relative (Samuel vs "RUBY" = 0.40).
         matched: list[tuple[str, str, dict]] = []
         for attrs in hits:
             owner_str = " ".join(str(attrs.get(of) or "") for of in owner_fields).upper()
-            if dec_last.upper() not in re.split(r"[^A-Z]+", owner_str):
+            if _name_match_score(dec, owner_str) < 0.5:
                 continue
             pid = str(attrs.get(pid_field) or "").strip()
             # ArcGIS hands back float-ish ids ("4705686222.000"); Oren records

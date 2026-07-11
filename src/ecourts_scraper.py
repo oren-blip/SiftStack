@@ -1127,26 +1127,33 @@ def _enrich_with_case_docs(notices: list[NoticeData], *, waf_token: str,
     return enriched
 
 
-def cases_needing_docs(max_age_days: int = 30) -> set[str]:
+def cases_needing_docs(max_age_days: int = 30) -> dict[str, tuple]:
     """Case numbers whose polished row still has no named Personal
-    Representative — the only rows a court document can improve.
+    Representative, mapped to a PRIORITY key — the only rows a court document
+    can improve, ranked by how much fetching one is worth.
 
-    A case document is worth ~50s of Odyssey's throttled quota, so we only
-    spend it where it changes the sheet. Two thirds of the queue is cases the
-    polish pipeline later drops (no parcel, over buy-box cap, heir-occupied),
-    and most survivors already got a PR from the OData Parties API. Measured
-    2026-07-08: 389 queued cases -> 13 that actually need a document.
+    A case document costs ~50-60s of Odyssey's throttled quota (~1/min), and
+    the backlog runs into the hundreds, so ORDER matters: spend the quota on
+    the leads that pay off first. Priority key (higher = fetched sooner), all
+    read from the polished row:
+      1. no existing contact  — a "Heirs of" row with an empty Beneficiaries
+         column is fully blocked; the document is the only way to a name.
+         One with beneficiaries already has marketing targets, so it can wait.
+      2. property value       — a bigger deal is worth the quota first.
+      3. recency (file mtime) — fresher filings, first-to-market window open.
+
+    The drain sorts by this key descending. Membership still filters the queue
+    to no-PR survivors (two thirds of the queue is cases polish later drops, and
+    most survivors already got a PR from the OData Parties API).
 
     Reads the most recent polished CSVs (including archived weeks — Oren wants
-    a 30-day window regardless of archive state). A case scraped tonight won't
-    appear until tomorrow's polish, so its doc lands one run later; that is
-    well ahead of when the row gets worked.
+    a 30-day window regardless of archive state).
     """
     import csv as _csv
     cutoff = time.time() - max_age_days * 86400
-    # case_no -> (mtime of the file it came from, has_pr). Newest file wins:
-    # a case that lacked a PR last week but has one now must NOT be re-fetched.
-    latest: dict[str, tuple[float, bool]] = {}
+    # case_no -> (mtime, has_pr, priority_key). Newest file wins: a case that
+    # lacked a PR last week but has one now must NOT be re-fetched.
+    latest: dict[str, tuple[float, bool, tuple]] = {}
     for root, _dirs, files in os.walk("output"):
         for fn in files:
             if not (fn.endswith("_dm_enriched.csv") or fn.endswith("_datasift.csv")):
@@ -1167,10 +1174,24 @@ def cases_needing_docs(max_age_days: int = 30) -> set[str]:
                         pr = (r.get("Personal Representative")
                               or r.get("Executor Full Name") or "").strip()
                         has_pr = bool(pr) and not pr.lower().startswith("heirs of")
-                        latest[case_no] = (mtime, has_pr)
+                        val = _money(r.get("Property Value"))
+                        no_contact = 0 if (r.get("Beneficiaries") or "").strip() else 1
+                        prio = (no_contact, val, mtime)
+                        latest[case_no] = (mtime, has_pr, prio)
             except (OSError, UnicodeDecodeError, _csv.Error) as e:
                 logger.debug("cases_needing_docs: skipping %s (%s)", fp, e)
-    return {c for c, (_mtime, has_pr) in latest.items() if not has_pr}
+    return {c: prio for c, (_mtime, has_pr, prio) in latest.items() if not has_pr}
+
+
+def _money(v) -> float:
+    """Parse '482,550' / '$300k' / '' -> float. Lenient; 0.0 on failure."""
+    if v is None:
+        return 0.0
+    s = re.sub(r"[^\d.]", "", str(v))
+    try:
+        return float(s) if s else 0.0
+    except ValueError:
+        return 0.0
 
 
 def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) -> int:
@@ -1208,8 +1229,17 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
     needed = cases_needing_docs()
     targets = [(h, e) for h, e in pending.items()
                if (e.get("case_number") or "").strip().upper() in needed and e.get("needs")]
+    # Fetch the highest-value leads first — the quota (~1 doc/min) rarely
+    # clears the whole backlog in one run. Priority key from cases_needing_docs:
+    # (no-existing-contact, property value, recency), highest first.
+    targets.sort(key=lambda t: needed[(t[1].get("case_number") or "").strip().upper()],
+                 reverse=True)
     logger.info("eCourts: pending-doc queue = %d case(s); %d still lack a PR "
-                "and will be fetched", len(pending), len(targets))
+                "and will be fetched (highest-value first)", len(pending), len(targets))
+    if targets:
+        top = targets[0][1]
+        logger.info("eCourts: top doc-priority: %s (key=%s)",
+                    top.get("case_number"), needed.get((top.get("case_number") or "").upper()))
     if not targets:
         return 0
 
