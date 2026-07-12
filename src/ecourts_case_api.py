@@ -157,6 +157,28 @@ class CaseDetail:
         "next of kin",
         "interested person",
     }
+    # Role qualifiers the court prepends that don't change the underlying role:
+    # "Co-Executor", "Successor Administrator", "Substitute Trustee", etc. Stripped
+    # before matching so a Co-Executor is recognized as an executor. Without this,
+    # exact-set membership silently misses every co-appointment (Titterington
+    # 26E000789-170: sole party was "Co-Executor: Riggleman" → wrongly "Heirs of").
+    _ROLE_QUALIFIER_PREFIXES = (
+        "co-", "co ",
+        "successor ", "substitute ", "temporary ", "acting ",
+        "ancillary ", "limited ", "collector ",
+    )
+
+    @classmethod
+    def _normalize_role(cls, connection_type: str) -> str:
+        role = (connection_type or "").strip().lower()
+        changed = True
+        while changed:
+            changed = False
+            for pref in cls._ROLE_QUALIFIER_PREFIXES:
+                if role.startswith(pref):
+                    role = role[len(pref):].strip()
+                    changed = True
+        return role
     _BENEFIT_TYPES = {"beneficiary", "heir", "devisee", "legatee", "next of kin"}
     # Guardianship party types — these mark a case as a guardianship (living
     # incapacitated person), not a probate of a decedent
@@ -171,7 +193,7 @@ class CaseDetail:
     def is_guardianship(self) -> bool:
         """True when the case is a guardianship of a living person, not a decedent estate."""
         for p in self.parties:
-            if p.connection_type.lower() in self._GUARDIANSHIP_TYPES:
+            if self._normalize_role(p.connection_type) in self._GUARDIANSHIP_TYPES:
                 return True
         return False
 
@@ -183,16 +205,16 @@ class CaseDetail:
         executor exists (common for recently-opened cases).
         """
         for p in self.parties:
-            if p.connection_type.lower() in self._EXECUTOR_TYPES:
+            if self._normalize_role(p.connection_type) in self._EXECUTOR_TYPES:
                 return p
         for p in self.parties:
-            if p.connection_type.lower() in self._FALLBACK_CONTACT_TYPES:
+            if self._normalize_role(p.connection_type) in self._FALLBACK_CONTACT_TYPES:
                 return p
         return None
 
     @property
     def beneficiaries(self) -> list[CaseParty]:
-        return [p for p in self.parties if p.connection_type.lower() in self._BENEFIT_TYPES]
+        return [p for p in self.parties if self._normalize_role(p.connection_type) in self._BENEFIT_TYPES]
 
 
 # ── ID extraction ─────────────────────────────────────────────────────
