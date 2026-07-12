@@ -1967,6 +1967,69 @@ def _lookup_lincoln(decedent_name: str, min_score: float = 0.7) -> list[Property
     return _lookup_arcgis_county(decedent_name, "lincoln", min_score)
 
 
+# Lincoln's parcel-viewer query (ZONING) carries no structure type, so a condo
+# or townhouse reads as SFR. The real dwelling style lives in the Property
+# Record Card's backing tables: MainInfoLive links PIN -> AKPAR_ (account no.),
+# and Major_Improvement_View.AHDESC holds the style ('TOWNHOUSE', 'CONDOMINIUM',
+# 'SINGLE FAMILY', 'MOBILE HOME', ...). Compessi 26E000418-540 (PIN 4603760575
+# -> AKPAR_ 79206 -> AHDESC 'TOWNHOUSE') was the trigger.
+_LINCOLN_TABLES = ("https://arcgisserver.lincolncountync.gov/arcgis/rest/"
+                   "services/Server_Tables/MapServer")
+_lincoln_structure_cache: dict[str, str] = {}
+
+
+def _lincoln_ahdesc_to_bucket(ahdesc: str) -> str:
+    d = (ahdesc or "").strip().upper()
+    if not d:
+        return ""
+    if "TOWNHOUSE" in d or "TOWN HOUSE" in d or "ROW" in d:
+        return "Townhouse"
+    if "CONDO" in d:
+        return "Condo"
+    if "MOBILE" in d or "MANUFACTURED" in d or "MODULAR" in d:
+        return "MH"
+    if "SINGLE" in d or "CONVENTIONAL" in d or "RANCH" in d or "CAPE" in d \
+            or "SPLIT" in d or "COLONIAL" in d or "DWELLING" in d:
+        return "SFR"
+    return ""
+
+
+def lincoln_structure_type(pin: str) -> str:
+    """Return our use-bucket for a Lincoln parcel's dwelling style, or "".
+
+    Two-step: PIN -> AKPAR_ (MainInfoLive), AKPAR_ -> AHDESC
+    (Major_Improvement_View). Vacant parcels have no improvement row and
+    return "". Results cached per-process. Never raises — on any error the
+    caller keeps its existing classification.
+    """
+    pin = (pin or "").strip()
+    if not pin:
+        return ""
+    if pin in _lincoln_structure_cache:
+        return _lincoln_structure_cache[pin]
+    result = ""
+    try:
+        r = requests.get(f"{_LINCOLN_TABLES}/1/query", params={
+            "where": f"PIN='{pin}'", "outFields": "AKPAR_",
+            "returnGeometry": "false", "f": "json"},
+            headers=_ARCGIS_HEADERS, timeout=20)
+        feats = (r.json() or {}).get("features", [])
+        akpar = str(feats[0]["attributes"].get("AKPAR_") or "").strip() if feats else ""
+        if akpar:
+            r2 = requests.get(f"{_LINCOLN_TABLES}/8/query", params={
+                "where": f"AGPAR_='{akpar}'", "outFields": "AHDESC",
+                "returnGeometry": "false", "f": "json"},
+                headers=_ARCGIS_HEADERS, timeout=20)
+            ifeats = (r2.json() or {}).get("features", [])
+            ahdesc = str(ifeats[0]["attributes"].get("AHDESC") or "").strip() if ifeats else ""
+            result = _lincoln_ahdesc_to_bucket(ahdesc)
+    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
+        logger.debug("lincoln_structure_type(%s) failed: %s", pin, e)
+        return ""   # transient — don't poison the cache
+    _lincoln_structure_cache[pin] = result
+    return result
+
+
 # ── Heir-transfer fallback ───────────────────────────────────────────
 # When a decedent's regular name search returns 0 high-score matches, the
 # property has often already transferred to heirs whose owner-of-record name

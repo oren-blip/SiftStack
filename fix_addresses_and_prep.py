@@ -3521,6 +3521,36 @@ def drop_commercial(rows: list[dict]) -> tuple[list[dict], int]:
 _DROP_CONDO_TOWNHOUSE_USES = {"CONDO", "TOWNHOUSE", "CONDOMINIUM", "TOWN HOUSE"}
 
 
+def refine_lincoln_structure_type(rows: list[dict]) -> int:
+    """Upgrade Lincoln rows' Property use from the real dwelling style.
+
+    Lincoln's parcel query only exposes ZONING, so condos/townhouses read as
+    SFR. The Property Record Card's backing table has the true style (AHDESC).
+    For each Lincoln row with a Parcel ID, look it up; if it's a Condo or
+    Townhouse, set Property use so Step 2.1 drops it. Only overrides TO
+    Condo/Townhouse — never downgrades an existing classification.
+    """
+    from nc_gis_lookup import lincoln_structure_type
+    marked = 0
+    for r in rows:
+        if (r.get("County") or "").strip().lower() != "lincoln":
+            continue
+        pid = (r.get("Parcel ID") or "").strip()
+        if not pid:
+            continue
+        cur = (r.get("Property use") or "").strip()
+        if cur in ("Condo", "Townhouse"):
+            continue
+        bucket = lincoln_structure_type(pid)
+        if bucket in ("Condo", "Townhouse"):
+            r["Property use"] = bucket
+            tag_reason(r, "lincoln-ahdesc-structure")
+            marked += 1
+            print(f"  LINCOLN {bucket.upper()} {r.get('Deceased Owner')}: "
+                  f"{r.get('Property Address')!r} (PIN {pid}) -> {bucket}, will drop")
+    return marked
+
+
 def drop_condos_and_townhouses(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows whose Property use is Condo or Townhouse — per Oren's
     investor buy-box, these don't pencil out (HOA constraints, thin margins).
@@ -4211,6 +4241,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.87: mark Rowan condos (unit number in legal description) as Condo -> dropped at Step 2.1")
     n_condo_flagged = flag_rowan_possible_condos(rows)
     print(f"  Rowan condos marked (drop at 2.1): {n_condo_flagged}")
+
+    print("Step 1.88: refine Lincoln structure type from Property Record Card (AHDESC) -> mark Condo/Townhouse")
+    n_lincoln_struct = refine_lincoln_structure_type(rows)
+    print(f"  Lincoln condos/townhouses marked (drop at 2.1): {n_lincoln_struct}")
 
     # Step order rationale: people search FIRST (fills legit PR mailing),
     # THEN heir-occupied drop (now mailing is populated for the check),
