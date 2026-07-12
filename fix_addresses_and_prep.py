@@ -872,7 +872,7 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
     """
     from nc_gis_lookup import (
         lookup_by_address, lookup_properties, split_decedent_name,
-        _ARCGIS_CONFIG, _compose_address, _name_match_score,
+        _ARCGIS_CONFIG, _compose_address, _name_match_score, _middle_match_strength,
     )
 
     def owner_str(hit: dict, owner_fields: list[str]) -> str:
@@ -950,11 +950,22 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
         if same_street(r.get("Property Address", ""), dec_addr):
             continue  # picked the street the decedent lived on — good enough
         try:
-            top = [c for c in lookup_properties(dec, county) if c.match_score >= 0.99]
+            cands = lookup_properties(dec, county)
         except Exception:  # noqa: BLE001
-            top = []
+            cands = []
+        top = [c for c in cands if c.match_score >= 0.99]
         if len(top) < 2:
             continue  # unique-ish name — not a coin-flip, don't cry wolf
+        # Don't flag when the PICKED parcel's owner carries the decedent's FULL
+        # middle name — that's a confident identity match no matter where they
+        # lived, so the address-mismatch is just "owns a property they don't
+        # occupy" (normal in probate). Week 28: Ferguson 26E000924-350, deed
+        # "FERGUSON SUSAN CARTER" carries the decedent's middle "Carter" — a real
+        # lead Oren kept. Jones (initial "L" only) and Adams (no middle) score
+        # below 2 and stay flagged — both genuinely needed a look.
+        picked = next((c for c in cands if (c.pid or "").strip() == pid), None)
+        if picked and _middle_match_strength(picked.owner_name, dec) >= 2:
+            continue
         who = owner_str(addr_hits[0], owner_fields).title().strip() if addr_hits else ""
         note = (f"[VERIFY LOW-CONFIDENCE: matched on common name among {len(top)} "
                 f"{last.title()} parcels; decedent's address {dec_addr} "
