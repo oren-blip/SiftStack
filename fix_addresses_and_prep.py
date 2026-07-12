@@ -3244,7 +3244,9 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
     estate, discarding three vacant lots ($308K/$193K/$185K) on Cauble Dairy
     Rd that are the actual lead.
     """
-    from nc_gis_lookup import lookup_properties, filter_for_lead_quality
+    from nc_gis_lookup import (
+        lookup_properties, filter_for_lead_quality, _middle_match_strength,
+    )
     dec = (row.get("Deceased Owner") or "").strip()
     county = (row.get("County") or "").strip()
     if not dec or not county or "IN THE MATTER" in dec.upper():
@@ -3257,7 +3259,18 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
         cands, beneficiaries_json=row.get("Beneficiaries", "") or "", decedent_name=dec,
     )
     current_pid = (row.get("Parcel ID") or "").strip()
-    siblings = [c for c in kept_cands if (c.pid or "") and c.pid != current_pid]
+    # A sibling must identify the decedent AT LEAST as confidently as the
+    # over-cap parcel — otherwise the "swap" trades the decedent's real property
+    # for a cheaper NAMESAKE just to duck the cap. Week 28: Jones Michael Gregory
+    # 26E000800-170 — over-cap parcel "JONES MICHAEL GREGORY" (3946 Granite St,
+    # $1.07M, full-middle match) got swapped to "JONES MICHAEL G" (1866 Fairway
+    # Dr, $360K, initial only), a different Michael Jones. The $1M house is his
+    # and is legitimately over the buy-box; the row should DROP, not swap.
+    current = next((c for c in cands if (c.pid or "").strip() == current_pid), None)
+    cur_strength = _middle_match_strength(current.owner_name, dec) if current else 0
+    siblings = [c for c in kept_cands
+                if (c.pid or "") and c.pid != current_pid
+                and _middle_match_strength(c.owner_name, dec) >= cur_strength]
     if not siblings:
         return False
 
