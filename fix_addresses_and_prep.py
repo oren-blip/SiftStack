@@ -1757,6 +1757,7 @@ _NC_ZIP_TO_CITY = {
     "28610": "Claremont",
     "28613": "Conover",
     "28625": "Statesville",  # Iredell overlap
+    "28678": "Stony Point",  # Iredell/Alexander (Taylorsville Hwy)
     "28658": "Newton",
     "28673": "Sherrills Ford",
     "28681": "Taylorsville",
@@ -4392,6 +4393,22 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_full, n_name, n_tried = second_pass_obituary_for_heirs_of(kept)
     print(f"  Tried: {n_tried}  Promoted with address: {n_full}  Promoted name-only: {n_name}")
 
+    print("Step 4.6: split jammed mailing addresses (city/state/zip stuck in the street field)")
+    n_split = split_jammed_mailing_address(kept)
+    print(f"  Mailing addresses split into components: {n_split}")
+
+    print("Step 4.7: finalize blank State (=NC) + City-from-ZIP (DataSift Incomplete guard)")
+    n_final = finalize_state_and_city(kept)
+    print(f"  State/City fields filled: {n_final}")
+
+    print("Step 4.8: collapse same-property spouse pairs (one house, one row)")
+    kept, n_pairs = collapse_same_property_pairs(kept)
+    print(f"  Same-property rows merged: {n_pairs}  Out: {len(kept)}")
+
+    print("Step 4.9: default blank Property Type to SFR for valued residential parcels")
+    n_sfr = default_property_type_residential(kept)
+    print(f"  Property Type defaulted to SFR: {n_sfr}")
+
     # Step 4.7 (populate_zillow_urls) removed 2026-07-11 per Oren — DataSift
     # provides the Zillow/listing link in the property record after upload, so
     # generating one per row here is redundant. The function is retained (unused)
@@ -4415,6 +4432,134 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_up = write_datasift_upload_csv(kept, upload_csv, week=_wk)
     print(f"  Wrote: {upload_csv}  ({n_up} rows, DataSift-native headers, "
           f"Tags=Courthouse Data + Week {_wk})")
+
+
+def _parse_money(v) -> float:
+    s = re.sub(r"[^\d.]", "", str(v or ""))
+    try:
+        return float(s) if s else 0.0
+    except ValueError:
+        return 0.0
+
+
+def split_jammed_mailing_address(rows: list[dict]) -> int:
+    """Split a full 'street city NC zip' jammed into Mailing Address into parts.
+
+    Some Odyssey/eCourts party addresses arrive as one line — e.g.
+    'Po Box 310 Stanley Nc 281640310' or '211 Todd St Belmont, NC 28012' —
+    leaving Mailing City/ZIP blank so DataSift maps them to nothing. Only acts
+    when Mailing City is blank AND the street ends in a NC + 5-digit-zip tail.
+    """
+    fixed = 0
+    tail = re.compile(r"[,\s]+(NC|N\.?C\.?|NORTH CAROLINA)\s+(\d{5})(?:-?\d{0,4})?\s*$",
+                      re.IGNORECASE)
+    for r in rows:
+        if (r.get("Mailing City") or "").strip():
+            continue
+        street = (r.get("Mailing Address") or "").strip()
+        m = tail.search(street)
+        if not m:
+            continue
+        zip5 = m.group(2)
+        head = street[:m.start()].strip().rstrip(",").strip()
+        city = _NC_ZIP_TO_CITY.get(zip5, "")
+        if city and head.upper().endswith(city.upper()):
+            head = head[:len(head) - len(city)].strip().rstrip(",").strip()
+        elif not city:
+            parts = head.rsplit(None, 1)
+            if len(parts) == 2:
+                head, city = parts[0], parts[1]
+        if not head:
+            continue
+        r["Mailing Address"] = head
+        r["Mailing State"] = "NC"
+        r["Mailing Zip"] = zip5
+        if city:
+            r["Mailing City"] = city
+        tag_reason(r, "mailing-addr-split")
+        fixed += 1
+    return fixed
+
+
+def finalize_state_and_city(rows: list[dict]) -> int:
+    """Fill blank Property/Mailing State (always NC here) + City-from-ZIP.
+
+    DataSift flags records with a blank State/City as Incomplete. State is
+    always NC for this pipeline; City is authoritative from the ZIP.
+    """
+    filled = 0
+    for r in rows:
+        if not (r.get("Property State") or "").strip() and (r.get("Property Address") or "").strip():
+            r["Property State"] = "NC"; filled += 1
+        if not (r.get("Mailing State") or "").strip() and (r.get("Mailing Address") or "").strip():
+            r["Mailing State"] = "NC"; filled += 1
+        pz = (r.get("Property Zip") or "").strip()[:5]
+        if not (r.get("Property City") or "").strip() and pz in _NC_ZIP_TO_CITY:
+            r["Property City"] = _NC_ZIP_TO_CITY[pz]; filled += 1
+        mz = (r.get("Mailing Zip") or "").strip()[:5]
+        if not (r.get("Mailing City") or "").strip() and mz in _NC_ZIP_TO_CITY:
+            r["Mailing City"] = _NC_ZIP_TO_CITY[mz]; filled += 1
+    return filled
+
+
+def collapse_same_property_pairs(rows: list[dict]) -> tuple[list[dict], int]:
+    """Merge rows for the SAME property + SAME PR into one (spouse pairs).
+
+    Two probate cases on one house — e.g. Wesley & Carolyn Titterington at
+    6899 Forrest Creek Dr, both with PR Dorothy Riggleman — upload as two rows
+    that DataSift then collides by address (one silently overwrites the other,
+    and the house gets mailed twice). Collapse to the highest-value row and note
+    the other decedent(s). Requires same PR so unrelated estates never merge.
+    """
+    from collections import defaultdict
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    passthrough: list[dict] = []
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        addr = (r.get("Property Address") or "").strip().upper()
+        pr = (r.get("Personal Representative") or "").strip().upper()
+        if (pid or addr) and pr:
+            groups[(pid or addr, pr)].append(r)
+        else:
+            passthrough.append(r)
+    keep: list[dict] = []
+    collapsed = 0
+    for grp in groups.values():
+        if len(grp) == 1:
+            keep.append(grp[0]); continue
+        grp.sort(key=lambda x: -_parse_money(x.get("Property Value")))
+        main = grp[0]
+        others = [g.get("Deceased Owner", "").strip() for g in grp[1:]
+                  if g.get("Deceased Owner", "").strip()
+                  and g.get("Deceased Owner", "").strip() != main.get("Deceased Owner", "").strip()]
+        if others:
+            note = (main.get("Notes") or "").strip()
+            add = "Also deceased owner(s) at this property: " + "; ".join(others)
+            main["Notes"] = (note + " | " + add) if note else add
+        tag_reason(main, "collapsed-same-property")
+        keep.append(main)
+        collapsed += len(grp) - 1
+    keep.extend(passthrough)
+    return keep, collapsed
+
+
+def default_property_type_residential(rows: list[dict]) -> int:
+    """Default a blank Property use to SFR when the parcel has a real value.
+
+    Cabarrus/Catawba county codes don't always classify, leaving Property use
+    (-> DataSift 'Property Type') blank. An improved parcel with a market value
+    that wasn't tagged Vacant/Condo/Commercial is a house — default to SFR so
+    the custom field isn't empty. Rows with no value stay blank (can't confirm).
+    """
+    n = 0
+    for r in rows:
+        if (r.get("Property use") or "").strip():
+            continue
+        if _parse_money(r.get("Property Value")) > 0:
+            r["Property use"] = "SFR"
+            tag_reason(r, "default-sfr")
+            n += 1
+    return n
 
 
 def main() -> None:
