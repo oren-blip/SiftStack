@@ -1,0 +1,19 @@
+# manual_drops.txt — "always drop these case numbers" list
+#
+# Add a case number here to REMOVE it from the workbook on EVERY future run.
+# Use this for rows the county data can't detect on its own — e.g. a condo in
+# Lincoln or Catawba (those counties only give us a zoning code, not a real
+# structure type, so a condo looks exactly like a single-family house).
+#
+# HOW TO ADD ONE:
+#   - Put the Case No. at the start of a new line (copy it from the workbook).
+#   - Optionally add a short reason after it, so you remember why later.
+#   - Lines starting with #  are notes and are ignored.
+#
+# EXAMPLES:
+#   26E000123-456   condo
+#   26E000999-590   duplicate of a case in another county
+#
+# ----------------------------------------------------------------------------
+
+26E000418-540   Compessi, Eileen Ann — condo at Mariners Pointe (Lincoln zoning can't detect)

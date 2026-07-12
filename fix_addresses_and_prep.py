@@ -2494,6 +2494,53 @@ def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
     return backfilled, no_match
 
 
+_MANUAL_DROPS_PATH = Path("manual_drops.txt")
+
+
+def _load_manual_drops(path: Path = _MANUAL_DROPS_PATH) -> dict[str, str]:
+    """Load the user-maintained 'always drop these case numbers' list.
+
+    Plain text, one entry per line. `#` starts a comment. The first
+    whitespace/comma token on a line is the Case No.; any trailing text is a
+    human-readable reason (ignored by code). Returns {CASE_NO_UPPER: reason}.
+
+    Used for rows the county GIS can't classify on its own — e.g. condos in
+    zoning-only counties (Lincoln/Catawba) that read as SFR. The user adds the
+    Case No. and the row stays dropped across every future re-scrape.
+    """
+    drops: dict[str, str] = {}
+    if not path.exists():
+        return drops
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.replace(",", " ", 1).split(None, 1)
+        case_no = parts[0].strip().upper()
+        reason = parts[1].strip() if len(parts) > 1 else ""
+        if case_no:
+            drops[case_no] = reason
+    return drops
+
+
+def drop_manual_exclusions(rows: list[dict]) -> tuple[list[dict], int, list[str]]:
+    """Drop rows whose Case No. is in the user's manual_drops.txt list."""
+    drops = _load_manual_drops()
+    if not drops:
+        return rows, 0, []
+    kept: list[dict] = []
+    removed: list[str] = []
+    for r in rows:
+        cn = (r.get("Case No.") or "").strip().upper()
+        if cn and cn in drops:
+            reason = drops[cn]
+            removed.append(f"{cn} {r.get('Deceased Owner', '')}".strip()
+                           + (f" — {reason}" if reason else ""))
+        else:
+            kept.append(r)
+    return kept, len(removed), removed
+
+
 def drop_archive_duplicates(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows that were backfilled from the manual archive.
     These represent cases already in the user's prior-week pipeline —
@@ -4037,6 +4084,12 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step -1: backfill blank Case No. from user's manual XLSX archive")
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
     print(f"  Archive-backfilled: {n_archive_hit}  No-match (still blank-case): {n_archive_miss}")
+
+    print("Step -0.97: drop manually-excluded case numbers (manual_drops.txt)")
+    rows, n_manual_drop, manual_samples = drop_manual_exclusions(rows)
+    print(f"  Manually dropped: {n_manual_drop}  Remaining: {len(rows)}")
+    for s in manual_samples[:10]:
+        print(f"    - {s}")
 
     print("Step -0.95: backfill blank Case Status from Tyler OData (CaseSummariesSlim)")
     n_status = backfill_case_status_from_odata(rows)
