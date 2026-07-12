@@ -651,6 +651,47 @@ _POLARIS3G_HEADERS = {
 }
 
 
+# Polaris rate-limits bursts (connection reset / 429). Since the 2026-07-12 name
+# search rewrite fetches lastname-only for EVERY Meck decedent (higher volume),
+# one transient failure must not silently zero out a decedent — retry with
+# exponential backoff instead of returning empty.
+_POLARIS3G_MAX_RETRIES = 4
+_POLARIS3G_BACKOFF_BASE = 2.0        # seconds; 2,4,8,16
+_POLARIS3G_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _polaris3g_get_page(session: "requests.Session", params: dict) -> list[dict]:
+    """GET one bolt page, retrying transient failures (reset / timeout / 429 /
+    5xx) with exponential backoff. Returns the parsed list. Raises RuntimeError
+    on a permanent 4xx or after exhausting retries — the caller decides whether
+    a partial result is usable, but a transient blip no longer looks like
+    'this owner has no parcels'."""
+    last_err: Any = None
+    for attempt in range(_POLARIS3G_MAX_RETRIES):
+        try:
+            r = session.get(_POLARIS3G_BASE, params=params,
+                            headers=_POLARIS3G_HEADERS, timeout=30)
+        except requests.RequestException as e:
+            last_err = e
+        else:
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except ValueError:
+                    last_err = "invalid JSON"
+                else:
+                    return data if isinstance(data, list) else []
+            elif r.status_code in _POLARIS3G_RETRY_STATUS:
+                last_err = f"HTTP {r.status_code}"
+            else:
+                raise RuntimeError(f"polaris3g permanent HTTP {r.status_code}")
+        sleep = _POLARIS3G_BACKOFF_BASE * (2 ** attempt)
+        logger.warning("polaris3g: %s (attempt %d/%d) — backoff %.0fs",
+                       last_err, attempt + 1, _POLARIS3G_MAX_RETRIES, sleep)
+        time.sleep(sleep)
+    raise RuntimeError(f"polaris3g: retries exhausted ({last_err})")
+
+
 def _polaris3g_search(
     *,
     lastname: str,
@@ -658,7 +699,13 @@ def _polaris3g_search(
     max_pages: int = 20,
     page_size: int = 20,
 ) -> list[dict]:
-    """Page through /api/bolt for an owner name. Returns raw parcel dicts."""
+    """Page through /api/bolt for an owner name. Returns raw parcel dicts.
+
+    A page that keeps failing after retries aborts the whole fetch by raising —
+    partial-then-silent-empty is the dangerous mode (it would drop the
+    decedent's real parcel if it's on a later page). Callers already treat a
+    thrown lookup as "GIS unavailable", not "no parcels".
+    """
     if not lastname:
         return []
     out: list[dict] = []
@@ -667,25 +714,8 @@ def _polaris3g_search(
         params: dict[str, Any] = {"lastname": lastname, "page": page}
         if firstname:
             params["firstname"] = firstname
-        try:
-            r = session.get(
-                _POLARIS3G_BASE,
-                params=params,
-                headers=_POLARIS3G_HEADERS,
-                timeout=30,
-            )
-        except requests.RequestException as e:
-            logger.error("polaris3g: request failed (page %d): %s", page, e)
-            break
-        if r.status_code != 200:
-            logger.error("polaris3g: HTTP %d on page %d", r.status_code, page)
-            break
-        try:
-            rows = r.json()
-        except ValueError:
-            logger.error("polaris3g: invalid JSON on page %d", page)
-            break
-        if not isinstance(rows, list) or not rows:
+        rows = _polaris3g_get_page(session, params)
+        if not rows:
             break
         out.extend(rows)
         if len(rows) < page_size:
