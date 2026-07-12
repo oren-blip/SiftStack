@@ -2054,17 +2054,23 @@ _ROWAN_UNIT_RE = re.compile(r"\bU\d{1,4}\b")
 
 
 def flag_rowan_possible_condos(rows: list[dict]) -> int:
-    """Annotate Rowan rows whose legal description carries a unit number."""
+    """Mark Rowan rows whose legal description carries a unit number as Condo.
+
+    Rowan publishes no use code, so a condo otherwise defaults to SFR. The unit
+    number in LEG_DESC ("U102") is the tell — verified against known parcels
+    (condo "U102" vs houses "L23-24"/"15.23AC") and confirmed on Riley
+    26E000710-790 (Oren: "definitely a Condo"). Promoted from flag to auto-drop
+    2026-07-12: sets Property use = "Condo" so the existing Condo/Townhouse drop
+    (Step 2.1) removes it and counts it — one uniform path. Oren drops condos.
+    """
     from nc_gis_lookup import lookup_by_address
 
-    flagged = 0
+    marked = 0
     for r in rows:
         if (r.get("County") or "").strip().lower() != "rowan":
             continue
         if (r.get("Property use") or "").strip().upper() in ("CONDO", "TOWNHOUSE"):
             continue  # already classified
-        if "POSSIBLE CONDO" in (r.get("Notes") or "").upper():
-            continue  # idempotent across nightly re-polish
         addr = (r.get("Property Address") or "").strip()
         if not addr:
             continue
@@ -2080,13 +2086,12 @@ def flag_rowan_possible_condos(rows: list[dict]) -> int:
         leg = str(match.get("LEG_DESC") or "").upper()
         if not _ROWAN_UNIT_RE.search(leg):
             continue
-        note = f"[POSSIBLE CONDO — VERIFY: Rowan legal description {leg!r} carries a unit number]"
-        existing = (r.get("Notes") or "").strip()
-        r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
-        tag_reason(r, "possible-condo")
-        print(f"  POSSIBLE CONDO Rowan/{r.get('Deceased Owner')}: {addr!r} (LEG_DESC={leg!r})")
-        flagged += 1
-    return flagged
+        r["Property use"] = "Condo"   # -> dropped + counted by Step 2.1
+        tag_reason(r, "rowan-condo")
+        print(f"  ROWAN CONDO Rowan/{r.get('Deceased Owner')}: {addr!r} "
+              f"(LEG_DESC={leg!r}) -> Condo, will drop")
+        marked += 1
+    return marked
 
 
 def drop_recently_sold(rows: list[dict], months: int = 24, min_price: float = 50_000) -> tuple[list[dict], int]:
@@ -4150,9 +4155,9 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_recently_sold = drop_recently_sold(rows, months=24, min_price=50_000)
     print(f"  Dropped recently-sold: {n_recently_sold}  Remaining: {len(rows)}")
 
-    print("Step 1.87: flag possible Rowan condos (unit number in legal description) — flag only, no drop")
+    print("Step 1.87: mark Rowan condos (unit number in legal description) as Condo -> dropped at Step 2.1")
     n_condo_flagged = flag_rowan_possible_condos(rows)
-    print(f"  Flagged possible condos: {n_condo_flagged}")
+    print(f"  Rowan condos marked (drop at 2.1): {n_condo_flagged}")
 
     # Step order rationale: people search FIRST (fills legit PR mailing),
     # THEN heir-occupied drop (now mailing is populated for the check),
