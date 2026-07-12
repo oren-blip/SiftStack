@@ -2494,6 +2494,61 @@ def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
     return backfilled, no_match
 
 
+def backfill_pr_from_parties(rows: list[dict]) -> int:
+    """Fill blank / 'Heirs of' Personal Representative from the eCourts Parties API.
+
+    The scrape sets PR from CaseDetail.executor; cases scraped before an
+    executor-recognition fix (e.g. the 2026-07-12 Co-Executor change) keep a
+    stale blank. The nightly merge rebuilds from those raw scrapes and skips
+    re-scraping seen cases, so a blank PR never self-heals on its own. This
+    re-fetches Parties for blank-PR rows every run, so such fixes take effect on
+    already-scraped cases without a full re-scrape. Cheap: only blank-PR rows,
+    OData Parties endpoint (not the rate-limited DisplayDoc). No-ops without a
+    cached WAF cookie.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    def _blank_pr(r: dict) -> bool:
+        pr = (r.get("Personal Representative") or "").strip().lower()
+        return (not pr) or pr.startswith("heirs of")
+
+    targets = [r for r in rows
+               if _blank_pr(r) and (r.get("Case ID (hex)") or "").strip()]
+    if not targets:
+        return 0
+
+    waf_path = _Path("ecourts_waf_cookies.json")
+    if not waf_path.exists():
+        print("  (no cached WAF cookie — skipping PR backfill)")
+        return 0
+    try:
+        waf = _json.loads(waf_path.read_text())
+        from ecourts_case_api import CaseDetailClient
+        from reenrich_ftm_executors import detail_to_fill_dict, apply_fill_to_row
+        client = CaseDetailClient(waf_token=waf["aws_waf_token"],
+                                  user_agent=waf.get("user_agent") or "Mozilla/5.0")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (PR backfill unavailable: {e})")
+        return 0
+
+    filled = 0
+    for r in targets:
+        try:
+            detail = client.fetch_detail((r.get("Case ID (hex)") or "").strip())
+        except Exception as e:  # noqa: BLE001
+            print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
+            continue
+        fill = detail_to_fill_dict(detail)   # None for guardianships, {} if no PR
+        if fill and fill.get("Personal Representative"):
+            apply_fill_to_row(r, fill)
+            tag_reason(r, "pr-backfill-parties")
+            filled += 1
+            print(f"  PR backfill {r.get('Case No.')} {r.get('Deceased Owner')}: "
+                  f"-> {fill['Personal Representative']}")
+    return filled
+
+
 _MANUAL_DROPS_PATH = Path("manual_drops.txt")
 
 
@@ -4114,6 +4169,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step -1: backfill blank Case No. from user's manual XLSX archive")
     n_archive_hit, n_archive_miss = backfill_from_manual_archive(rows)
     print(f"  Archive-backfilled: {n_archive_hit}  No-match (still blank-case): {n_archive_miss}")
+
+    print("Step -0.93: backfill blank Personal Representative from Parties API (recognizes co-executors)")
+    n_pr_backfill = backfill_pr_from_parties(rows)
+    print(f"  PR backfilled from Parties: {n_pr_backfill}")
 
     print("Step -0.97: drop manually-excluded case numbers (manual_drops.txt)")
     rows, n_manual_drop, manual_samples = drop_manual_exclusions(rows)
