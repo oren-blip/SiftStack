@@ -68,6 +68,15 @@
       "expected_pid": "369802983203",
       "verified_on": "2026-07-09",
       "notes": "Guards Catawba VALUATION enrichment. Catawba's PHP owner table carries no value, so every candidate arrived with market_value=None and both the $500K buy-box cap and the $10K floor were silently inert county-wide. Values now come from GeoServer. This estate also has a $2,000 vacant lot (369802981611, bldg_value=0) which exercises the bldg_value==0 vacancy rule."
+    },
+    {
+      "id": "patterson_dianne_mecklenburg",
+      "county": "Mecklenburg",
+      "decedent": "Patterson, Dianne McKenna",
+      "owner_contains": "DIANNE M PATTERSON",
+      "expected_pid": "21133808",
+      "verified_on": "2026-07-12",
+      "notes": "Mecklenburg had NO smoke coverage. Guards the 2026-07-12 polaris3g name-search rewrite: parcel 21133808 (7314 Shadowlake Dr) is jointly owned 'THOMAS A PATTERSON | DIANNE M PATTERSON'. Before the fix, scoring only owner[0] (Thomas) rejected the decedent Dianne at 0.40 and the parcel vanished; and the broken bolt firstname filter blocked the lastname-only fetch. owner_contains checks for the SECOND owner specifically, so this fails if the joint-owner scoring regresses."
     }
   ]
 }

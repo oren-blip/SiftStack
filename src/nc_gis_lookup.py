@@ -924,8 +924,6 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
     }
     is_jointly_owned = len(distinct_owner_names) > 1
 
-    fullname = (primary.get("fullname") or "").strip()
-    mailing = (primary.get("mailing_address") or "").strip()
     situs = ((rec.get("situs") or [""])[0] or "").strip()
     use_code = (rec.get("land_use_code") or "").strip().upper()
     use_desc = (rec.get("land_use_desc") or "").strip()
@@ -937,8 +935,29 @@ def _polaris3g_to_candidate(rec: dict, county: str, decedent_name: str) -> Prope
 
     bldg = (rec.get("bldg") or [{}])[0] or {}
 
-    score = _name_match_score(decedent_name, fullname)
-    heir_xfer = is_generational_heir_transfer(decedent_name, fullname)
+    # Score against EVERY owner, not just owner[0]. On a jointly-owned parcel
+    # the decedent is often NOT listed first (Norman 26E...: owner list is
+    # ['WILLIE J NORMAN', 'JACQUELINE NORMAN'] — scoring only owner[0] gave the
+    # husband 0.40 and dropped Jacqueline's real parcel). Pick the best-matching
+    # owner, and also score the combined "OWNER1 | OWNER2" string the way the
+    # ArcGIS counties do. owner_name becomes the piped list so downstream
+    # matchers / display see the joint ownership.
+    owner_names = [(o.get("fullname") or "").strip() for o in owners
+                   if (o.get("fullname") or "").strip()]
+    combined_owner = " | ".join(owner_names) if owner_names else (primary.get("fullname") or "").strip()
+    best = primary
+    score = _name_match_score(decedent_name, (primary.get("fullname") or "").strip())
+    for o in owners:
+        s = _name_match_score(decedent_name, (o.get("fullname") or "").strip())
+        if s > score:
+            best, score = o, s
+    s_combined = _name_match_score(decedent_name, combined_owner)
+    if s_combined > score:
+        score = s_combined
+
+    fullname = combined_owner
+    mailing = (best.get("mailing_address") or primary.get("mailing_address") or "").strip()
+    heir_xfer = is_generational_heir_transfer(decedent_name, (best.get("fullname") or "").strip())
 
     return PropertyCandidate(
         county=county,
@@ -998,30 +1017,39 @@ def _lookup_mecklenburg(decedent_name: str, min_score: float = 0.7) -> list[Prop
         logger.info("polaris3g: no parseable lastname from %r", decedent_name)
         return []
 
-    raw_rows = _polaris3g_search(lastname=last, firstname=first)
-    if len(raw_rows) < 2 and first:
-        # Broaden — drop firstname filter (sometimes owner is listed by middle)
-        logger.info("polaris3g: precision search gave %d hits, broadening to lastname-only", len(raw_rows))
-        broader = _polaris3g_search(lastname=last)
-        # Dedup by pid
-        seen_pids = {r.get("pid") for r in raw_rows}
-        for r in broader:
-            if r.get("pid") not in seen_pids:
-                raw_rows.append(r)
+    # Fetch by LAST NAME ONLY and score client-side — exactly like the ArcGIS
+    # counties. The bolt `firstname` filter is unreliable: it exact-matches the
+    # whole first field, so compound firsts ('ELOISE LITAKER') and second-listed
+    # joint owners are missed, and the old broaden gate (`< 2 hits`) skipped the
+    # lastname-only fetch whenever firstname returned >=2 junk rows — silently
+    # dropping findable parcels (Norman, Ryan, Kerns...). Also search the middle
+    # token as a surname to catch maiden names (Rencher, Rebecca Nisbet -> deed
+    # recorded under NISBET).
+    surnames = [last]
+    if middle and middle.upper() != last.upper() and len(middle) > 1:
+        surnames.append(middle)
+
+    raw_rows: list[dict] = []
+    seen_pids: set[str] = set()
+    for sn in surnames:
+        for rec in _polaris3g_search(lastname=sn):
+            pid = rec.get("pid")
+            if pid and pid in seen_pids:
+                continue
+            if pid:
+                seen_pids.add(pid)
+            raw_rows.append(rec)
 
     candidates: list[PropertyCandidate] = []
     for rec in raw_rows:
         c = _polaris3g_to_candidate(rec, "Mecklenburg", decedent_name)
-        if not c:
-            continue
-        if c.match_score < min_score:
+        if not c or c.match_score < min_score:
             continue
         candidates.append(c)
-    # Sort by match score descending then market_value descending
     candidates.sort(key=lambda c: (-c.match_score, -(c.market_value or 0)))
     logger.info(
-        "polaris3g: %r → %d raw rows → %d scoring matches",
-        decedent_name, len(raw_rows), len(candidates),
+        "polaris3g: %r → %d raw rows (surnames=%s) → %d scoring matches",
+        decedent_name, len(raw_rows), surnames, len(candidates),
     )
     return candidates
 
@@ -2315,7 +2343,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 14  # bumped 2026-07-09 (second pass) — clean_decedent_name() strips "The Estate of ... aka" captions (Pierce 26E000799-170 scored 0.00 and vanished); _suffix_match_score no longer harvests a suffix from an entity segment ("THE PIERCE SR FAMILY TRUST" yielded a bogus "SR"); pick_best_candidate gained a decedent-address affinity tiebreaker; Catawba candidates now carry market_value + vacancy from GeoServer WFS (previously always None, which disabled the buy-box cap and value floor for the whole county). Cached candidates predate all of it.
+_PERSIST_VERSION = 15  # bumped 2026-07-12 — Mecklenburg name search rewrite: always fetch lastname-only (the bolt `firstname` filter dropped compound-first-name and second-listed joint owners), score against EVERY joint owner not just owner[0] (Norman/Ryan/Kerns/Patterson etc. were scored against the co-owner-husband and rejected at 0.40), and search the middle token as a surname for maiden names. Recovered 7/33 blank-parcel Meck cases in Week 28. Cached Meck candidates predate all of it.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.
