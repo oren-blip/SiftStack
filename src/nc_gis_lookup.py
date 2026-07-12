@@ -1055,31 +1055,37 @@ def _lookup_mecklenburg(decedent_name: str, min_score: float = 0.7) -> list[Prop
     # dropping findable parcels (Norman, Ryan, Kerns...). Also search the middle
     # token as a surname to catch maiden names (Rencher, Rebecca Nisbet -> deed
     # recorded under NISBET).
-    surnames = [last]
-    if middle and middle.upper() != last.upper() and len(middle) > 1:
-        surnames.append(middle)
-
-    raw_rows: list[dict] = []
-    seen_pids: set[str] = set()
-    for sn in surnames:
-        for rec in _polaris3g_search(lastname=sn):
+    def _candidates_for(surname: str) -> tuple[int, list[PropertyCandidate]]:
+        seen: set[str] = set()
+        cands: list[PropertyCandidate] = []
+        raw = _polaris3g_search(lastname=surname)
+        for rec in raw:
             pid = rec.get("pid")
-            if pid and pid in seen_pids:
+            if pid and pid in seen:
                 continue
             if pid:
-                seen_pids.add(pid)
-            raw_rows.append(rec)
+                seen.add(pid)
+            c = _polaris3g_to_candidate(rec, "Mecklenburg", decedent_name)
+            if c and c.match_score >= min_score:
+                cands.append(c)
+        return len(raw), cands
 
-    candidates: list[PropertyCandidate] = []
-    for rec in raw_rows:
-        c = _polaris3g_to_candidate(rec, "Mecklenburg", decedent_name)
-        if not c or c.match_score < min_score:
-            continue
-        candidates.append(c)
+    n_raw, candidates = _candidates_for(last)
+    surnames = [last]
+    # Only pay for the maiden-name (middle-token) search when the primary
+    # surname found nothing acceptable — halves Polaris request volume in the
+    # common case, which matters for the nightly's rate-limit exposure. The
+    # Week-28 recoveries were all found under the primary surname.
+    if not candidates and middle and middle.upper() != last.upper() and len(middle) > 1:
+        surnames.append(middle)
+        n2, c2 = _candidates_for(middle)
+        n_raw += n2
+        candidates = c2
+
     candidates.sort(key=lambda c: (-c.match_score, -(c.market_value or 0)))
     logger.info(
         "polaris3g: %r → %d raw rows (surnames=%s) → %d scoring matches",
-        decedent_name, len(raw_rows), surnames, len(candidates),
+        decedent_name, n_raw, surnames, len(candidates),
     )
     return candidates
 
