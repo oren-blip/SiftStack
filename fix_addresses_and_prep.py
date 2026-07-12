@@ -1273,6 +1273,14 @@ def write_heir_transfer_review(entries: list[dict], out_path: Path) -> None:
     wb.save(out_path)
 
 
+# A single decedent's name search should return a handful of parcels. These
+# ceilings flag a corrupt/oversized GIS response (Cabarrus garbage-200) so it
+# can't overwrite a correct existing parcel. Real large landowners top out well
+# under these; the garbage response returned 146.
+_VALIDATE_ANOMALY_TOTAL = 40   # total candidates (>= 0.4)
+_VALIDATE_ANOMALY_HIGH = 20    # high-scoring candidates (>= min_score)
+
+
 def validate_existing_matches(
     rows: list[dict], min_score: float = 0.7,
 ) -> tuple[int, set[tuple[str, str]]]:
@@ -1308,6 +1316,23 @@ def validate_existing_matches(
         except Exception as e:
             print(f"  ERROR validating {dec}: {e}")
             continue
+
+        # Anomaly guard: Cabarrus (and any flaky ArcGIS server) intermittently
+        # returns a bogus oversized result set — a name search for one decedent
+        # coming back with dozens/hundreds of "matches" is a corrupt response,
+        # not real ownership. Trusting it here BLANKS a correct existing parcel
+        # (its real owner name isn't in the garbage set, or a garbage parcel
+        # out-ranks it on repick). Barbee 26E000709-120 kept dropping this way
+        # (146 matches one minute, the correct 1 the next). When the result set
+        # is implausibly large, keep the existing parcels untouched and let a
+        # later run (with a clean response) validate them.
+        high_scoring = [c for c in results if c.match_score >= min_score]
+        if len(results) > _VALIDATE_ANOMALY_TOTAL or len(high_scoring) > _VALIDATE_ANOMALY_HIGH:
+            print(f"  ANOMALOUS GIS result {county}/{dec}: {len(results)} candidates "
+                  f"({len(high_scoring)} >= {min_score}) — flaky server, keeping existing "
+                  f"parcel(s) un-validated this run")
+            continue
+
         # Index candidates by pid
         by_pid = {c.pid: c for c in results}
         for r in parcel_rows:
