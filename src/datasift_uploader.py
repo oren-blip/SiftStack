@@ -1941,6 +1941,7 @@ async def run_phone_validation_workflow(
     list_name: str | None = None,
     preset_folder: str | None = None,
     all_records: bool = False,
+    filter_tag: str | None = None,
     csv_path: str | None = None,
     upload_tags: bool = True,
     email: str | None = None,
@@ -2016,6 +2017,7 @@ async def run_phone_validation_workflow(
                     list_name=list_name,
                     preset_folder=preset_folder,
                     all_records=all_records,
+                    filter_tag=filter_tag,
                 )
                 if not export_result.get("success"):
                     result["message"] = f"Export failed: {export_result.get('message')}"

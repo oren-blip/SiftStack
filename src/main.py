@@ -908,11 +908,12 @@ def _run_phone_validate(args) -> None:
     list_name = getattr(args, "list_name", None)
     preset_folder = getattr(args, "preset_folder", None)
     all_records = getattr(args, "all_records", False)
+    filter_tag = getattr(args, "tag", None)
 
     # Must specify at least one targeting mode
-    if not csv_path and not list_name and not preset_folder and not all_records:
+    if not csv_path and not list_name and not preset_folder and not all_records and not filter_tag:
         logging.error(
-            "phone-validate requires one of: --csv-path, --list-name, --preset-folder, or --all-records"
+            "phone-validate requires one of: --csv-path, --list-name, --tag, --preset-folder, or --all-records"
         )
         sys.exit(1)
 
@@ -947,6 +948,7 @@ def _run_phone_validate(args) -> None:
         list_name=list_name,
         preset_folder=preset_folder,
         all_records=all_records,
+        filter_tag=filter_tag,
         csv_path=csv_path,
         upload_tags=not getattr(args, "no_upload", False),
         api_key=config.TRESTLE_API_KEY or None,
@@ -1332,6 +1334,13 @@ def cli_main() -> None:
         type=str,
         default=None,
         help="DataSift list name to export phones from (phone-validate mode)",
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="DataSift tag to filter records for phone-validate (e.g. 'NC Estates Week 28 2026') "
+             "— isolates one upload's rows so Trestle scores only those",
     )
     parser.add_argument(
         "--preset-folder",
