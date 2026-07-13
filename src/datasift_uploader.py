@@ -1342,6 +1342,7 @@ async def export_phone_enrichment(
     list_name: str | None = None,
     preset_folder: str | None = None,
     all_records: bool = False,
+    filter_tag: str | None = None,
     download_dir: str | None = None,
 ) -> dict:
     """Export phone enrichment CSV from DataSift via Playwright.
@@ -1370,7 +1371,12 @@ async def export_phone_enrichment(
         await _navigate_to_records(page)
 
         # Apply filter based on targeting mode
-        if list_name:
+        if filter_tag:
+            filtered = await _filter_by_tag(page, filter_tag)
+            if not filtered:
+                result["message"] = f"Could not filter to tag: {filter_tag}"
+                logger.warning(result["message"])
+        elif list_name:
             filtered = await _filter_by_list(page, list_name)
             if not filtered:
                 result["message"] = f"Could not filter to list: {list_name}"
