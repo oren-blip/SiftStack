@@ -336,35 +336,46 @@ async def upload_csv(
     except Exception as e:
         logger.debug("Popup dismissal failed: %s", e)
 
-    # "WHERE DID YOU PURCHASE THIS LIST?" — select "Other" or first option
+    # "WHERE DID YOU PURCHASE THIS LIST?" — select "County" (Oren: county records)
     try:
         purchase_dropdown = page.locator('text="WHERE DID YOU PURCHASE THIS LIST?"').locator(
             '..').locator('text="Select an option"')
         if await purchase_dropdown.count() > 0:
             await purchase_dropdown.first.click()
-            await page.wait_for_timeout(500)
-            # Select "Other" if available, otherwise first option
-            other = page.locator('text="Other"')
-            if await other.count() > 0:
-                await other.first.click()
-            else:
-                opts = page.locator('[class*="option"]')
-                if await opts.count() > 0:
-                    await opts.first.click()
+            await page.wait_for_timeout(600)
+            for label in ('text="County"', 'text="Other"'):
+                opt = page.locator(label)
+                if await opt.count() > 0:
+                    await opt.first.click()
+                    break
             await page.wait_for_timeout(500)
     except Exception as e:
         logger.debug("Purchase dropdown: %s", e)
 
-    # "DOES DATA CONTAIN PHONE NUMBERS?" — select "No"
+    # "WHEN?" — the date the list was pulled (defaults to today's date)
+    try:
+        from datetime import datetime as _dt
+        date_input = page.locator('input[placeholder*="Choose date"], input[placeholder*="date"]')
+        if await date_input.count() > 0:
+            await date_input.first.click()
+            await page.wait_for_timeout(400)
+            await date_input.first.fill(_dt.now().strftime("%m/%d/%Y"))
+            await page.wait_for_timeout(400)
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+    except Exception as e:
+        logger.debug("Date field: %s", e)
+
+    # "DOES DATA CONTAIN PHONE NUMBERS?" — select "Yes" (Oren: phone columns present)
     try:
         phone_dropdown = page.locator('text="DOES DATA CONTAIN PHONE NUMBERS?"').locator(
             '..').locator('text="Select an option"')
         if await phone_dropdown.count() > 0:
             await phone_dropdown.first.click()
             await page.wait_for_timeout(500)
-            no_opt = page.locator('text="No"')
-            if await no_opt.count() > 0:
-                await no_opt.first.click()
+            yes_opt = page.locator('text="Yes"')
+            if await yes_opt.count() > 0:
+                await yes_opt.first.click()
             await page.wait_for_timeout(500)
     except Exception as e:
         logger.debug("Phone numbers dropdown: %s", e)
