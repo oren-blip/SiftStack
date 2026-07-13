@@ -90,6 +90,50 @@ def _tags_from_csv(csv_path: Path) -> list[str]:
     return []
 
 
+async def _map_one_column(page: Page, name: str) -> bool:
+    """Map ONE column that DataSift didn't auto-map: drag the left CSV card
+    labelled `name` onto the right target field labelled `name`.
+
+    Tightly position-guarded (source x<560, target x>660) so it can't grab an
+    unrelated element — the old blind Tags/Lists drag knocked a required field
+    onto the wrong column. Best-effort; the caller pauses on Review so a human
+    verifies the result before committing.
+    """
+    try:
+        loc = page.locator(f'text="{name}"')
+        src = dst = None
+        src_box = dst_box = None
+        for i in range(await loc.count()):
+            box = await loc.nth(i).bounding_box()
+            if not box:
+                continue
+            if box["x"] < 560 and src is None:
+                src, src_box = loc.nth(i), box
+            elif box["x"] > 660 and dst is None:
+                dst, dst_box = loc.nth(i), box
+        if not (src_box and dst_box):
+            logger.info("map %s: source/target not both found (likely already mapped)", name)
+            return False
+        sx, sy = src_box["x"] + src_box["width"] / 2, src_box["y"] + src_box["height"] / 2
+        dx, dy = dst_box["x"] + dst_box["width"] / 2, dst_box["y"] + dst_box["height"] / 2
+        await page.mouse.move(sx, sy)
+        await page.wait_for_timeout(300)
+        await page.mouse.down()
+        await page.wait_for_timeout(300)
+        for i in range(1, 21):
+            f = i / 20
+            await page.mouse.move(sx + (dx - sx) * f, sy + (dy - sy) * f)
+            await page.wait_for_timeout(40)
+        await page.wait_for_timeout(300)
+        await page.mouse.up()
+        await page.wait_for_timeout(900)
+        logger.info("Dragged column %s -> target", name)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("map column %r failed: %s", name, e)
+        return False
+
+
 async def _add_one_tag(page: Page, tag: str) -> bool:
     """Add a single tag via the wizard's Custom Tags input (dropdown option ->
     Enter fallback). Best-effort; returns True if the input was found."""
@@ -130,6 +174,7 @@ async def upload_csv(
     mode: str = "add",
     list_name: str | None = None,
     existing_list: bool = False,
+    finish: bool = True,
 ) -> dict:
     """Upload a CSV file to DataSift via the 7-step upload wizard.
 
@@ -436,21 +481,31 @@ async def upload_csv(
     await _click_next_step(page)
 
     # ── Wizard: Map the columns ──
-    # The export uses DataSift-native headers (nc_datasift_export), so DataSift
-    # auto-maps every column by name. Do NOT drag anything: the old Tags/Lists
-    # drag was both unnecessary and DANGEROUS — a mis-fired drag knocked the
-    # required "Property Street" field onto the "County" column (2026-07-12
-    # test). Just capture the auto-mapping for review and proceed.
-    logger.info("Wizard: Map the columns — relying on native-header auto-map (no drag)")
+    # DataSift auto-maps native headers by name for every field EXCEPT the parcel
+    # field (APN), which it never auto-maps regardless of the header. We do NOT
+    # drag: a blind drag knocked required "Property Street" onto "County", and a
+    # targeted APN drag still landed on "Last Direct Mailed" (the scrollable
+    # target list makes drop coordinates unreliable). APN is left for the human
+    # to map by hand on the paused Review — one drag, verified in context.
+    logger.info("Wizard: Map the columns — native-header auto-map (APN mapped by hand at Review)")
     await page.wait_for_timeout(3000)
     await _screenshot(page, "step4_column_mapping")
     await _click_next_step(page)
     await _screenshot(page, "step4_mapping_done")
 
     # ── Wizard Step 5: Review ──
-    logger.info("Wizard Step 5: Review and finish upload...")
+    logger.info("Wizard Step 5: Review%s...", " and finish upload" if finish else " (paused for manual confirm)")
     await page.wait_for_timeout(2000)
     await _screenshot(page, "step5_review")
+
+    if not finish:
+        # Stop on the Review screen so a human can eyeball the mapping + tags and
+        # click "Finish Upload" themselves. Nothing is committed yet.
+        result["success"] = True
+        result["message"] = "Paused on Review — inspect the mapping, then click 'Finish Upload'"
+        logger.info(result["message"])
+        await _save_cookies(page)
+        return result
 
     try:
         finish_btn = page.locator(
