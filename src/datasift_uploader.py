@@ -732,6 +732,21 @@ async def _select_all_records(page: Page) -> bool:
         await _dismiss_popups(page)
         await page.wait_for_timeout(500)
 
+        # Include incomplete rows: the Clean/Incomplete/All tab strip defaults to
+        # "Clean", which hides incomplete records. Click "All" so select-all covers
+        # every record in the filtered set.
+        try:
+            all_tab = page.locator('text="All"')
+            for i in range(await all_tab.count()):
+                box = await all_tab.nth(i).bounding_box()
+                if box and 200 < box["y"] < 300 and box["x"] < 560:
+                    await all_tab.nth(i).click()
+                    await page.wait_for_timeout(2000)
+                    logger.info("Clicked 'All' records tab")
+                    break
+        except Exception as e:  # noqa: BLE001
+            logger.debug("All tab: %s", e)
+
         await _screenshot(page, "before_select_all")
 
         # Strategy 1: Find the header checkbox position via JS, then use Playwright
@@ -797,17 +812,25 @@ async def _select_all_records(page: Page) -> bool:
 
         await _screenshot(page, "records_selected_header")
 
-        # After checking the header checkbox, a "Select all N records" banner
-        # appears to select the WHOLE filtered set (not just the visible page).
-        # Match it broadly — the exact phrasing varies ("Select all", "Select all
-        # 33 records", "Select the 33 records…").
-        for sel in ('text=/select all \\d+ record/i', 'text=/select all/i',
+        # The header checkbox only selects the VISIBLE PAGE (~10). To select the
+        # whole filtered set, open the ▼ dropdown that sits just LEFT of the
+        # "Selecting N properties" banner text (anchor off that reliable text —
+        # the header-checkbox JS detection is flaky).
+        banner = page.locator('text=/Selecting \\d+ propert/i')
+        if await banner.count() > 0:
+            bb = await banner.first.bounding_box()
+            if bb:
+                await page.mouse.click(max(bb["x"] - 22, 5), bb["y"] + bb["height"] / 2)
+                await page.wait_for_timeout(1300)
+                await _screenshot(page, "select_all_dropdown")
+        for sel in ('text=/select all \\d+ record/i', 'text=/select all \\d+ propert/i',
+                    'text=/^select all$/i', 'text=/select all/i',
                     'text=/select the \\d+ record/i'):
             link = page.locator(sel)
             if await link.count() > 0:
                 await link.first.click()
                 await page.wait_for_timeout(1200)
-                logger.info("Clicked select-all-filtered banner (%s)", sel)
+                logger.info("Clicked select-all-filtered (%s)", sel)
                 break
 
         # Verify: check if Manage or Send To buttons are now visible
