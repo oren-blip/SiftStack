@@ -1758,6 +1758,7 @@ _NC_ZIP_TO_CITY = {
     "28613": "Conover",
     "28625": "Statesville",  # Iredell overlap
     "28678": "Stony Point",  # Iredell/Alexander (Taylorsville Hwy)
+    "28134": "Pineville",    # south Mecklenburg (unincorporated situs like Sawtry Ct)
     "28658": "Newton",
     "28673": "Sherrills Ford",
     "28681": "Taylorsville",
