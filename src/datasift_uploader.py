@@ -663,6 +663,66 @@ async def _filter_by_list(page: Page, list_name: str) -> bool:
         return False
 
 
+async def _filter_by_tag(page: Page, tag: str) -> bool:
+    """Filter records by TAG (mirrors _filter_by_list). Used to isolate exactly
+    the records from one upload via its unique per-week tag, so a paid skip-trace
+    hits only those rows. Returns True if applied."""
+    try:
+        await _dismiss_popups(page)
+        filter_link = page.locator('#Records__Filters_Trigger')
+        if await filter_link.count() == 0:
+            filter_link = page.locator('a:has-text("Filter Records")')
+        if await filter_link.count() == 0:
+            logger.warning("No Filter Records link found")
+            return False
+        await filter_link.first.click()
+        await page.wait_for_timeout(2000)
+        await _dismiss_popups(page)
+
+        filter_search = page.locator('#RecordsFilters__Filter_Blocks__Search')
+        if await filter_search.count() == 0:
+            filter_search = page.locator('input[placeholder*="filter block"]')
+        if await filter_search.count() > 0:
+            await filter_search.first.click()
+            await filter_search.first.fill("Tags")
+            await page.wait_for_timeout(1500)
+            for opt in ('text="All Tags (AND)"', 'text="Any Tags (OR)"'):
+                blk = page.locator(opt)
+                if await blk.count() > 0:
+                    await blk.first.click()
+                    await page.wait_for_timeout(2000)
+                    break
+        await _screenshot(page, "filter_tags_block_added")
+
+        tag_search = page.locator('input[placeholder*="Search for tags"], input[placeholder*="Search tags"]')
+        if await tag_search.count() > 0:
+            await tag_search.first.fill(tag)
+            await page.wait_for_timeout(2000)
+            await _screenshot(page, "filter_tag_searched")
+            tag_option = page.locator(f'text="{tag}"')
+            if await tag_option.count() > 0:
+                await tag_option.last.click()
+                await page.wait_for_timeout(1000)
+                logger.info("Selected tag filter: %s", tag)
+        else:
+            logger.warning("'Search for tags' input not found")
+        await _screenshot(page, "filter_tag_selected")
+
+        apply_btn = page.locator('text="Apply Filters"')
+        if await apply_btn.count() > 0:
+            await apply_btn.first.click()
+            await page.wait_for_timeout(3000)
+        else:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(2000)
+        await _screenshot(page, "filter_tag_applied")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Filter by tag failed: %s", e)
+        await _screenshot(page, "filter_tag_failed")
+        return False
+
+
 async def _select_all_records(page: Page) -> bool:
     """Select all records on the current page. Returns True if selected."""
     try:
@@ -737,12 +797,18 @@ async def _select_all_records(page: Page) -> bool:
 
         await _screenshot(page, "records_selected_header")
 
-        # After checking the header checkbox, a "Select All X records" banner may appear
-        select_all_link = page.locator('text="Select all"')
-        if await select_all_link.count() > 0:
-            await select_all_link.first.click()
-            await page.wait_for_timeout(1000)
-            logger.debug("Clicked 'Select all' records link")
+        # After checking the header checkbox, a "Select all N records" banner
+        # appears to select the WHOLE filtered set (not just the visible page).
+        # Match it broadly — the exact phrasing varies ("Select all", "Select all
+        # 33 records", "Select the 33 records…").
+        for sel in ('text=/select all \\d+ record/i', 'text=/select all/i',
+                    'text=/select the \\d+ record/i'):
+            link = page.locator(sel)
+            if await link.count() > 0:
+                await link.first.click()
+                await page.wait_for_timeout(1200)
+                logger.info("Clicked select-all-filtered banner (%s)", sel)
+                break
 
         # Verify: check if Manage or Send To buttons are now visible
         manage_visible = await page.locator('button:has-text("Manage")').count() > 0
@@ -912,7 +978,8 @@ async def enrich_records(page: Page, list_name: str) -> dict:
     return result
 
 
-async def skip_trace_records(page: Page, list_name: str, confirm: bool = True) -> dict:
+async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
+                             filter_tag: str | None = None) -> dict:
     """Skip trace uploaded records for phone numbers + emails.
 
     UI Flow: Records → Filter by list → Select all → Send To → Skip Trace
@@ -934,10 +1001,15 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True) -
         # Navigate to Records (may already be there from enrichment)
         await _navigate_to_records(page)
 
-        # Filter to the uploaded list
-        filtered = await _filter_by_list(page, list_name)
+        # Filter to exactly the target records: by unique per-week TAG when given
+        # (isolates one upload's rows so a paid skip-trace hits only those), else
+        # by list.
+        if filter_tag:
+            filtered = await _filter_by_tag(page, filter_tag)
+        else:
+            filtered = await _filter_by_list(page, list_name)
         if not filtered:
-            logger.warning("Could not filter to list for skip trace — continuing anyway")
+            logger.warning("Could not filter for skip trace — continuing anyway")
 
         # Select all records
         selected = await _select_all_records(page)
