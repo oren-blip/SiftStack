@@ -50,13 +50,13 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     *[(e, None) for e in _EMAIL_SLOTS],
     ("Estimated Value",         "Property Value"),
     ("Property Type",           None),   # custom field <- raw Property use
-    ("Parcel ID",               "Parcel ID"),
+    ("APN",                     "Parcel ID"),   # DataSift's built-in parcel field is "APN"
     ("Personal Representative", "Personal Representative"),
     ("County",                  "County"),
     ("Notice Type",             None),   # constant "Probate"
     ("Owner Deceased",          None),   # constant "Yes"
     ("Probate Open Date",       "File Date"),
-    ("Decedent Name",           "Deceased Owner"),
+    ("decedent",                "Deceased Owner"),   # matches Oren's DataSift custom field "decedent"
     ("Date of Death",           "Date of Death (App)"),
     ("Decision Maker",          "DM Name"),
     ("DM Relationship",         "DM Relationship"),

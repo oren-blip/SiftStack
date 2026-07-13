@@ -146,11 +146,10 @@ async def login(page, email: str = None, password: str = None) -> bool:
     if has_cookies:
         await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
-        current_url = page.url
-        if "/login" not in current_url and ("/dashboard" in current_url or "/records" in current_url):
+        if await _is_authenticated(page):
             logger.info("DataSift session restored from cookies")
             return True
-        logger.info("DataSift cookies expired (url=%s), doing fresh login", current_url)
+        logger.info("DataSift cookies expired (url=%s), doing fresh login", page.url)
 
     # Fresh login
     await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
@@ -171,17 +170,41 @@ async def login(page, email: str = None, password: str = None) -> bool:
     # Click Sign In
     await page.get_by_role("button", name="Sign In").click()
 
-    # Wait for navigation away from login page
-    try:
-        await page.wait_for_url("**/dashboard/general**", timeout=15000)
-    except PwTimeout:
-        if "/login" in page.url:
-            logger.error("DataSift login failed — still on login page")
-            return False
+    # DataSift's post-login redirect is unreliable — it now lands on a 404 (or
+    # back on /login) even though the auth cookie IS set, so waiting for
+    # /dashboard/general and checking the URL gives a false "login failed"
+    # (observed 2026-07-12). Give the request a moment, then verify by loading
+    # /records and detecting the authenticated app shell, not the URL.
+    await page.wait_for_timeout(6000)
+    await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+    await page.wait_for_timeout(4000)
+    if not await _is_authenticated(page):
+        logger.error("DataSift login failed — app shell not authenticated (url=%s)", page.url)
+        return False
 
     await save_cookies(page)
     logger.info("DataSift login successful")
     return True
+
+
+async def _is_authenticated(page) -> bool:
+    """True when the logged-in DataSift app shell is present, regardless of URL.
+
+    DataSift's redirects after login are unreliable (404 / stale /login URL), so
+    URL-based checks false-negative. The left sidebar's 'Upload File' + nav
+    items only render for an authenticated session — detect those instead.
+    """
+    try:
+        await dismiss_popups(page)
+    except Exception:
+        pass
+    try:
+        for sel in ('text="Upload File"', 'text="SiftMap"', 'text="Market Finder"'):
+            if await page.locator(sel).count() > 0:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 # ── UI Primitives ─────────────────────────────────────────────────────

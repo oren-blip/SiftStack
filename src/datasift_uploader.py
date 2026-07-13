@@ -48,6 +48,34 @@ async def _click_next_step(page: Page, timeout: int = 20000) -> bool:
         return False
 
 
+async def _advance_to(page: Page, ready_sel: str, max_clicks: int = 4, label: str = "") -> bool:
+    """Click 'Next Step' (dismissing popups) until an element matching ready_sel
+    appears, up to max_clicks times.
+
+    Makes wizard navigation resilient to inserted/removed steps. DataSift added
+    an 'Enrichment' step between Setup and Add tags (2026-07-12), which shifted
+    every fixed-position step handler by one — detecting the target step instead
+    of counting clicks fixes it for good.
+    """
+    for i in range(max_clicks + 1):
+        try:
+            await _dismiss_popups(page)
+        except Exception:
+            pass
+        if await page.locator(ready_sel).count() > 0:
+            if i:
+                logger.info("Wizard: reached '%s' after %d Next-Step click(s)", label, i)
+            return True
+        if i == max_clicks:
+            break
+        if not await _click_next_step(page):
+            break
+        await page.wait_for_timeout(2500)
+    logger.warning("Wizard: '%s' step not reached (selector %s) after %d clicks",
+                   label, ready_sel, max_clicks)
+    return False
+
+
 async def upload_csv(
     page: Page,
     csv_path: Path,
@@ -300,11 +328,20 @@ async def upload_csv(
 
     await _screenshot(page, "step1_form_filled")
 
-    # Click "Next Step" to proceed to step 2
+    # Leave the Setup step, then capture the new "Enrichment" step so we can see
+    # whether it defaults any owner-swap/enrich toggles ON (which would clobber
+    # our PR/DM owner mapping). We do NOT enrich during upload — it runs later as
+    # a separate action with Swap Owners OFF.
     await _click_next_step(page, timeout=30000)
+    await page.wait_for_timeout(2500)
+    await _dismiss_popups(page)
+    await _screenshot(page, "step_enrichment")
 
-    # ── Wizard Step 2: Add tags ──
-    logger.info("Wizard Step 2: Adding 'Courthouse Data' tag...")
+    # ── Wizard: Add tags ──  (DataSift inserted an "Enrichment" step before this
+    # in 2026 — advance until the tag input appears rather than assuming position)
+    TAG_INPUT_SEL = 'input[placeholder*="Search or add a new tag"], input[placeholder*="add a new tag"]'
+    await _advance_to(page, TAG_INPUT_SEL, max_clicks=3, label="Add tags")
+    logger.info("Wizard: Add tags — adding 'Courthouse Data' tag...")
     await page.wait_for_timeout(1000)
     await _screenshot(page, "step2_tags")
 
@@ -373,9 +410,10 @@ async def upload_csv(
 
     await _click_next_step(page)
 
-    # ── Wizard Step 3: Upload the file ──
-    logger.info("Wizard Step 3: Uploading CSV file: %s", csv_path.name)
-    await page.wait_for_timeout(3000)
+    # ── Wizard: Upload the file ── (advance until the file input is present)
+    logger.info("Wizard: Upload the file: %s", csv_path.name)
+    await _advance_to(page, 'input[type="file"]', max_clicks=3, label="Upload the file")
+    await page.wait_for_timeout(2000)
     await _screenshot(page, "step3_before_upload")
 
     try:
@@ -405,68 +443,15 @@ async def upload_csv(
     await _screenshot(page, "step3_file_uploaded")
     await _click_next_step(page)
 
-    # ── Wizard Step 4: Map the columns ──
-    logger.info("Wizard Step 4: Column mapping — mapping Tags and Lists...")
+    # ── Wizard: Map the columns ──
+    # The export uses DataSift-native headers (nc_datasift_export), so DataSift
+    # auto-maps every column by name. Do NOT drag anything: the old Tags/Lists
+    # drag was both unnecessary and DANGEROUS — a mis-fired drag knocked the
+    # required "Property Street" field onto the "County" column (2026-07-12
+    # test). Just capture the auto-mapping for review and proceed.
+    logger.info("Wizard: Map the columns — relying on native-header auto-map (no drag)")
     await page.wait_for_timeout(3000)
     await _screenshot(page, "step4_column_mapping")
-
-    # Try to drag unmapped columns (left side) to their targets (right side)
-    # DataSift uses styled-components with draggable="false" — need slow mouse drag
-    async def _drag_column(source_el, target_el):
-        """Drag a CSV column card to a mapping target using slow mouse moves."""
-        src_box = await source_el.bounding_box()
-        dst_box = await target_el.bounding_box()
-        if not src_box or not dst_box:
-            return False
-        sx = src_box["x"] + src_box["width"] / 2
-        sy = src_box["y"] + src_box["height"] / 2
-        dx = dst_box["x"] + dst_box["width"] / 2
-        dy = dst_box["y"] + dst_box["height"] / 2
-        await page.mouse.move(sx, sy)
-        await page.wait_for_timeout(500)
-        await page.mouse.down()
-        await page.wait_for_timeout(500)
-        steps = 20
-        for i in range(1, steps + 1):
-            frac = i / steps
-            await page.mouse.move(
-                sx + (dx - sx) * frac,
-                sy + (dy - sy) * frac,
-            )
-            await page.wait_for_timeout(50)
-        await page.wait_for_timeout(500)
-        await page.mouse.up()
-        await page.wait_for_timeout(1000)
-        return True
-
-    # Map Tags column: find "Tags" card on left, drag to "Tags" target on right
-    for col_name in ["Tags", "Lists"]:
-        try:
-            # Source: unmapped column card on the left (contains column name + sample data)
-            source = page.locator(f'div:has-text("{col_name}") >> visible=true').first
-            # Target: mapping slot on the right side (search for it)
-            # Right-side targets have the field name — search within right panel area
-            target = page.locator(f'text="{col_name}"').last
-            if await source.count() > 0 and await target.count() > 0:
-                src_box = await source.bounding_box()
-                tgt_box = await target.bounding_box()
-                # Ensure source is on left (<600px) and target is on right (>600px)
-                if src_box and tgt_box and src_box["x"] < 600 and tgt_box["x"] > 600:
-                    if await _drag_column(source, target):
-                        logger.info("Mapped column: %s", col_name)
-                        await page.wait_for_timeout(1000)
-                    else:
-                        logger.warning("Drag failed for column: %s", col_name)
-                else:
-                    logger.debug("Column %s: no valid source/target positions", col_name)
-            else:
-                logger.debug("Column %s: source or target not found", col_name)
-        except Exception as e:
-            logger.warning("Column mapping %s failed: %s", col_name, e)
-
-    await _screenshot(page, "step4_after_mapping")
-
-    # Click Next Step to proceed past mapping
     await _click_next_step(page)
     await _screenshot(page, "step4_mapping_done")
 
@@ -490,25 +475,22 @@ async def upload_csv(
     except Exception as e:
         logger.warning("Finish step: %s", e)
 
-    # Wait for processing confirmation
+    # Confirm success by the wizard CLOSING (returns to Records), not a specific
+    # message — DataSift's confirmation text drifts and a text-match false-times
+    # out even though records upload fine (verified 2026-07-12: monthly count
+    # rose 72->96 while the old text selector timed out). The "Review your
+    # upload" heading disappearing == the wizard finished and closed.
     try:
-        success_indicator = page.locator(
-            'text="Upload Complete", '
-            'text="successfully", '
-            'text="records imported", '
-            'text="records added", '
-            'text="records uploaded"'
-        )
-        await success_indicator.first.wait_for(timeout=60000)
-        success_text = await success_indicator.first.text_content()
+        await page.locator('text="Review your upload"').first.wait_for(
+            state="hidden", timeout=60000)
         result["success"] = True
-        result["message"] = success_text or "Upload completed"
-        logger.info("DataSift upload complete: %s", result["message"])
+        result["message"] = "Upload finished (wizard closed) — processing in background"
+        logger.info("DataSift upload complete: wizard closed")
     except PwTimeout:
         await _screenshot(page, "step5_timeout")
-        result["message"] = "Upload may have succeeded but confirmation timed out — check Activity page"
-        logger.warning(result["message"])
         result["success"] = True
+        result["message"] = "Upload may have succeeded but wizard did not close — check Activity page"
+        logger.warning(result["message"])
 
     await _save_cookies(page)
     return result
