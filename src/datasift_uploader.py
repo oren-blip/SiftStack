@@ -76,6 +76,53 @@ async def _advance_to(page: Page, ready_sel: str, max_clicks: int = 4, label: st
     return False
 
 
+def _tags_from_csv(csv_path: Path) -> list[str]:
+    """Distinct tag values from the CSV's Tags column (comma-separated)."""
+    import csv as _csv
+    try:
+        with csv_path.open(encoding="utf-8-sig", newline="") as f:
+            for row in _csv.DictReader(f):
+                raw = (row.get("Tags") or "").strip()
+                if raw:
+                    return [t.strip() for t in raw.split(",") if t.strip()]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("could not read tags from %s: %s", csv_path, e)
+    return []
+
+
+async def _add_one_tag(page: Page, tag: str) -> bool:
+    """Add a single tag via the wizard's Custom Tags input (dropdown option ->
+    Enter fallback). Best-effort; returns True if the input was found."""
+    try:
+        tag_input = page.locator('input[placeholder*="Search or add a new tag"]')
+        if await tag_input.count() == 0:
+            logger.warning("Tag input not found — %r NOT added", tag)
+            return False
+        await tag_input.first.click()
+        await page.wait_for_timeout(400)
+        await tag_input.first.fill("")
+        await page.wait_for_timeout(200)
+        await tag_input.first.type(tag, delay=40)
+        await page.wait_for_timeout(1200)
+        # Prefer a dropdown option (right panel, below the input); else press Enter.
+        opt = page.locator(f'text="{tag}"')
+        clicked = False
+        for i in range(await opt.count()):
+            box = await opt.nth(i).bounding_box()
+            if box and box["y"] > 350 and box["x"] > 700:
+                await opt.nth(i).click()
+                clicked = True
+                break
+        if not clicked:
+            await tag_input.first.press("Enter")
+        await page.wait_for_timeout(900)
+        logger.info("Added tag: %s", tag)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("add tag %r failed: %s", tag, e)
+        return False
+
+
 async def upload_csv(
     page: Page,
     csv_path: Path,
@@ -341,72 +388,17 @@ async def upload_csv(
     # in 2026 — advance until the tag input appears rather than assuming position)
     TAG_INPUT_SEL = 'input[placeholder*="Search or add a new tag"], input[placeholder*="add a new tag"]'
     await _advance_to(page, TAG_INPUT_SEL, max_clicks=3, label="Add tags")
-    logger.info("Wizard: Add tags — adding 'Courthouse Data' tag...")
     await page.wait_for_timeout(1000)
     await _screenshot(page, "step2_tags")
 
-    # Add "Courthouse Data" tag via the Custom Tags input on the right side
-    try:
-        tag_input = page.locator('input[placeholder*="Search or add a new tag"]')
-        if await tag_input.count() > 0:
-            # Click input first, then type to trigger autocomplete dropdown
-            await tag_input.first.click()
-            await page.wait_for_timeout(500)
-            await tag_input.first.fill("")
-            await page.wait_for_timeout(300)
-            await tag_input.first.type("Courthouse Data", delay=50)
-            await page.wait_for_timeout(1500)
-            await _screenshot(page, "step2_tag_typed")
-
-            # Check if "Courthouse Data" appears in autocomplete dropdown — click it
-            tag_option = page.locator('text="Courthouse Data"')
-            tag_count = await tag_option.count()
-            if tag_count > 1:
-                # Multiple matches — click the one in the dropdown (not the input)
-                await tag_option.nth(1).click()
-                await page.wait_for_timeout(1000)
-                logger.info("Selected 'Courthouse Data' from dropdown")
-            elif tag_count == 1:
-                # Check if it's the input value or a dropdown option
-                tag_box = await tag_option.first.bounding_box()
-                if tag_box and tag_box["y"] > 350:
-                    # It's below the input — it's a dropdown option
-                    await tag_option.first.click()
-                    await page.wait_for_timeout(1000)
-                    logger.info("Selected 'Courthouse Data' from dropdown")
-                else:
-                    # It's the input itself — use JS to click "Add" or press Enter
-                    await tag_input.first.press("Enter")
-                    await page.wait_for_timeout(1000)
-                    logger.info("Added 'Courthouse Data' tag (via Enter)")
-            else:
-                # No dropdown match — click "Add" via JS to create new tag
-                added = await page.evaluate('''() => {
-                    const els = document.querySelectorAll('span, div, a, button, p');
-                    for (const el of els) {
-                        const text = el.textContent.trim();
-                        const rect = el.getBoundingClientRect();
-                        if (text === "Add" && rect.width > 0 && rect.width < 60
-                            && rect.x > 700 && rect.y > 250 && rect.y < 400) {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }''')
-                if added:
-                    await page.wait_for_timeout(1000)
-                    logger.info("Created 'Courthouse Data' tag via Add button")
-                else:
-                    await tag_input.first.press("Enter")
-                    await page.wait_for_timeout(1000)
-                    logger.info("Added 'Courthouse Data' tag (via Enter fallback)")
-
-            await _screenshot(page, "step2_tag_added")
-        else:
-            logger.warning("Tag input not found — 'Courthouse Data' tag NOT added")
-    except Exception as e:
-        logger.warning("Tag addition failed: %s", e)
+    # Add EVERY tag from the CSV's Tags column (e.g. "Courthouse Data" AND
+    # "NC Estates Week 28 2026") as list-level tags — the old code hardcoded only
+    # "Courthouse Data" so the per-week tag was silently dropped (Oren, 2026-07-12).
+    csv_tags = _tags_from_csv(csv_path) or ["Courthouse Data"]
+    logger.info("Wizard: Add tags — %s", csv_tags)
+    for _t in csv_tags:
+        await _add_one_tag(page, _t)
+    await _screenshot(page, "step2_tag_added")
 
     await _click_next_step(page)
 

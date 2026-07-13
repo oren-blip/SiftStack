@@ -48,16 +48,14 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     ("Mailing ZIP Code",        "Mailing Zip"),
     *[(p, None) for p in _PHONE_SLOTS],
     *[(e, None) for e in _EMAIL_SLOTS],
-    ("Estimated Value",         "Property Value"),
+    # Removed 2026-07-12 per Oren: Estimated Value (DataSift's own enrichment
+    # step fills it), County, Notice Type (all rows are probate), Owner Deceased,
+    # Date of Death — none needed in the upload.
     ("Property Type",           None),   # custom field <- raw Property use
     ("APN",                     "Parcel ID"),   # DataSift's built-in parcel field is "APN"
     ("Personal Representative", "Personal Representative"),
-    ("County",                  "County"),
-    ("Notice Type",             None),   # constant "Probate"
-    ("Owner Deceased",          None),   # constant "Yes"
     ("Probate Open Date",       "File Date"),
     ("decedent",                "Deceased Owner"),   # matches Oren's DataSift custom field "decedent"
-    ("Date of Death",           "Date of Death (App)"),
     ("Decision Maker",          "DM Name"),
     ("DM Relationship",         "DM Relationship"),
     ("DM 2 Name",               "DM 2 Name"),
@@ -103,8 +101,6 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
     out["Email 1"] = (r.get("DM Email") or "").strip()
 
     out[_PROPERTY_TYPE_FIELD] = (r.get("Property use") or "").strip()
-    out["Notice Type"] = "Probate"
-    out["Owner Deceased"] = "Yes"
     out["Tags"] = tags
     return out
 
@@ -119,7 +115,7 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
     path.parent.mkdir(parents=True, exist_ok=True)
     tags = _tags_for_week(week, year)
     with path.open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS)
+        w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
         w.writeheader()
         for r in rows:
             w.writerow(_row_to_datasift(r, tags))
