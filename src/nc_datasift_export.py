@@ -52,7 +52,11 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     # step fills it), County, Notice Type (all rows are probate), Owner Deceased,
     # Date of Death — none needed in the upload.
     ("Property Type",           None),   # custom field <- raw Property use
-    ("APN",                     "Parcel ID"),   # DataSift's built-in parcel field is "APN"
+    # APN dropped 2026-07-12: DataSift's parcel field is enrichment-controlled
+    # (derived from its own property DB by address, like Estimated Value /
+    # Structure Type) — it ignores an uploaded APN and won't auto-map it. Let
+    # DataSift's "Enrich Property Information" fill it. Every remaining column
+    # now auto-maps by name, so no manual drag is ever needed.
     ("Personal Representative", "Personal Representative"),
     ("Probate Open Date",       "File Date"),
     ("decedent",                "Deceased Owner"),   # matches Oren's DataSift custom field "decedent"
