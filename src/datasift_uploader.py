@@ -912,7 +912,7 @@ async def enrich_records(page: Page, list_name: str) -> dict:
     return result
 
 
-async def skip_trace_records(page: Page, list_name: str) -> dict:
+async def skip_trace_records(page: Page, list_name: str, confirm: bool = True) -> dict:
     """Skip trace uploaded records for phone numbers + emails.
 
     UI Flow: Records → Filter by list → Select all → Send To → Skip Trace
@@ -1010,6 +1010,12 @@ async def skip_trace_records(page: Page, list_name: str) -> dict:
             logger.info("Added skip trace tag: %s", tag)
 
         await _screenshot(page, "skip_ready")
+
+        if not confirm:
+            result["success"] = True
+            result["message"] = "Paused before confirm — verify record count, then click the skip-trace button"
+            logger.info(result["message"])
+            return result
 
         # Click the confirm/submit button to start skip trace
         # Try multiple possible button texts
