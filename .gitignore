@@ -93,3 +93,6 @@ _tmp_skill/
 autoresearch/
 .pytest_cache/
 SiftStack Resend API.txt
+
+# DataSift automation debug screenshots (throwaway)
+datasift_*.png
