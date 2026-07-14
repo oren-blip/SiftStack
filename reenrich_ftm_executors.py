@@ -67,7 +67,7 @@ from ecourts_scraper import (  # noqa: E402
     _solve_and_inject_waf,
     _submit_search,
 )
-from nc_ftm_writer import FTM_COLUMNS, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS  # noqa: E402
+from nc_ftm_writer import FTM_COLUMNS, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS, workbook_header  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -347,7 +347,7 @@ def write_xlsx(rows: list[dict], out_path: Path) -> None:
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color=HEADER_FILL, end_color=HEADER_FILL, fill_type="solid")
     for col_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell = ws.cell(row=1, column=col_idx, value=workbook_header(col_name))
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")

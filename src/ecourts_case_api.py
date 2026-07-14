@@ -167,16 +167,35 @@ class CaseDetail:
         "successor ", "substitute ", "temporary ", "acting ",
         "ancillary ", "limited ", "collector ",
     )
+    # Latin qualifiers the court APPENDS that don't change the underlying role.
+    # "Administrator CTA" = cum testamento annexo (administrator with the will
+    # annexed); "Administrator DBN" = de bonis non (of goods not yet
+    # administered); "CTA DBN" combines both. These are real personal
+    # representatives, but exact-set membership missed them because of the
+    # trailing qualifier (Flowers 26E000682-480 Iredell Week 29: sole
+    # appointment was "Administrator CTA" → wrongly "Heirs of"). Matched after
+    # punctuation is normalized ("Administrator, CTA" / "Administrator C.T.A.").
+    _ROLE_QUALIFIER_SUFFIXES = (
+        " cta", " dbn", " ita",
+    )
 
     @classmethod
     def _normalize_role(cls, connection_type: str) -> str:
         role = (connection_type or "").strip().lower()
+        # Drop periods and treat commas as spaces so "Administrator, C.T.A."
+        # normalizes to "administrator cta" before qualifier stripping.
+        role = role.replace(".", "").replace(",", " ")
+        role = " ".join(role.split())
         changed = True
         while changed:
             changed = False
             for pref in cls._ROLE_QUALIFIER_PREFIXES:
                 if role.startswith(pref):
                     role = role[len(pref):].strip()
+                    changed = True
+            for suf in cls._ROLE_QUALIFIER_SUFFIXES:
+                if role.endswith(suf):
+                    role = role[: -len(suf)].strip()
                     changed = True
         return role
     _BENEFIT_TYPES = {"beneficiary", "heir", "devisee", "legatee", "next of kin"}

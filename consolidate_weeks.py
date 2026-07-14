@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from nc_ftm_writer import FTM_COLUMNS, HIDDEN_FROM_WORKBOOK, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS  # noqa: E402
+from nc_ftm_writer import FTM_COLUMNS, HIDDEN_FROM_WORKBOOK, NC_COUNTY_COLORS, NC_COUNTY_OPTIONS, workbook_header  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -194,7 +194,7 @@ def add_tab(wb, title: str, rows: list[dict]) -> None:
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color=_HEADER_FILL, end_color=_HEADER_FILL, fill_type="solid")
     for c_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-        cell = ws.cell(row=1, column=c_idx, value=col_name)
+        cell = ws.cell(row=1, column=c_idx, value=workbook_header(col_name))
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")

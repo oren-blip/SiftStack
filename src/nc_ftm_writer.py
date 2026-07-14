@@ -115,6 +115,18 @@ FTM_COLUMNS = [
 # preserves the field for audit / debugging / future use.
 HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address"}
 
+# Display-only header relabels for the XLSX workbook. The DATA key stays
+# unchanged everywhere (the whole pipeline reads/writes "Property use"), but the
+# workbook shows the friendlier label the DataSift upload file already uses, so
+# the two match (per Oren, Week 29). CSV outputs keep the raw data keys — only
+# the visible XLSX header cell is swapped via workbook_header().
+WORKBOOK_HEADER_OVERRIDES = {"Property use": "Property Type"}
+
+
+def workbook_header(col_name: str) -> str:
+    """The label to show in the XLSX header for a FTM_COLUMNS key."""
+    return WORKBOOK_HEADER_OVERRIDES.get(col_name, col_name)
+
 # County values for the Sheets dropdown validation
 NC_COUNTY_OPTIONS = [
     "Cabarrus", "Catawba", "Gaston", "Iredell", "Lincoln", "Mecklenburg", "Rowan",
@@ -553,7 +565,7 @@ def write_ftm_xlsx(
     header_fill = PatternFill(start_color=_HEADER_FILL_COLOR,
                               end_color=_HEADER_FILL_COLOR, fill_type="solid")
     for col_idx, col_name in enumerate(FTM_COLUMNS, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell = ws.cell(row=1, column=col_idx, value=workbook_header(col_name))
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="left", vertical="center")

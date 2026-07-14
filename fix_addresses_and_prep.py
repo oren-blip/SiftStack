@@ -1914,6 +1914,69 @@ def flag_initial_only_middle_matches(rows: list[dict]) -> int:
     return flagged
 
 
+def flag_no_middle_ambiguous_matches(rows: list[dict]) -> int:
+    """Tag rows where the deed owner has NO middle name at all, the decedent
+    DOES have a middle name, AND the county GIS holds two-or-more same-name
+    parcels — so the match rests on first+last only and can't be trusted.
+
+    Distinct from flag_initial_only_middle_matches (which needs a middle
+    INITIAL on the deed): here the deed is bare "First Last", giving nothing
+    to disambiguate a common name against. Only flags when a competing
+    homonym actually exists in the county, so unique names stay clean.
+
+    Surfaced Week 29 audit: Wallace, Mary Louise 26E002588-590 — deed "MARY
+    WALLACE" (no middle) matched 223 Halsey St, but a "MARY L WALLACE" parcel
+    (the L = Louise) sits at a different address. Dudley, Robert Lewis
+    26E002605-590 — deed "ROBERT DUDLEY" with two Robert Dudley households in
+    Mecklenburg. Adds 'verify-name-ambiguous' to Match Reason — doesn't drop.
+
+    Returns count of rows flagged.
+    """
+    from nc_gis_lookup import lookup_properties, split_decedent_name, _name_match_score
+    import re as _re
+    _SKIP_TOKENS = {"JR", "SR", "II", "III", "IV", "V", "WF", "HSB",
+                    "HEIRS", "ESTATE", "TRUSTEE", "TRUST", "LIVING",
+                    "REVOC", "REVOCABLE", "LFI", "AKA", "C/O", "LIFE"}
+    flagged = 0
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        if not pid:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        reason = (r.get("Match Reason") or "").lower()
+        if "verify-name-ambiguous" in reason or "verify-middle-initial" in reason:
+            continue  # already carries a name-verification flag
+        _first, dec_middle, dec_last = split_decedent_name(dec)
+        if not dec_middle or not dec_last:
+            continue  # deed's missing middle can't disambiguate what isn't there
+        try:
+            cands = lookup_properties(dec, county, min_score=0.5)
+        except Exception:
+            continue
+        match = next((c for c in cands if c.pid == pid), None)
+        if not match:
+            continue
+        # Matched owner's decedent-segment must be bare first+last (no middle).
+        owner = (match.owner_name or "").upper()
+        segments = _re.split(r"\s*\|\s*|\s+&\s+|\s*;\s*", owner)
+        target_seg = next((s for s in segments if dec_last.upper() in s), owner)
+        toks = [t.strip(",.") for t in target_seg.split() if t.strip(",.")]
+        toks = [t for t in toks if t not in _SKIP_TOKENS]
+        if len(toks) != 2:
+            continue  # has a middle token (verify-middle-initial covers that) or malformed
+        # Competing homonyms: 2+ candidate parcels strongly matching the
+        # decedent's first+last. A unique name won't trip this.
+        strong = sum(1 for c in cands if _name_match_score(dec, c.owner_name or "") >= 0.9)
+        if strong < 2:
+            continue
+        tag_reason(r, "verify-name-ambiguous")
+        flagged += 1
+    return flagged
+
+
 def refresh_property_use_from_gis(rows: list[dict]) -> int:
     """Re-derive Property use from the current cached GIS data for each
     row with a parcel. Catches cases where simplify_use_code was upgraded
@@ -2066,6 +2129,57 @@ def drop_under_min_value(rows: list[dict], floor: float = _MIN_STANDALONE_VALUE)
         print(f"  MIN-VALUE DROP {r.get('County')}/{r.get('Deceased Owner')}: "
               f"{r.get('Property Address')!r} valued {v_str} < {floor:,.0f} (standalone parcel)")
         dropped += 1
+    return kept, dropped
+
+
+def drop_life_estate_parcels(rows: list[dict]) -> tuple[list[dict], int]:
+    """Drop rows whose GIS-matched parcel is titled as the DECEDENT's LIFE
+    ESTATE. A life estate ends at the life tenant's death and the property
+    passes to the remaindermen (the heirs) automatically, OUTSIDE probate —
+    so there is no estate sale to pursue, and the remaindermen commonly already
+    occupy it. Per Oren (Week 29 audit), hard-DQ these.
+
+    Parker, Geraldine 26E000935-350 — GIS owner "PARKER GERALDINE SNEED LIFE
+    ESTATE" at 205 S Pink St, owner-occupied; Oren confirmed via BeenVerified
+    the remaindermen (Cathy Parker Safley / Grover Clifton Parker) now hold and
+    occupy it. County GIS still shows the life estate, so the "LIFE ESTATE"
+    string on the decedent's own parcel is the detectable tell.
+
+    Guards: skips vacant land (keep-land rule stands — a lot still sells) and
+    skips multi-parcel estates (a "PLUS" sibling may be the real lead; don't
+    nuke the whole row over one life-estate parcel).
+
+    Returns (kept_rows, dropped_count).
+    """
+    from nc_gis_lookup import lookup_properties, split_decedent_name
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        pid = (r.get("Parcel ID") or "").strip()
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        use = (r.get("Property use") or "").upper()
+        if (not pid or not dec or not county or "IN THE MATTER" in dec.upper()
+                or "VACANT" in use or use == "LAND" or _has_sibling_parcels(r)):
+            kept.append(r)
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.5)
+            match = next((c for c in cands if (c.pid or "") == pid), None)
+        except Exception:
+            match = None
+        if not match:
+            kept.append(r)
+            continue
+        owner = (match.owner_name or "").upper()
+        _f, _m, dec_last = split_decedent_name(dec)
+        dec_last = (dec_last or "").upper()
+        if "LIFE ESTATE" in owner and dec_last and dec_last in owner:
+            print(f"  LIFE-ESTATE DROP {county}/{dec}: parcel {pid} owner={owner!r} "
+                  f"(auto-transfers to remaindermen — not a probate sale)")
+            dropped += 1
+            continue
+        kept.append(r)
     return kept, dropped
 
 
@@ -3015,6 +3129,51 @@ def _same_property_by_number_zip(
     return any(t.isdigit() or len(t) >= 4 for t in shared)
 
 
+def _house_number(norm: str) -> str:
+    """Leading digit run of a norm_addr() string (the house number), or ''."""
+    m = re.match(r"^(\d+)", norm or "")
+    return m.group(1) if m else ""
+
+
+def _within_one_edit(a: str, b: str) -> bool:
+    """True when a and b differ by at most one insert/delete/substitute."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    i = 0
+    while i < la and i < lb and a[i] == b[i]:
+        i += 1
+    if la == lb:            # substitution — remainder must match
+        return a[i + 1:] == b[i + 1:]
+    if la < lb:             # single insertion in b
+        return a[i:] == b[i + 1:]
+    return a[i + 1:] == b[i:]  # single deletion in b
+
+
+def _heir_addr_match(a: str, b: str) -> bool:
+    """Heir-occupancy address equality with a tight fuzz for deed-vs-court
+    spelling drift. Exact match, OR: identical house number AND the street
+    portion is within a single edit. The identical-house-number guard keeps
+    this from ever collapsing two different addresses on the same street —
+    it only forgives a one-character typo/OCR variance in the street name.
+
+    James 26E002599-590 Week 29: beneficiary Elizabeth James lives at the
+    property, but her court address spelled it "5126 Glenbriar Dr" while the
+    deed spelled it "5126 Glenbrier Dr" — one letter (a/e) defeated the exact
+    match and the heir-occupied DQ never fired.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    ha, hb = _house_number(a), _house_number(b)
+    if not ha or ha != hb:
+        return False
+    return _within_one_edit(a, b)
+
+
 def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows where the executor's mailing address matches the property
     address — meaning the executor LIVES at the property. They almost
@@ -3060,12 +3219,12 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         if "VACANT" in use or use == "LAND":
             return (False, "")
         mail = norm_addr(r.get("Mailing Address"))
-        if mail and prop_norm == mail:
+        if mail and _heir_addr_match(prop_norm, mail):
             return (True, "dq-executor-at-property")
         ben_block = (r.get("Beneficiaries") or "")
         if ben_block:
             for ben_addr in _BENEFICIARY_ADDR_RE.findall(ben_block):
-                if norm_addr(ben_addr) == prop_norm:
+                if _heir_addr_match(norm_addr(ben_addr), prop_norm):
                     return (True, "dq-beneficiary-at-property")
         # Application-PDF heirs (when available) — the OData Parties API
         # often misses an heir/applicant address that the Application PDF
@@ -3086,7 +3245,7 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
                         if not isinstance(h, dict):
                             continue
                         street = (h.get("street") or "").strip()
-                        if street and norm_addr(street) == prop_norm:
+                        if street and _heir_addr_match(norm_addr(street), prop_norm):
                             return (True, "dq-app-heir-at-property")
             except (ValueError, TypeError):
                 pass
@@ -4308,6 +4467,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_flagged = flag_initial_only_middle_matches(rows)
     print(f"  Rows flagged for manual middle-initial verification: {n_flagged}")
 
+    print("Step 1.66: flag bare first+last matches with a competing same-name parcel (verify-name-ambiguous)")
+    n_flagged_amb = flag_no_middle_ambiguous_matches(rows)
+    print(f"  Rows flagged for manual name-ambiguity verification: {n_flagged_amb}")
+
     print("Step 1.7: backfill Property Value from GIS where missing")
     n_priced = populate_property_values(rows)
     print(f"  Filled Property Value: {n_priced}")
@@ -4353,6 +4516,21 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.9: drop heir-occupied (executor mailing == property address)")
     rows, n_heir_occupied = drop_executor_at_property(rows)
     print(f"  Dropped heir-occupied: {n_heir_occupied}  Remaining: {len(rows)}")
+
+    # Step 1.92: re-apply the <$10K standalone floor. Step 1.9's swap-on-DQ can
+    # demote a multi-parcel estate whose main house is heir-occupied down to its
+    # only remaining sibling — and that sibling may be a sub-floor scrap lot the
+    # first floor pass (Step 1.82) skipped because the row was still multi-parcel
+    # then (Kilgo 26E002578-590 Week 29: $293K heir-occupied house swapped to a
+    # $3,800 Creekwood Ct lot, leaked into the workbook). Rows that still carry a
+    # "PLUS" sibling note stay exempt — that's the consecutive-vacant-lots play.
+    print("Step 1.92: re-apply <$10K standalone floor after heir-occupied swaps")
+    rows, n_under_min_postswap = drop_under_min_value(rows)
+    print(f"  Dropped sub-floor after swap: {n_under_min_postswap}  Remaining: {len(rows)}")
+
+    print("Step 1.925: drop decedent life-estate parcels (auto-transfer to remaindermen, not a probate sale)")
+    rows, n_life_estate = drop_life_estate_parcels(rows)
+    print(f"  Dropped life-estate: {n_life_estate}  Remaining: {len(rows)}")
 
     print("Step 1.95: fill missing PR mailing from property (so direct mail still goes out)")
     n_filled_pr = fill_missing_pr_mailing_from_property(rows)

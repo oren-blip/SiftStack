@@ -81,6 +81,17 @@ if "%NC_DEEP_PROSPECT%"=="0" (
     "D:\SiftStack\.venv\Scripts\python.exe" nc_deep_prospect.py --all-cases >> "logs\nc_daily_run.log" 2>&1
 )
 
+REM Backfill PR phone (+ email) from case-attached PDFs (Estates Action Cover
+REM Sheet / Family History Affidavit / Paid Funeral Bill) for rows the skip
+REM trace left without a Phone 1. Bounded by --limit so it never blows the
+REM ~1/min Odyssey doc throttle. Off-switch:  set NC_PDF_PHONES=0
+echo [5.7/6] PDF phone backfill (cover sheet / family history / funeral bill)...
+if "%NC_PDF_PHONES%"=="0" (
+    echo   skipped -- NC_PDF_PHONES=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" nc_phone_backfill.py --limit 25 >> "logs\nc_daily_run.log" 2>&1
+)
+
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_daily_run.log" 2>&1
 echo [7/7] Daily report (file + email)...
