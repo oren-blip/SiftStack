@@ -2266,7 +2266,10 @@ _STREET_SUFFIX_TOKENS = {
 
 def _split_house_street(address: str) -> tuple[str, str]:
     """('156 Manor Cir') -> ('156', 'MANOR'); drops the trailing street
-    suffix so a component-field query matches. ('','') when unparseable."""
+    suffix so a component-field query matches. ('','') when unparseable.
+    Takes only the street portion (before the first comma) so a full
+    '156 Manor Circle, Mooresville, NC 28115' still parses to house+street."""
+    address = (address or "").split(",")[0]
     parts = _normalize_address_for_query(address).split()
     if not parts or not parts[0].isdigit():
         return "", ""

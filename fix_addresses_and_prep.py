@@ -841,6 +841,135 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
     return recovered
 
 
+# NC town -> candidate county(ies) for the 7 counties we cover. Used to route an
+# Application-listed property address to the RIGHT county GIS — the whole point
+# of the Application-address recovery is catching estates filed in one county
+# with property in another (Barnette 26E002615-590: filed Mecklenburg, property
+# 156 Manor Circle in Mooresville = Iredell). Towns that straddle two counties
+# list both; we try each.
+_NC_TOWN_COUNTY: dict[str, list[str]] = {
+    "CONCORD": ["Cabarrus"], "HARRISBURG": ["Cabarrus"], "MOUNT PLEASANT": ["Cabarrus"],
+    "MIDLAND": ["Cabarrus"], "KANNAPOLIS": ["Cabarrus", "Rowan"],
+    "HICKORY": ["Catawba"], "NEWTON": ["Catawba"], "CONOVER": ["Catawba"],
+    "CLAREMONT": ["Catawba"], "MAIDEN": ["Catawba", "Lincoln"], "CATAWBA": ["Catawba"],
+    "LONG VIEW": ["Catawba"], "TERRELL": ["Catawba"], "SHERRILLS FORD": ["Catawba"],
+    "GASTONIA": ["Gaston"], "BELMONT": ["Gaston"], "MOUNT HOLLY": ["Gaston"],
+    "BESSEMER CITY": ["Gaston"], "CHERRYVILLE": ["Gaston"], "DALLAS": ["Gaston"],
+    "STANLEY": ["Gaston"], "LOWELL": ["Gaston"], "MCADENVILLE": ["Gaston"],
+    "CRAMERTON": ["Gaston"], "RANLO": ["Gaston"],
+    "STATESVILLE": ["Iredell"], "MOORESVILLE": ["Iredell"], "TROUTMAN": ["Iredell"],
+    "HARMONY": ["Iredell"], "UNION GROVE": ["Iredell"], "OLIN": ["Iredell"],
+    "TURNERSBURG": ["Iredell"],
+    "LINCOLNTON": ["Lincoln"], "DENVER": ["Lincoln"], "IRON STATION": ["Lincoln"],
+    "VALE": ["Lincoln", "Catawba"], "CROUSE": ["Lincoln"],
+    "CHARLOTTE": ["Mecklenburg"], "MATTHEWS": ["Mecklenburg"], "MINT HILL": ["Mecklenburg"],
+    "HUNTERSVILLE": ["Mecklenburg"], "CORNELIUS": ["Mecklenburg"], "DAVIDSON": ["Mecklenburg"],
+    "PINEVILLE": ["Mecklenburg"],
+    "SALISBURY": ["Rowan"], "CHINA GROVE": ["Rowan"], "LANDIS": ["Rowan"],
+    "ROCKWELL": ["Rowan"], "CLEVELAND": ["Rowan"], "GRANITE QUARRY": ["Rowan"],
+    "SPENCER": ["Rowan"], "EAST SPENCER": ["Rowan"], "FAITH": ["Rowan"],
+    "GOLD HILL": ["Rowan"], "MOUNT ULLA": ["Rowan"], "WOODLEAF": ["Rowan"],
+}
+
+
+def _town_from_address(addr: str) -> str:
+    """Pull the town out of 'street, TOWN, NC 28115' (or 'street TOWN NC zip')."""
+    s = (addr or "").strip()
+    m = re.search(r",\s*([A-Za-z .'-]+?)\s*,?\s*NC\b", s)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"\b([A-Za-z][A-Za-z .'-]+?)\s+NC\s+\d{5}", s)
+    return m.group(1).strip() if m else ""
+
+
+def recover_parcel_from_app_realestate(rows: list[dict]) -> int:
+    """For rows STILL lacking a parcel, use the property address the Application
+    itself lists ("real estate owned by decedent", Preliminary Inventory) to
+    find the parcel — routing to the county inferred from the address's town, so
+    an estate filed in one county with property in another is caught. This field
+    is usually blank on the form, so hit rate is low — but when present it's the
+    court stating the decedent's property outright, no name-matching needed.
+    Reads the Application from the fetched-case-docs store (needs the doc to have
+    been drained). Keeps the row's County (the filing county) per Oren's convention.
+    """
+    try:
+        import case_doc_queue as cdq
+        from nc_gis_lookup import (
+            lookup_by_address, split_decedent_name, _ARCGIS_CONFIG, _compose_address,
+            simplify_use_code,
+        )
+    except Exception as e:
+        print(f"  app-address recovery unavailable ({e})")
+        return 0
+    fetched = cdq.load_fetched()
+    if not fetched:
+        return 0
+    recovered = 0
+    for r in rows:
+        if (r.get("Parcel ID") or "").strip():
+            continue
+        case_hex = (r.get("Case ID (hex)") or "").strip()
+        entry = fetched.get(case_hex) if case_hex else None
+        app = (entry or {}).get("application") or {}
+        addrs = app.get("real_estate_owned") or []
+        if not addrs:
+            continue
+        dec = (r.get("Deceased Owner") or "").strip()
+        _f, _m, dec_last = split_decedent_name(dec)
+        case_county = (r.get("County") or "").strip()
+        done = False
+        for addr in addrs:
+            if not addr or done:
+                continue
+            town = _town_from_address(addr)
+            counties = list(_NC_TOWN_COUNTY.get(town.upper(), []))
+            if case_county and case_county not in counties:
+                counties.append(case_county)
+            for cty in counties:
+                cfg = _ARCGIS_CONFIG.get(cty.lower())
+                if not cfg or not cfg.get("url"):
+                    continue  # ArcGIS counties only (Meck address path differs)
+                try:
+                    hits = lookup_by_address(addr, cty)
+                except Exception:
+                    hits = []
+                owner_fields = cfg.get("owner_fields") or []
+                for attrs in hits:
+                    owner_str = " ".join(str(attrs.get(of) or "") for of in owner_fields).upper()
+                    # Surname sanity check (deed may misspell — allow a 1-char
+                    # slip via startswith on the 5-char stem). Barnett vs Barnette.
+                    stem = (dec_last or "").upper()[:5]
+                    if stem and stem not in owner_str and not any(
+                        tok.startswith(stem) for tok in re.split(r"[^A-Z]+", owner_str)
+                    ):
+                        continue
+                    pid = str(attrs.get(cfg.get("parcel_field") or "PIN") or "")
+                    if not pid:
+                        continue
+                    situs = _compose_address(attrs, cfg.get("situs_fields") or [])
+                    r["Parcel ID"] = pid
+                    if situs:
+                        r["Property Address"] = situs
+                    uc, ud = cfg.get("use_field") or "", cfg.get("use_desc_field") or ""
+                    use = simplify_use_code(
+                        str(attrs.get(uc) or "") if uc else "",
+                        str(attrs.get(ud) or "") if ud else "", cty.lower())
+                    if use:
+                        r["Property use"] = use
+                    notes = (r.get("Notes") or "").strip()
+                    tag = f"[APP-REALESTATE {addr}" + (f" — {cty} county]" if cty != case_county else "]")
+                    r["Notes"] = (notes + ("\n" if notes else "") + tag).strip()
+                    tag_reason(r, "app-realestate-parcel")
+                    print(f"  APP-REALESTATE {case_county}/{dec}: matched {pid} at "
+                          f"{situs!r} in {cty} via Application address {addr!r}")
+                    recovered += 1
+                    done = True
+                    break
+                if done:
+                    break
+    return recovered
+
+
 def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
     """Validate a NAME-matched parcel against the decedent's OWN address.
 
@@ -4588,6 +4717,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.66: Small Estate Disposed-recent — match parcel via Interested Person mailing")
     n_se_recovered = address_lookup_for_small_estate_disposed(rows)
     print(f"  Small Estate parcels recovered via Interested-Person address: {n_se_recovered}")
+
+    print("Step 0.67: recover parcel from the Application's listed real-estate address (cross-county aware)")
+    n_app_re = recover_parcel_from_app_realestate(rows)
+    print(f"  Parcels recovered via Application real-estate address: {n_app_re}")
 
     print("Step 0.68: cross-check name-matched parcels against the decedent's own address")
     n_addr_swap, n_addr_flag = crosscheck_parcel_vs_decedent_address(rows)

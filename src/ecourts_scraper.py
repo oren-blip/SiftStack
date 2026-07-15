@@ -1224,13 +1224,21 @@ def cases_needing_docs(max_age_days: int = 30) -> dict[str, tuple]:
                         pr = (r.get("Personal Representative")
                               or r.get("Executor Full Name") or "").strip()
                         has_pr = bool(pr) and not pr.lower().startswith("heirs of")
+                        # No-parcel rows are worth a doc too: the Application's
+                        # "real estate owned by decedent" field can recover a
+                        # parcel our name search missed, incl. cross-county
+                        # (Barnette 26E002615-590). So a case qualifies when it
+                        # lacks a PR OR lacks a parcel.
+                        has_parcel = bool((r.get("Parcel ID") or "").strip())
                         val = _money(r.get("Property Value"))
                         no_contact = 0 if (r.get("Beneficiaries") or "").strip() else 1
-                        prio = (no_contact, val, mtime)
-                        latest[case_no] = (mtime, has_pr, prio)
+                        # No-parcel cases sort first (nothing else can find them).
+                        prio = (1 if not has_parcel else 0, no_contact, val, mtime)
+                        latest[case_no] = (mtime, has_pr, has_parcel, prio)
             except (OSError, UnicodeDecodeError, _csv.Error) as e:
                 logger.debug("cases_needing_docs: skipping %s (%s)", fp, e)
-    return {c: prio for c, (_mtime, has_pr, prio) in latest.items() if not has_pr}
+    return {c: prio for c, (_mtime, has_pr, has_parcel, prio) in latest.items()
+            if not has_pr or not has_parcel}
 
 
 def _money(v) -> float:
@@ -1288,7 +1296,7 @@ def drain_pending_case_docs(*, waf_token: str, all_cookies: dict | None = None) 
     # (no-existing-contact, property value, recency), highest first.
     targets.sort(key=lambda t: needed[(t[1].get("case_number") or "").strip().upper()],
                  reverse=True)
-    logger.info("eCourts: pending-doc queue = %d case(s); %d still lack a PR "
+    logger.info("eCourts: pending-doc queue = %d case(s); %d lack a PR or parcel "
                 "and will be fetched (highest-value first)", len(pending), len(targets))
     if targets:
         top = targets[0][1]

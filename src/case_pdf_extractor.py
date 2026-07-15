@@ -501,6 +501,10 @@ The application typically contains:
   name, age indicator (e.g. "18+" or actual age), relationship, mailing address
 - The ATTORNEY representing the estate (when one is listed)
 - A preliminary estate value (Part I total of the Preliminary Inventory)
+- REAL ESTATE the decedent owned, listed in the Preliminary Inventory: Part I
+  ("Real property solely owned by decedent" / jointly owned) and Part II item 4
+  ("Real estate owned by decedent and not listed elsewhere"). These fields are
+  OFTEN BLANK — only capture a street address when one is actually written in.
 
 OCR / form extraction is messy — field labels and values get jumbled. Do your
 best to associate each value with the right field by context.
@@ -532,7 +536,12 @@ data is missing — DO NOT invent):
     }}
   ],
   "attorney_name": "<full name, empty if pro se>",
-  "preliminary_estate_value_usd": <number or null>
+  "preliminary_estate_value_usd": <number or null>,
+  "real_estate_owned": [
+    "<full street address (street, city, state, zip) of each parcel of real
+     estate the decedent owned, exactly as written in the Preliminary Inventory
+     Part I / Part II item 4. Empty list if none is listed — this is common.>"
+  ]
 }}
 
 If this document is NOT an Application form (e.g. it's a death certificate or
