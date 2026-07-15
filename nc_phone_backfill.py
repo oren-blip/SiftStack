@@ -47,7 +47,14 @@ logger = logging.getLogger("nc_phone_backfill")
 
 WAF_PATH = "ecourts_waf_cookies.json"
 PENDING_PATH = "output/pending_case_docs.json"
-MIN_SCORE = 3  # don't write a phone that only scored on position (avoid noise)
+MIN_SCORE = 3      # min score to FILL a blank Phone 1
+OVERRIDE_SCORE = 6  # min score to OVERRIDE an existing (skip-trace) Phone 1 —
+                    # a court cover-sheet number sitting next to the PR's name
+                    # (score >=6 needs the name or a strong cue nearby) is more
+                    # authoritative than a skip-trace guess. Flowers/McNeil Week
+                    # 29: skip-trace filled a wrong number; the cover sheet had
+                    # the right one at score 9. The prior number is preserved in
+                    # Notes so nothing is lost.
 
 
 def _latest_enriched_csv() -> str:
@@ -95,9 +102,16 @@ def main() -> None:
 
     rows = list(csv.DictReader(open(csv_path, encoding="utf-8-sig")))
     fieldnames = rows[0].keys() if rows else []
-    todo = [r for r in rows if not (r.get("Phone 1") or "").strip()
-            and (r.get("Case No.") or "").strip()]
-    logger.info("%d rows total, %d missing Phone 1", len(rows), len(todo))
+    # Process every row with a case number. Blank-Phone-1 rows first (a fill is
+    # always a win), then filled rows (only upgraded when the court doc yields a
+    # high-confidence PR number that beats the skip-trace one). --limit bounds
+    # the throttled fetches; blanks-first ordering means the cheapest wins land
+    # before the cap is hit.
+    have_case = [r for r in rows if (r.get("Case No.") or "").strip()]
+    todo = sorted(have_case, key=lambda r: bool((r.get("Phone 1") or "").strip()))
+    n_blank = sum(1 for r in todo if not (r.get("Phone 1") or "").strip())
+    logger.info("%d rows total, %d missing Phone 1, %d with a phone to verify",
+                len(rows), n_blank, len(todo) - n_blank)
 
     fetched = 0
     found = 0
@@ -147,17 +161,36 @@ def main() -> None:
             if best and best["score"] >= 7:
                 break  # strong hit — stop spending quota on this case
 
-        if best:
+        existing = (r.get("Phone 1") or "").strip()
+        existing_digits = "".join(ch for ch in existing if ch.isdigit())
+        if best and not existing:
+            # Fill a blank.
             found += 1
-            logger.info("  FOUND %s (%s): %s  [%s, score %d]  email=%s",
+            logger.info("  FILL  %s (%s): %s  [%s, score %d]  email=%s",
                         case, name, best["phone"], best["doc"], best["score"], best["email"] or "-")
             if not args.dry_run:
                 r["Phone 1"] = best["phone"]
                 if best["email"] and not (r.get("DM Email") or "").strip():
                     r["DM Email"] = best["email"]
                 r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone").strip(" |")
+        elif best and existing and best["phone_digits"] != existing_digits and best["score"] >= OVERRIDE_SCORE:
+            # Override a skip-trace number with a high-confidence court number,
+            # preserving the old one in Notes.
+            found += 1
+            logger.info("  UPGRADE %s (%s): %s (court, score %d) replaces %s (skip-trace)",
+                        case, name, best["phone"], best["score"], existing)
+            if not args.dry_run:
+                r["Phone 1"] = best["phone"]
+                note = (r.get("Notes") or "").strip()
+                alt = f"[alt phone (skip-trace): {existing}]"
+                r["Notes"] = f"{note}\n{alt}".strip() if note else alt
+                if best["email"] and not (r.get("DM Email") or "").strip():
+                    r["DM Email"] = best["email"]
+                r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone-verified").strip(" |")
+        elif best:
+            logger.info("  KEEP  %s (%s): existing %s stands (court score %d)", case, name, existing, best["score"])
         else:
-            logger.info("  MISS %s (%s): docs filed but no PR phone in them", case, name)
+            logger.info("  MISS  %s (%s): docs filed but no PR phone in them", case, name)
 
     _write(csv_path, rows, fieldnames, args.dry_run, found)
 
