@@ -20,15 +20,6 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-# Our property classification (SFR/MH/Vacant Land) goes to a DataSift CUSTOM
-# field named "Property Type", NOT the built-in "Structure Type". DataSift's
-# built-in Structure Type is enrichment-controlled — it derives it from its own
-# property database and ignores an uploaded value (Oren confirmed it wouldn't
-# populate). A custom text field preserves our own buy-box classification, so we
-# send the raw value as-is. Oren must create the "Property Type" custom field in
-# DataSift once for this column to auto-map.
-_PROPERTY_TYPE_FIELD = "Property Type"
-
 # Empty phone/email slots so Tracerfy / DataSift skip-trace numbers map cleanly.
 _PHONE_SLOTS = [f"Phone {i}" for i in range(1, 10)]   # Phone 1-9
 _EMAIL_SLOTS = [f"Email {i}" for i in range(1, 6)]    # Email 1-5
@@ -51,7 +42,9 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     # Removed 2026-07-12 per Oren: Estimated Value (DataSift's own enrichment
     # step fills it), County, Notice Type (all rows are probate), Owner Deceased,
     # Date of Death — none needed in the upload.
-    ("Property Type",           None),   # custom field <- raw Property use
+    # Property Type dropped 2026-07-15 per Oren: DataSift's "Enrich Property
+    # Information" step fills the structure type from its own property DB, so
+    # uploading our raw Property use is redundant.
     # APN dropped 2026-07-12: DataSift's parcel field is enrichment-controlled
     # (derived from its own property DB by address, like Estimated Value /
     # Structure Type) — it ignores an uploaded APN and won't auto-map it. Let
@@ -104,7 +97,6 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
         out["Phone 1"] = dm_phone
     out["Email 1"] = (r.get("DM Email") or "").strip()
 
-    out[_PROPERTY_TYPE_FIELD] = (r.get("Property use") or "").strip()
     out["Tags"] = tags
     return out
 

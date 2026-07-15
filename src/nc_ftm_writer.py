@@ -113,14 +113,18 @@ FTM_COLUMNS = [
 # Case Status is a silent guardrail — every kept row should be "Pending"
 # (polish drops Disposed/Closed). Hiding it removes visual noise but
 # preserves the field for audit / debugging / future use.
-HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address"}
+# "Property use" hidden 2026-07-15 per Oren: DataSift's "Enrich Property
+# Information" fills the structure type on its own, so the column is redundant in
+# the workbook. The DATA key stays for the pipeline's internal buy-box logic
+# (vacant-land exemptions, condo/townhouse drops, etc.) — it's just collapsed
+# from view. Dropped from the upload file too (nc_datasift_export).
+HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address", "Property use"}
 
-# Display-only header relabels for the XLSX workbook. The DATA key stays
-# unchanged everywhere (the whole pipeline reads/writes "Property use"), but the
-# workbook shows the friendlier label the DataSift upload file already uses, so
-# the two match (per Oren, Week 29). CSV outputs keep the raw data keys — only
-# the visible XLSX header cell is swapped via workbook_header().
-WORKBOOK_HEADER_OVERRIDES = {"Property use": "Property Type"}
+# Display-only header relabels for the XLSX workbook. Empty now that "Property
+# use" is hidden (its Property Type rename was only to match the upload, which
+# no longer carries the column either). Kept as a hook for future relabels so
+# the workbook_header() call sites don't need touching.
+WORKBOOK_HEADER_OVERRIDES: dict[str, str] = {}
 
 
 def workbook_header(col_name: str) -> str:
