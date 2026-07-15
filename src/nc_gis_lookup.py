@@ -240,7 +240,80 @@ def _split_owner_segments(owner: str) -> list[tuple[str, bool]]:
     return out
 
 
+# ── Decedent alias registry ──────────────────────────────────────────
+# Odyssey often lists a decedent under several names — Dozier, Patricia H /
+# Patricia Hardy / Patricia Ann (26E002608-590). The deed may be recorded under
+# a NON-primary one ("PATRICIA A DOZIER"), which scores only 0.40 against the
+# primary "Patricia H" and gets dropped — even though "Patricia Ann" scores 1.00.
+# The scraper registers every decedent-party name here so _name_match_score
+# scores an owner against ALL of the decedent's known names and keeps the best.
+# Persisted to disk so the polish process (a separate process from the scraper)
+# sees the same aliases.
+_ALIAS_REGISTRY_PATH = Path("output") / ".nc_decedent_aliases.json"
+_ALIAS_REGISTRY: "dict[str, list[str]] | None" = None
+
+
+def _alias_key(name: str) -> str:
+    return _normalize_name(name or "").upper().strip()
+
+
+def _load_alias_registry() -> "dict[str, list[str]]":
+    global _ALIAS_REGISTRY
+    if _ALIAS_REGISTRY is None:
+        try:
+            data = json.loads(_ALIAS_REGISTRY_PATH.read_text(encoding="utf-8"))
+            _ALIAS_REGISTRY = data if isinstance(data, dict) else {}
+        except Exception:
+            _ALIAS_REGISTRY = {}
+    return _ALIAS_REGISTRY
+
+
+def register_decedent_aliases(primary_name: str, alias_names: "list[str]") -> None:
+    """Persist a decedent's alternate court-listed names so the matcher can
+    score deeds recorded under any of them. Keyed by the primary name. Safe to
+    call repeatedly — idempotent, merges new aliases in."""
+    if not primary_name or not alias_names:
+        return
+    reg = _load_alias_registry()
+    key = _alias_key(primary_name)
+    if not key:
+        return
+    have = set(reg.get(key, []))
+    added = False
+    for a in alias_names:
+        a = (a or "").strip()
+        if a and _alias_key(a) != key and a not in have:
+            have.add(a)
+            added = True
+    if added:
+        reg[key] = sorted(have)
+        try:
+            _ALIAS_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _ALIAS_REGISTRY_PATH.write_text(
+                json.dumps(reg, ensure_ascii=False, indent=0), encoding="utf-8")
+        except Exception as e:
+            logger.warning("could not persist decedent alias registry: %s", e)
+
+
+def _decedent_name_variants(decedent: str) -> "list[str]":
+    """The decedent name plus any registered court aliases."""
+    if not decedent:
+        return []
+    reg = _load_alias_registry()
+    return [decedent] + list(reg.get(_alias_key(decedent), []))
+
+
 def _name_match_score(decedent: str, owner_fullname: str) -> float:
+    """Alias-aware wrapper: score the owner against the decedent AND every
+    registered court alias, keeping the best. Falls straight through to the
+    core scorer when the decedent has no aliases (the common case)."""
+    variants = _decedent_name_variants(decedent)
+    if len(variants) <= 1:
+        return _name_match_score_core(decedent, owner_fullname)
+    return max(_name_match_score_core(v, owner_fullname) for v in variants)
+
+
+def _name_match_score_core(decedent: str, owner_fullname: str) -> float:
     """Score how confidently the owner name matches the decedent.
 
     CRITICAL: When BOTH decedent and owner have a middle name/initial,
@@ -1072,6 +1145,35 @@ def _lookup_mecklenburg(decedent_name: str, min_score: float = 0.7) -> list[Prop
 
     n_raw, candidates = _candidates_for(last)
     surnames = [last]
+
+    # When the last-name fetch hits the hard page cap (400 rows = 20 pages of
+    # 20), the surname is common enough that the decedent's parcel may be past
+    # the cap and got silently truncated (Harris, Barbara Joyce 26E002623-590:
+    # 400 HARRIS rows, hers was #400+). Retry narrowed by firstname. Polaris
+    # exact-matches the whole `firstname` field, which for anyone with a middle
+    # name is stored as "FIRST M" (first + middle INITIAL) — so "BARBARA" misses
+    # her but "BARBARA J" finds her exactly. Try both. Only fires on the capped
+    # case, so it costs nothing for the common (uncommon-surname) lookup.
+    _POLARIS_PAGE_CAP = 400
+    target_found = any((c.pid or "") for c in candidates if c.match_score >= 0.9)
+    if n_raw >= _POLARIS_PAGE_CAP and first and not target_found:
+        seen_pids = {c.pid for c in candidates if c.pid}
+        narrow_firsts = [first.upper()]
+        if middle:
+            narrow_firsts.append(f"{first} {middle[0]}".upper())
+        for fn in narrow_firsts:
+            raw = _polaris3g_search(lastname=last, firstname=fn)
+            n_raw += len(raw)
+            for rec in raw:
+                pid = rec.get("pid")
+                if pid and pid in seen_pids:
+                    continue
+                c = _polaris3g_to_candidate(rec, "Mecklenburg", decedent_name)
+                if c and c.match_score >= min_score:
+                    candidates.append(c)
+                    if pid:
+                        seen_pids.add(pid)
+
     # Only pay for the maiden-name (middle-token) search when the primary
     # surname found nothing acceptable — halves Polaris request volume in the
     # common case, which matters for the nightly's rate-limit exposure. The
@@ -2142,6 +2244,39 @@ def _street_token_pattern(addr: str) -> str | None:
     return " ".join(parts[:take])
 
 
+# Counties whose parcel layer stores the situs as SEPARATE component columns
+# (house number + street name) instead of one combined string. A LIKE on any
+# single column can never match a full "156 MANOR CIR" address — the house
+# number lives in one field and the street name in another — so lookup_by_address
+# must build a composite WHERE for these. Iredell: HouseNumber + STREET (its
+# ADD1 holds the MAILING address, and PHYSADDR isn't populated — which is why
+# every situs address lookup silently returned nothing; Barnett/Barnette
+# 26E002615-590 156 Manor Cir was invisible).
+_COMPONENT_SITUS_FIELDS: dict[str, tuple[str, str]] = {
+    "iredell": ("HouseNumber", "STREET"),
+}
+
+_STREET_SUFFIX_TOKENS = {
+    "DR", "DRIVE", "CT", "COURT", "PL", "PLACE", "LN", "LANE", "RD", "ROAD",
+    "ST", "STREET", "AVE", "AVENUE", "BLVD", "BOULEVARD", "CIR", "CIRCLE",
+    "TER", "TERRACE", "TRL", "TRAIL", "PKWY", "PARKWAY", "HWY", "HIGHWAY",
+    "CV", "COVE", "SQ", "SQUARE", "WAY", "LOOP", "RUN", "PATH", "XING", "PT", "POINT",
+}
+
+
+def _split_house_street(address: str) -> tuple[str, str]:
+    """('156 Manor Cir') -> ('156', 'MANOR'); drops the trailing street
+    suffix so a component-field query matches. ('','') when unparseable."""
+    parts = _normalize_address_for_query(address).split()
+    if not parts or not parts[0].isdigit():
+        return "", ""
+    house = parts[0]
+    street_tokens = parts[1:]
+    while street_tokens and street_tokens[-1].upper() in _STREET_SUFFIX_TOKENS:
+        street_tokens = street_tokens[:-1]
+    return house, " ".join(street_tokens).upper()
+
+
 def parcel_centroid(county: str, situs_address: str = "",
                     pid: str = "") -> tuple[float, float] | None:
     """(lat, lon) of a parcel's centroid, for reverse-geocoding its city/zip.
@@ -2225,15 +2360,41 @@ def lookup_by_address(address: str, county: str, city_hint: str = "") -> list[di
     cfg = _ARCGIS_CONFIG.get(county_key)
     if not cfg or not cfg.get("url") or county_key == "mecklenburg":
         return []
+    out: list[dict] = []
+    seen_pids: set[str] = set()
+    pid_field = cfg.get("parcel_field") or "PIN"
+
+    # Component-situs counties (Iredell): house number + street name in
+    # separate columns — build one composite WHERE instead of a per-field LIKE.
+    if county_key in _COMPONENT_SITUS_FIELDS:
+        num_field, street_field = _COMPONENT_SITUS_FIELDS[county_key]
+        house, street = _split_house_street(address)
+        if not house or not street:
+            return []
+        where = f"{num_field}='{house}' AND UPPER({street_field}) LIKE '{street}%'"
+        try:
+            r = requests.get(cfg["url"] + "/query", params={
+                "where": where, "outFields": "*", "returnGeometry": "false",
+                "f": "json", "resultRecordCount": 50,
+            }, headers=_ARCGIS_HEADERS, timeout=30)
+            if r.status_code == 200:
+                for feat in r.json().get("features", []):
+                    attrs = feat.get("attributes", {})
+                    pid = str(attrs.get(pid_field) or "")
+                    if pid and pid in seen_pids:
+                        continue
+                    seen_pids.add(pid)
+                    out.append(attrs)
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("lookup_by_address: component query failed at %s: %s", cfg["url"], e)
+        return out
+
     pattern = _street_token_pattern(address)
     if not pattern:
         return []
     fields = _ADDRESS_FIELDS_BY_COUNTY.get(county_key) or cfg.get("situs_fields") or []
     if not fields:
         return []
-    out: list[dict] = []
-    seen_pids: set[str] = set()
-    pid_field = cfg.get("parcel_field") or "PIN"
     for f in fields:
         where = f"UPPER({f}) LIKE '{pattern}%'"
         try:

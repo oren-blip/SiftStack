@@ -955,6 +955,17 @@ def _enrich_with_parties(
             )
             if looks_bad:
                 n.decedent_name = dec.full_name
+            # Register every court-listed decedent name as an alias of the
+            # primary, so the GIS matcher can score a deed recorded under any
+            # of them (Dozier, Patricia H vs the deed's "PATRICIA A DOZIER" =
+            # Patricia Ann). Persisted so the polish process sees it too.
+            aliases = detail.decedent_aliases
+            if len(aliases) > 1:
+                try:
+                    from nc_gis_lookup import register_decedent_aliases
+                    register_decedent_aliases(n.decedent_name, aliases)
+                except Exception as e:
+                    logger.debug("alias registration skipped for %s: %s", n.case_number, e)
             # Keep the decedent's OWN address. The executor's and the
             # beneficiaries' addresses are captured below; the decedent's used
             # to be thrown away, even though it is the single best signal for

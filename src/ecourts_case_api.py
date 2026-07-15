@@ -140,6 +140,24 @@ class CaseDetail:
                 return p
         return None
 
+    @property
+    def decedent_aliases(self) -> list[str]:
+        """Every decedent-party name on the case. Odyssey lists a decedent
+        under all known names (e.g. Dozier, Patricia H / Patricia Hardy /
+        Patricia Ann for 26E002608-590) as separate Decedent parties. The deed
+        may be recorded under any of them, so the matcher needs the whole set.
+        Deduplicated, order-preserving.
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+        for p in self.parties:
+            if p.connection_type.lower() in self._DECEDENT_TYPES:
+                nm = (p.full_name or "").strip()
+                if nm and nm.upper() not in seen:
+                    seen.add(nm.upper())
+                    names.append(nm)
+        return names
+
     # NC Estates connection types — verified against 10-case Mecklenburg sample (2026-05-17).
     # Affiant = small-estate affidavit petitioner
     # Applicant = applicant for letters of administration (most common in full estates)
