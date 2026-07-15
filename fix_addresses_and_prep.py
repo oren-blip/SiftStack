@@ -2964,6 +2964,180 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
     return (found, attempted)
 
 
+# NC county GIS owner-name formats: Mecklenburg (Polaris) lists an owner as
+# "FIRST [MIDDLE] LAST"; the six ArcGIS counties list "LAST FIRST [MIDDLE]".
+_COOWNER_NOISE = {
+    "WF", "HB", "HUS", "HUSB", "ETUX", "ETAL", "ET", "AL", "TRUSTEE", "TR",
+    "TRUST", "LIFE", "ESTATE", "HEIRS", "AND", "LLC", "INC",
+    "JR", "SR", "II", "III", "IV", "V",
+}
+
+
+def _gis_owner_name_parts(segment: str, county: str) -> tuple[str, str, str]:
+    """Parse one GIS owner segment into (First, Last, Middle), county-format-
+    aware. 'CAMPBELL CARSON CORRELL III' (Rowan) -> ('Carson','Campbell','Correll').
+    The middle name matters for people-search precision on common names."""
+    toks = [t.strip(",.") for t in re.split(r"\s+", (segment or "").upper()) if t.strip(",.")]
+    core = [t for t in toks if t not in _COOWNER_NOISE and len(t) > 1]
+    if len(core) < 2:
+        return "", "", ""
+    if county.strip().lower() == "mecklenburg":
+        first, last, mids = core[0], core[-1], core[1:-1]
+    else:
+        last, first, mids = core[0], core[1], core[2:]
+    return first.title(), last.title(), " ".join(mids).title()
+
+
+def promote_deed_coowner_to_dm(
+    rows: list[dict], *, do_address_lookup: bool = True, state: str = "NC",
+) -> tuple[int, int]:
+    """For no-PR ('Heirs of') rows, name the deed CO-OWNER as the decision
+    maker. When a decedent jointly owns the property with someone the court
+    never named as PR — and that co-owner has a DIFFERENT surname, so they're a
+    distinct person, not same-family noise — that co-owner is the person to
+    contact: they own the property too. The county deed already carries the
+    name, so this needs no obituary (more reliable — county records are always
+    present and authoritative).
+
+    Hunt 26E000726-790 Rowan: parcel 2230 Amity Hill Rd owner
+    "CAMPBELL CARSON CORRELL III | HUNT ARCHIE F" — the pipeline used the HUNT
+    half to match the parcel and ignored the CAMPBELL half, falling to "Heirs
+    of." Now it names Carson Campbell (co-owner) as DM and, when do_address_lookup
+    is on, looks up his CURRENT mailing address via the people-search waterfall
+    (Oren found 650 Peach Orchard Rd by hand).
+
+    Sets DM columns only — the row stays "Heirs of <Decedent>" so it still flows
+    through Oren's deep-prospecting workflow, now with a concrete contact.
+    Returns (dm_set, addr_found).
+    """
+    from nc_gis_lookup import lookup_properties, extract_co_owner_names, split_decedent_name
+    addr_fn = None
+    api_key = ""
+    if do_address_lookup:
+        try:
+            import config as cfg
+            from obituary_enricher import _lookup_dm_address
+            addr_fn = _lookup_dm_address
+            api_key = getattr(cfg, "ANTHROPIC_API_KEY", "")
+        except Exception as e:
+            print(f"  co-owner address lookup unavailable ({e}) — DM name only")
+            addr_fn = None
+    dm_set = addr_found = 0
+    addr_cache: dict[str, dict] = {}
+    for r in rows:
+        first = (r.get("First Name") or "").strip()
+        if first and first != "Heirs":
+            continue  # already has a court-named PR
+        dm = (r.get("DM Name") or "").strip().lower()
+        if dm and dm != "estate of":
+            continue  # already have a decision maker (obituary, etc.)
+        pid = (r.get("Parcel ID") or "").strip()
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if not pid or not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.3)
+            match = next((c for c in cands if (c.pid or "") == pid), None)
+        except Exception:
+            match = None
+        if not match or not match.owner_name:
+            continue
+        co_owners = extract_co_owner_names(match.owner_name, dec)
+        if not co_owners:
+            continue
+        # Prefer a co-owner whose surname differs from the decedent's — a
+        # definitively distinct person, not a same-name relative listing.
+        _f, _m, dec_last = split_decedent_name(dec)
+        dec_last_up = (dec_last or "").upper()
+        picked = None
+        for co in co_owners:
+            fn, ln, mid = _gis_owner_name_parts(co, county)
+            if fn and ln:
+                if ln.upper() != dec_last_up:
+                    picked = (fn, ln, mid)
+                    break
+                if picked is None:
+                    picked = (fn, ln, mid)  # same-surname co-owner as a fallback
+        if not picked:
+            continue
+        fn, ln, mid = picked
+        r["DM Name"] = f"{fn} {ln}"
+        r["DM Relationship"] = "co-owner (deed)"
+        tag_reason(r, "coowner-dm")
+        dm_set += 1
+        print(f"  CO-OWNER DM {county}/{dec}: {fn} {ln} (deed co-owner of "
+              f"{match.situs_address or pid})")
+
+        # Tier 0 (free, deed-authoritative): the co-owned parcel's OWN tax-bill
+        # mailing address — that's literally where the county mails the owners.
+        # Only use it when it differs from the property situs (an owner-occupied
+        # parcel mails to itself, which tells us nothing new). Hunt: Amity Hill's
+        # tax mailing is 901 N Jackson St, Salisbury — Carson's mailing on file.
+        street = city = zipc = ""
+        situs_norm = _norm_addr_simple(match.situs_address or "")
+        if match.mailing_address and _norm_addr_simple(match.mailing_address) != situs_norm:
+            street, city, zipc = _parse_mailing_blob(match.mailing_address)
+        # Tier 1 (fallback): people-search the co-owner's current residence.
+        if not street and addr_fn:
+            search_name = f"{fn} {mid} {ln}".replace("  ", " ").strip() if mid else f"{fn} {ln}"
+            key = f"{search_name}|{county}".upper()
+            res = addr_cache.get(key)
+            if res is None:
+                try:
+                    res = addr_fn(search_name, (r.get("Property City") or ""),
+                                  api_key, state=state, county=county) or {}
+                except Exception:
+                    res = {}
+                addr_cache[key] = res
+            street, city, zipc = res.get("street", ""), res.get("city", ""), res.get("zip", "")
+        if street:
+            r["Mailing Address"] = street
+            if city:
+                r["Mailing City"] = city
+            if zipc:
+                r["Mailing Zip"] = zipc
+            tag_reason(r, "coowner-address")
+            addr_found += 1
+            print(f"    -> mailing: {street} {city} {zipc}")
+    return dm_set, addr_found
+
+
+_MAIL_SUFFIXES = {
+    "ST", "STREET", "RD", "ROAD", "DR", "DRIVE", "AVE", "AVENUE", "LN", "LANE",
+    "CT", "COURT", "BLVD", "PL", "PLACE", "CIR", "CIRCLE", "WAY", "TRL", "TRAIL",
+    "PKWY", "HWY", "LOOP", "RUN", "PT", "POINT", "TER", "TERRACE", "CV", "COVE",
+    "SQ", "XING", "BND", "BLF", "HWY", "EXT",
+}
+
+
+def _parse_mailing_blob(blob: str) -> tuple[str, str, str]:
+    """Split '901 N JACKSON ST SALISBURY NC 28144-3411' into
+    (street, city, zip5) by finding the state+zip tail, then the last street
+    suffix (city is whatever follows it). Best-effort."""
+    s = (blob or "").strip()
+    m = re.search(r"\b([A-Z]{2})\s+(\d{5})(?:-\d{4})?\s*$", s)
+    if not m:
+        return (s, "", "")
+    zipc = m.group(2)
+    head = s[:m.start()].strip()          # "901 N JACKSON ST SALISBURY"
+    toks = head.split()
+    last_suf = -1
+    for i, t in enumerate(toks):
+        if t.strip(",.").upper() in _MAIL_SUFFIXES:
+            last_suf = i
+    if 0 <= last_suf < len(toks) - 1:
+        street = " ".join(toks[:last_suf + 1])
+        city = " ".join(toks[last_suf + 1:])
+    else:
+        street, city = head, ""
+    return (street.strip(), city.strip(), zipc)
+
+
+def _norm_addr_simple(s: str) -> str:
+    return "".join(ch for ch in (s or "").upper() if ch.isalnum())
+
+
 def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
     """For rows where a Personal Rep / Executor / Interested Person is named
     but their mailing address was not in the court record, fall back to
@@ -4531,6 +4705,15 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 1.925: drop decedent life-estate parcels (auto-transfer to remaindermen, not a probate sale)")
     rows, n_life_estate = drop_life_estate_parcels(rows)
     print(f"  Dropped life-estate: {n_life_estate}  Remaining: {len(rows)}")
+
+    # Step 1.927: for no-PR rows, name the deed co-owner (different surname) as
+    # the decision maker + look up their current address. Off-switch NC_COOWNER_DM=0.
+    if os.environ.get("NC_COOWNER_DM") == "0":
+        print("Step 1.927: co-owner DM promotion  — skipped (NC_COOWNER_DM=0)")
+    else:
+        print("Step 1.927: name deed co-owner as DM for no-PR rows (+ current-address lookup)")
+        n_co_dm, n_co_addr = promote_deed_coowner_to_dm(rows, state="NC")
+        print(f"  Co-owner DMs named: {n_co_dm}  (current address found: {n_co_addr})")
 
     print("Step 1.95: fill missing PR mailing from property (so direct mail still goes out)")
     n_filled_pr = fill_missing_pr_mailing_from_property(rows)
