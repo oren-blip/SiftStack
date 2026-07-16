@@ -2261,11 +2261,49 @@ def _has_sibling_parcels(row: dict) -> bool:
     return "PLUS " in (row.get("Notes") or "").upper()
 
 
+def _landportal_revalue_vacant(r: dict, floor: float, prev_val: str) -> bool:
+    """For a vacant parcel about to be scrapped for sub-floor value, ask
+    LandPortal for its market estimate (tlp_estimate). County tax values badly
+    underprice raw land — Lowman 26E000824-170 Week 29: county $5,300 vs
+    LandPortal $56,454. When the market estimate clears the floor, overwrite the
+    value + annotate and return True (keep the row). Free/no-op without a key.
+    """
+    try:
+        import landportal_lookup as lp
+    except Exception:
+        return False
+    if not lp.available():
+        return False
+    pin = (r.get("Parcel ID") or "").strip()
+    county = (r.get("County") or "").strip()
+    if not pin or not county:
+        return False
+    info = lp.get_vacant_market_value(pin, county)
+    est = (info or {}).get("tlp_estimate")
+    if est is None or est < floor:
+        return False
+    r["Property Value"] = f"{int(round(est)):,}"
+    cv = (info or {}).get("county_value")
+    note = ("[LANDPORTAL re-valued: market est "
+            f"${int(round(est)):,}"
+            + (f" vs county tax value ${int(round(cv)):,}" if cv else "")
+            + "]")
+    existing = (r.get("Notes") or "").strip()
+    r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+    tag_reason(r, "landportal-revalued")
+    print(f"  LANDPORTAL RESCUE {county}/{r.get('Deceased Owner')}: "
+          f"{r.get('Property Address')!r} county said {prev_val} -> "
+          f"market est ${int(round(est)):,} — keeping")
+    return True
+
+
 def drop_under_min_value(rows: list[dict], floor: float = _MIN_STANDALONE_VALUE) -> tuple[list[dict], int]:
     """Drop rows whose ONLY parcel is worth less than `floor`.
 
     Skips rows with no priced value (never drop what we couldn't price) and
-    skips any multi-parcel estate — see _MIN_STANDALONE_VALUE.
+    skips any multi-parcel estate — see _MIN_STANDALONE_VALUE. Before dropping a
+    VACANT lot, tries a LandPortal market re-valuation (county tax value grossly
+    underprices raw land); keeps + re-prices the row when the estimate clears.
     """
     kept: list[dict] = []
     dropped = 0
@@ -2275,6 +2313,10 @@ def drop_under_min_value(rows: list[dict], floor: float = _MIN_STANDALONE_VALUE)
             kept.append(r)
             continue
         if _money(v_str) >= floor:
+            kept.append(r)
+            continue
+        use = (r.get("Property use") or "").upper()
+        if ("VACANT" in use or use == "LAND") and _landportal_revalue_vacant(r, floor, v_str):
             kept.append(r)
             continue
         print(f"  MIN-VALUE DROP {r.get('County')}/{r.get('Deceased Owner')}: "
@@ -4335,6 +4377,80 @@ def promote_dm_to_pr(row: dict) -> dict | None:
     }
 
 
+def apply_manual_corrections(
+    rows: list[dict], path: str = "manual_corrections.csv",
+) -> tuple[int, int]:
+    """Apply durable per-record field overrides from manual_corrections.csv
+    (columns: Case No., Field, Value). Runs LAST — right before write — so a
+    hand-verified value always wins over anything the pipeline derived, and
+    survives the nightly rebuild. Mirrors manual_drops.txt, but corrects fields
+    instead of dropping cases. Use for one-offs the pipeline can't get right:
+    Stegall 26E002606-590 (Oren's phone beats the skip-trace number), Sisk
+    26E000688-480 (executor mailing the App PDF didn't carry).
+
+    Returns (fields_applied, cases_touched).
+    """
+    p = Path(path)
+    if not p.exists():
+        return (0, 0)
+    corr: dict[str, dict[str, str]] = {}
+    with p.open(newline="", encoding="utf-8-sig") as fh:
+        for row in csv.DictReader(fh):
+            case = (row.get("Case No.") or "").strip()
+            field = (row.get("Field") or "").strip()
+            if not case or not field or case.startswith("#"):
+                continue
+            corr.setdefault(case, {})[field] = (row.get("Value") or "").strip()
+    if not corr:
+        return (0, 0)
+    fields_applied = 0
+    cases_touched: set[str] = set()
+    for r in rows:
+        c = (r.get("Case No.") or "").strip()
+        overrides = corr.get(c)
+        if not overrides:
+            continue
+        for field, value in overrides.items():
+            if field in r:
+                r[field] = value
+                fields_applied += 1
+                cases_touched.add(c)
+            else:
+                print(f"  MANUAL-CORRECTION warn: {c} unknown field {field!r} — skipped")
+    return (fields_applied, len(cases_touched))
+
+
+def _clean_person_name(name: str | None) -> str:
+    """Title-case an OCR'd applicant name and repair the common suffix misread
+    'IR' -> 'Jr' (e.g. 'BILL J. BAITY IR'). Returns '' for blank input."""
+    s = (name or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\bIR\b\.?$", "Jr", s)  # OCR: JR often reads as IR
+    out = []
+    for tok in s.split():
+        t = tok.strip(".")
+        up = t.upper()
+        if up in {"JR", "SR", "II", "III", "IV"}:
+            out.append({"JR": "Jr", "SR": "Sr"}.get(up, up))
+        elif len(t) == 1:
+            out.append(t.upper() + ".")   # middle initial
+        else:
+            out.append(t.capitalize())
+    return " ".join(out)
+
+
+def _split_app_pr_name(app_pr: str) -> tuple[str, str, str]:
+    """Split a cleaned applicant name into (full, first, last) for the search-
+    friendly columns, dropping a single-initial middle token so the Last field
+    stays clean. 'Bill J. Baity Jr' -> ('Bill Baity Jr', 'Bill', 'Baity Jr')."""
+    parts = app_pr.split()
+    first = parts[0]
+    last_parts = [p for p in parts[1:] if len(p.rstrip(".")) > 1] or [parts[-1]]
+    last = " ".join(last_parts)
+    return (f"{first} {last}", first, last)
+
+
 def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
     """For rows that fell through to "Heirs of [Decedent]" (no PR found,
     no usable beneficiary), do an aggressive second-pass obituary search.
@@ -4375,6 +4491,28 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
         decedent = (r.get("Deceased Owner") or "").strip()
         if not decedent or "IN THE MATTER" in decedent.upper():
             continue
+
+        # Court-named applicant (Application PDF) beats an obituary heir. When
+        # the App PDF gave us a real PR name, promote it and skip the obit — the
+        # court record outranks a scraped obituary, which otherwise fills the
+        # slot with whatever survivor it finds (often the heir living in the
+        # house). Sisk, Nathan 26E000688-480 Week 29: App PDF "BILL J. BAITY JR"
+        # but the obit named the heir-occupant wife "Dian Sisk". (The exact
+        # applicant mailing, when it isn't on the row, comes from a later App-
+        # mailing pass or manual_corrections.csv.)
+        app_pr = _clean_person_name(r.get("PR Full Name (App)"))
+        if (app_pr and len(app_pr.split()) >= 2 and not _is_entity_decedent(app_pr)
+                and not app_pr.lower().startswith(("estate of", "heirs of"))):
+            full, first, last = _split_app_pr_name(app_pr)
+            r["Personal Representative"] = full
+            r["First Name"] = first
+            r["Last Name"] = last
+            r["DM Name"] = full
+            tag_reason(r, "pr-from-app-over-obit")
+            print(f"  APP-PR-OVER-OBIT {r.get('County')}/{decedent}: "
+                  f"{full} (Application PDF) — skipping obit")
+            continue
+
         attempted += 1
         property_city = (r.get("Property City") or "").strip()
 
@@ -4967,6 +5105,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 4.9: default blank Property Type to SFR for valued residential parcels")
     n_sfr = default_property_type_residential(kept)
     print(f"  Property Type defaulted to SFR: {n_sfr}")
+
+    print("Step 4.95: apply durable manual field corrections (manual_corrections.csv)")
+    n_corr, n_cases = apply_manual_corrections(kept)
+    print(f"  Manual field corrections applied: {n_corr} field(s) across {n_cases} case(s)")
 
     # Step 4.7 (populate_zillow_urls) removed 2026-07-11 per Oren — DataSift
     # provides the Zillow/listing link in the property record after upload, so

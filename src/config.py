@@ -49,6 +49,7 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")              # Serper.dev Googl
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")        # Firecrawl JS-rendered scraping
 TRACERFY_API_KEY = os.getenv("TRACERFY_API_KEY", "")          # Tracerfy skip tracing
 TRESTLE_API_KEY = os.getenv("TRESTLE_API_KEY", "")            # Trestle phone validation
+LANDPORTAL_API_KEY = os.getenv("LANDPORTAL_API_KEY", "")      # LandPortal JWT — vacant-parcel market value (tlp_estimate)
 DATASIFT_EMAIL = os.getenv("DATASIFT_EMAIL", "")              # DataSift.ai login
 DATASIFT_PASSWORD = os.getenv("DATASIFT_PASSWORD", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")        # Slack/Discord webhook

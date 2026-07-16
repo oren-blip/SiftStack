@@ -1,0 +1,16 @@
+Case No.,Field,Value
+# Durable per-record overrides applied at polish Step 4.95 (last, before write).
+# One row per field. Survives nightly rebuilds. See apply_manual_corrections().
+# --- Week 29 audit (2026-07-15) ---
+# Stegall: Oren's number beats the skip-trace number 704-537-9544
+26E002606-590,Phone 1,704-526-9620
+# Sisk: executor is Bill Baity Jr per the Application PDF (obit named the
+# heir-occupant wife Dian Sisk). Root fix now sets the name; this pins the
+# mailing the App PDF didn't carry onto the row.
+26E000688-480,First Name,Bill
+26E000688-480,Last Name,Baity Jr
+26E000688-480,Personal Representative,Bill Baity Jr
+26E000688-480,DM Name,Bill Baity Jr
+26E000688-480,Mailing Address,910 Crossroads Dr
+26E000688-480,Mailing City,Statesville
+26E000688-480,Mailing Zip,28625
