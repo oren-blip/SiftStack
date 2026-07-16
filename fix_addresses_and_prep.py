@@ -4641,14 +4641,39 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
         if not street:
             situs = (top.situs_address or "").strip()
             street = "0 " + situs if (situs and not situs[0].isdigit()) else "No Address"
+        use = simplify_use_code(top.use_code, top.use_description, top.county) or ""
+        if not use:
+            use = "Vacant Land" if top.is_vacant_land else ("SFR" if top.is_residential else "")
+
+        # Buy-box guard: a low-confidence attach must clear the SAME filters a
+        # real match does. This step runs at the very end (Step 3.7), long after
+        # the over-cap drop (1.8) and heir-occupied drop (1.9) — so a parcel
+        # attached here bypasses both. Leave the row blank-parcel (it then drops
+        # at Step 4) when the candidate is over-cap or heir-occupied.
+        # Potter, Sharon Davis 26E000718-120 Week 29: a 0.60 match to
+        # "POTTER PAUL | POTTER SHARON E" ($530K SFR, mailing == property)
+        # slipped into the workbook over both filters.
+        eff_use = use or ("VACANT LAND" if getattr(top, "is_vacant_land", False) else "")
+        if top.market_value is not None and float(top.market_value) > _cap_for_use(eff_use):
+            print(f"  LOW-CONF-SKIP {county}/{dec}: pid={top.pid} "
+                  f"${int(top.market_value):,} over buy-box cap — leaving blank")
+            continue
+        if "VACANT" not in eff_use.upper() and eff_use.upper() != "LAND":
+            def _na(s: str | None) -> str:
+                toks = (s or "").lower().split()
+                toks = [_STREET_SUFFIX_NORMALIZE.get(t.rstrip("."), t.rstrip(".")) for t in toks]
+                return "".join(c for c in " ".join(toks) if c.isalnum())
+            mail_n, prop_n = _na(r.get("Mailing Address")), _na(street)
+            if mail_n and prop_n and _heir_addr_match(prop_n, mail_n):
+                print(f"  LOW-CONF-SKIP {county}/{dec}: pid={top.pid} "
+                      f"heir-occupied (mailing == property) — leaving blank")
+                continue
+
         r["Parcel ID"] = top.pid or ""
         r["Property Address"] = street
         r["Property City"] = city
         r["Property State"] = "NC"
         r["Property Zip"] = zipc
-        use = simplify_use_code(top.use_code, top.use_description, top.county) or ""
-        if not use:
-            use = "Vacant Land" if top.is_vacant_land else ("SFR" if top.is_residential else "")
         if use:
             r["Property use"] = use
         if top.market_value:
