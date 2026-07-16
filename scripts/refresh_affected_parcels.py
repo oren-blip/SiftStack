@@ -127,6 +127,9 @@ def refresh_row(row: dict) -> tuple[bool, str]:
     old_prop = row.get("Property Address", "")
 
     row["Parcel ID"] = main.pid
+    # Cleared when unknown — stale acres from the swapped-out parcel would
+    # mis-apply the >2-acre buy-box exemption.
+    row["Property Acres"] = f"{float(main.lot_area):.2f}" if main.lot_area else ""
     row["Property Address"] = main.situs_address or ""
     row["Property City"] = main.situs_city_override or ""
     row["Property Zip"] = main.situs_zip_override or ""
