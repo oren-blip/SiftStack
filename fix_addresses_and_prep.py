@@ -7,6 +7,7 @@ nc_gis_lookup._candidate_to_address_parts), then run the DataSift prep
 from __future__ import annotations
 
 import csv
+import os
 import re
 import sys
 from datetime import datetime
@@ -1497,6 +1498,27 @@ def validate_existing_matches(
             )
             best = pick_best_candidate(kept, dec, r.get("Decedent Address") or "")
             if best is None or best.pid == pid:
+                continue
+            # Buy-box guard: never repick from an in-box parcel to an over-cap
+            # one. Marinakos, Peter 26E002614-590 Week 29: decedent owns 826
+            # Ashmore ($254K SFR, co-owned w/ a business partner) and 11440
+            # Bloomfield ($500K+, co-owned w/ the surviving spouse). Both score
+            # equally on name, so the value tiebreaker repicked to the over-cap
+            # Bloomfield — which Step 1.8 then swapped to a THIRD parcel
+            # (Summerlin $458K), burying Oren's actual in-box lead. If the
+            # current main is under its cap and the "better" candidate is over
+            # its cap, keep the current one.
+            def _cand_over_cap(c) -> bool:
+                use = simplify_use_code(c.use_code, c.use_description, c.county) or ""
+                is_vac = ("VACANT" in use.upper() or "LAND" in use.upper()
+                          or bool(getattr(c, "is_vacant_land", False)))
+                cap = _cap_for_use("VACANT LAND" if is_vac else use)
+                if c.market_value is None:
+                    return False
+                return float(c.market_value) > cap
+            if _cand_over_cap(best) and not _cand_over_cap(cand):
+                print(f"  REPICK-SKIP {county}/{dec}: better parcel {best.pid} "
+                      f"is over buy-box cap; keeping in-box {pid}")
                 continue
             # Only swap if the rank really moved (don't churn on equal tuples).
             # Use the 3-way _suffix_match_score (matches pick_best_candidate
@@ -3885,9 +3907,15 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
         return float(c.market_value) <= cap
 
     def rank(c):
-        # vacant first, then situs-present (better main address), then value desc.
+        # vacant first, then situs-present (better main address), then value ASC.
+        # Value ascending (cheapest-first) because when a decedent owns several
+        # under-cap parcels, the more affordable one is the better buy-box lead.
+        # Marinakos, Peter 26E002614-590 Week 29: over-cap main (11440 Bloomfield,
+        # the family home) had two under-cap siblings — 826 Ashmore ($254K, Oren's
+        # actual lead) and 6215 Summerlin ($458K). Value-DESC picked Summerlin;
+        # value-ASC picks Ashmore.
         has_situs = 1 if (c.situs_address or "").strip() else 0
-        return (0 if _is_vacant(c) else 1, 0 if has_situs else 1, -int(c.market_value or 0))
+        return (0 if _is_vacant(c) else 1, 0 if has_situs else 1, int(c.market_value or 0))
 
     eligible = [c for c in siblings if _under_cap(c)]
     if not eligible:
@@ -4831,6 +4859,17 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     # then (Kilgo 26E002578-590 Week 29: $293K heir-occupied house swapped to a
     # $3,800 Creekwood Ct lot, leaked into the workbook). Rows that still carry a
     # "PLUS" sibling note stay exempt — that's the consecutive-vacant-lots play.
+    # Step 1.91: re-apply the over-cap drop. Step 1.8 checked the cap BEFORE
+    # the heir-occupied swap (Step 1.9), so a swap that installs a new, more
+    # expensive main can push a row back over the buy-box cap unchecked.
+    # James, David Ray 26E002599-590 Week 29: main 5126 Glenbrier (heir lives
+    # there) DQ'd, swapped to 10108 Woodview ($518K) — over the $500K SFR cap
+    # but it slipped through because the cap check had already run. Re-drop
+    # here (which itself tries an under-cap sibling before dropping).
+    print("Step 1.91: re-apply over-cap drop after heir-occupied swaps")
+    rows, n_over_cap_postswap = drop_over_500k(rows, cap=500_000)
+    print(f"  Dropped over-cap after swap: {n_over_cap_postswap}  Remaining: {len(rows)}")
+
     print("Step 1.92: re-apply <$10K standalone floor after heir-occupied swaps")
     rows, n_under_min_postswap = drop_under_min_value(rows)
     print(f"  Dropped sub-floor after swap: {n_under_min_postswap}  Remaining: {len(rows)}")
