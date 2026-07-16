@@ -1536,6 +1536,48 @@ def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
     return (street, city, zipc)
 
 
+# Lot acreage field names, in priority order. Same story as market_value —
+# every county returns acreage (we already query outFields=*), but under its
+# own field name, so _arcgis_to_candidate hardcoded lot_area=None and the
+# polish's >2-acre subdivide exemption had nothing to read. Names verified
+# live against each layer's ?f=json on 2026-07-16.
+#
+# Deed/tax acreage first (what the county bills on and what prints on the
+# property card), then GIS-geometry-calculated acreage as fallback — the deed
+# field is absent or zero on a minority of parcels.
+_ACRE_FIELDS = (
+    # Deed / tax: Rowan DEEDACRE, Gaston DEEDAC, Iredell TaxAcres, Lincoln ACRE.
+    "DEEDACRE", "DEEDAC", "TaxAcres", "ACRE",
+    # Calculated: Cabarrus CALCULATED_ACREAGE (its only acreage field),
+    # Rowan CALCACRE, Gaston CALCAC, Lincoln MAPPEDACRE.
+    "CALCULATED_ACREAGE", "CALCACRE", "CALCAC", "MAPPEDACRE",
+)
+
+# No NC residential parcel approaches this. A field carrying square feet under
+# a name we scan would blow past it and be rejected, rather than silently
+# exempting a row from the buy-box cap by looking like a huge tract.
+_MAX_PLAUSIBLE_ACRES = 50_000
+
+
+def acres_from_arcgis_attrs(rec: dict) -> float | None:
+    """Lot acreage from a raw ArcGIS attribute dict, or None if unavailable.
+
+    Shared by _arcgis_to_candidate and the polish steps that attach a parcel
+    straight from query attributes without building a PropertyCandidate.
+    """
+    for acre_field in _ACRE_FIELDS:
+        v = rec.get(acre_field)
+        if v in (None, "", 0, 0.0):
+            continue
+        try:
+            v_f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 < v_f < _MAX_PLAUSIBLE_ACRES:
+            return v_f
+    return None
+
+
 def _arcgis_to_candidate(
     rec: dict, county: str, decedent_name: str, cfg: dict,
 ) -> PropertyCandidate | None:
@@ -1717,6 +1759,8 @@ def _arcgis_to_candidate(
             except (TypeError, ValueError):
                 continue
 
+    lot_area = acres_from_arcgis_attrs(rec)
+
     # Sale date + price: each county uses its own field names and date
     # format. Helpers below normalize into ISO 'YYYY-MM-DD' + float.
     # Used by drop_recently_sold polish step (24-month window) to filter
@@ -1738,7 +1782,7 @@ def _arcgis_to_candidate(
         bedrooms=None,
         bathrooms=None,
         living_sqft=None,
-        lot_area=None,
+        lot_area=lot_area,
         sale_date=sale_date,
         sale_price=sale_price,
         owner_offsite=not _addresses_match(situs, mailing),
@@ -2543,7 +2587,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 15  # bumped 2026-07-12 — Mecklenburg name search rewrite: always fetch lastname-only (the bolt `firstname` filter dropped compound-first-name and second-listed joint owners), score against EVERY joint owner not just owner[0] (Norman/Ryan/Kerns/Patterson etc. were scored against the co-owner-husband and rejected at 0.40), and search the middle token as a surname for maiden names. Recovered 7/33 blank-parcel Meck cases in Week 28. Cached Meck candidates predate all of it.
+_PERSIST_VERSION = 16  # bumped 2026-07-16 — _arcgis_to_candidate now reads lot acreage (was hardcoded lot_area=None for all 5 ArcGIS counties). Feeds the >2-acre subdivide exemption to the $500K buy-box cap. Every cached ArcGIS candidate has lot_area=None baked in, so without this bump the exemption never fires on a cached decedent.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.
@@ -3368,6 +3412,10 @@ def expand_notices_with_gis(
                 new_n.sqft = str(c.living_sqft)
             if c.lot_area is not None:
                 new_n.lot_size = f"{c.lot_area:.0f}"
+                # 2 decimals, NOT lot_size's :.0f — the buy-box exemption
+                # turns on ">2 acres", and rounding to int would read 2.4ac
+                # as 2 (no exemption) and 1.6ac as 2. Both wrong.
+                new_n.lot_acres = f"{c.lot_area:.2f}"
             if c.sale_date:
                 new_n.mls_last_sold_date = c.sale_date
             if c.sale_price is not None:

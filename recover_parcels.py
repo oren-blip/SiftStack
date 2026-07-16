@@ -105,6 +105,9 @@ def apply_property_to_row(row: dict, c) -> None:
     """Apply a PropertyCandidate to a CSV row dict."""
     street, city, zipc = _candidate_to_address_parts(c)
     row["Parcel ID"] = c.pid or ""
+    # Cleared when the candidate has no acreage — never inherit the previous
+    # parcel's acres, which would mis-apply the >2-acre buy-box exemption.
+    row["Property Acres"] = f"{float(c.lot_area):.2f}" if c.lot_area else ""
     row["Property Address"] = street
     row["Property City"] = city
     row["Property State"] = "NC"

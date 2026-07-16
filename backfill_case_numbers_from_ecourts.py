@@ -281,6 +281,12 @@ async def main_async(args) -> None:
                                         if not pid:
                                             continue
                                         r["Parcel ID"] = pid
+                                        # Cleared when unknown — never inherit
+                                        # the prior parcel's acres (drives the
+                                        # >2-acre buy-box exemption).
+                                        from nc_gis_lookup import acres_from_arcgis_attrs
+                                        _ac = acres_from_arcgis_attrs(attrs)
+                                        r["Property Acres"] = f"{_ac:.2f}" if _ac else ""
                                         r["Property Address"] = dec_addr.line1
                                         r["Property City"] = dec_addr.city or ""
                                         r["Property State"] = "NC"

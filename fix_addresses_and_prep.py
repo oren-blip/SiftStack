@@ -220,6 +220,7 @@ def research_blank_parcels(
             continue
         street, city, zipc = _candidate_to_address_parts(found)
         r["Parcel ID"] = found.pid or ""
+        _set_row_acres_from_candidate(r, found)
         r["Property Address"] = street
         r["Property City"] = city
         r["Property State"] = "NC"
@@ -817,6 +818,7 @@ def address_fallback_from_beneficiaries(rows: list[dict], min_score: float = 0.7
                     continue
                 situs = _compose_address(attrs, cfg.get("situs_fields") or [])
                 r["Parcel ID"] = pid
+                _set_row_acres_from_attrs(r, attrs)
                 if situs:
                     r["Property Address"] = situs
                 # Use code
@@ -949,6 +951,7 @@ def recover_parcel_from_app_realestate(rows: list[dict]) -> int:
                         continue
                     situs = _compose_address(attrs, cfg.get("situs_fields") or [])
                     r["Parcel ID"] = pid
+                    _set_row_acres_from_attrs(r, attrs)
                     if situs:
                         r["Property Address"] = situs
                     uc, ud = cfg.get("use_field") or "", cfg.get("use_desc_field") or ""
@@ -1065,6 +1068,7 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
                 situs = _compose_address(home, cfg.get("situs_fields") or [])
                 note = f"[ADDR-CORRECTED to decedent's home {dec_addr}; was parcel {pid}]"
                 r["Parcel ID"] = home_pid
+                _set_row_acres_from_attrs(r, home)
                 if situs:
                     r["Property Address"] = situs
                 r["Property Value"] = ""   # re-derived by Step 1.6/1.7
@@ -1226,6 +1230,7 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
         owner_str = " ".join(str(attrs.get(of) or "") for of in owner_fields).upper().strip()
 
         r["Parcel ID"] = pid
+        _set_row_acres_from_attrs(r, attrs)
         if situs:
             r["Property Address"] = situs
         # The matched parcel IS the decedent's address, and Odyssey gives that
@@ -1301,6 +1306,7 @@ def address_lookup_for_small_estate_disposed(rows: list[dict]) -> int:
             continue
         situs = _compose_address(attrs, cfg.get("situs_fields") or [])
         r["Parcel ID"] = pid
+        _set_row_acres_from_attrs(r, attrs)
         if situs:
             r["Property Address"] = situs
         # Use code
@@ -1512,7 +1518,7 @@ def validate_existing_matches(
                 use = simplify_use_code(c.use_code, c.use_description, c.county) or ""
                 is_vac = ("VACANT" in use.upper() or "LAND" in use.upper()
                           or bool(getattr(c, "is_vacant_land", False)))
-                cap = _cap_for_use("VACANT LAND" if is_vac else use)
+                cap = _cap_for_use("VACANT LAND" if is_vac else use, _cand_acres(c))
                 if c.market_value is None:
                     return False
                 return float(c.market_value) > cap
@@ -1562,6 +1568,7 @@ def validate_existing_matches(
             tag_reason(r, "audit-repick")
             street, city, zipc = _candidate_to_address_parts(best)
             r["Parcel ID"] = best.pid or ""
+            _set_row_acres_from_candidate(r, best)
             r["Property Address"] = street
             r["Property City"] = city
             r["Property State"] = "NC"
@@ -2171,9 +2178,15 @@ def refresh_property_use_from_gis(rows: list[dict]) -> int:
 
 
 def populate_property_values(rows: list[dict]) -> int:
-    """Backfill Property Value from a fresh GIS lookup for rows that have a
-    Parcel ID but no Property Value populated yet. Required before the
-    drop_over_500k filter can run.
+    """Backfill Property Value + Property Acres from a fresh GIS lookup for rows
+    that have a Parcel ID but are missing either. Required before the
+    drop_over_500k filter can run — it reads BOTH (acreage drives the >2-acre
+    subdivide exemption to the $500K cap).
+
+    Acreage is backfilled even when Property Value is already set: rows whose
+    parcel was attached by an earlier polish step (repick / swap / recovery)
+    carry a value but never passed through the scrape-time writer that fills
+    acres. Without this, those rows look acreage-unknown and keep the $500K cap.
 
     Catawba fallback: the county's PHP layer used for name search exposes
     no value field at all (see project_catawba_value_field_missing.md).
@@ -2187,17 +2200,25 @@ def populate_property_values(rows: list[dict]) -> int:
         pid = (r.get("Parcel ID") or "").strip()
         if not pid:
             continue
-        if (r.get("Property Value") or "").strip():
+        needs_value = not (r.get("Property Value") or "").strip()
+        needs_acres = not (r.get("Property Acres") or "").strip()
+        if not needs_value and not needs_acres:
             continue
         dec = (r.get("Deceased Owner") or "").strip()
         county = (r.get("County") or "").strip()
         if not dec or not county or "IN THE MATTER" in dec.upper():
             continue
         try:
+            # Cached per (decedent, county) — the extra acres-only lookups here
+            # ride the same cache entry the value lookup already warmed.
             results = lookup_properties(dec, county, min_score=0.5)
         except Exception:
             results = []
         match = next((c for c in results if c.pid == pid), None)
+        if match and needs_acres and match.lot_area:
+            r["Property Acres"] = f"{float(match.lot_area):.2f}"
+        if not needs_value:
+            continue
         if match and match.market_value:
             r["Property Value"] = f"{int(round(float(match.market_value))):,}"
             filled += 1
@@ -2233,14 +2254,85 @@ _VALUE_CAP_BY_USE = {
 }
 _DEFAULT_VALUE_CAP = 500_000
 
+# Subdivide exemption. Per Oren 2026-07-16: a house on a large parcel carries
+# subdivision potential, so its value alone shouldn't DQ it — the land is the
+# play, not the structure. A house or mobile home on more than this many acres
+# gets the vacant-land cap ($1M) instead of the $500K structure cap.
+#
+# Acreage-unknown rows keep the $500K cap (Oren's call): a pricey house with no
+# acreage on file is far more likely a small in-town lot than a subdividable
+# tract, and assuming otherwise would pull real DQs back into the workbook.
+# ~14% of Iredell and ~6% of Lincoln parcels have no acreage field populated;
+# every other county returns it on every parcel.
+_SUBDIVIDE_MIN_ACRES = 2.0
 
-def _cap_for_use(use: str) -> float:
+# Explicit allowlist, NOT "anything that isn't vacant". Oren asked for houses,
+# and confirmed mobile homes (the land is the play either way). An allowlist
+# also keeps the exemption off use types that merely fall through to the
+# default cap — a $900K commercial building on 50 acres is not a subdivide
+# lead, and Step 2 drops it regardless.
+_SUBDIVIDE_ELIGIBLE_USES = {"SFR", "MH", "RESIDENTIAL"}
+
+
+def _cap_for_use(use: str, acres: float | None = None) -> float:
+    """Buy-box value cap for a parcel, given its simplified use and acreage.
+
+    `acres` None/0 means unknown — the caller couldn't determine lot size, and
+    the row keeps the conservative structure cap.
+    """
     u = (use or "").upper().strip()
     if not u:
         return _DEFAULT_VALUE_CAP
     if "VACANT" in u or u == "LAND":
         return _VALUE_CAP_BY_USE["VACANT LAND"]
-    return _VALUE_CAP_BY_USE.get(u, _DEFAULT_VALUE_CAP)
+    cap = _VALUE_CAP_BY_USE.get(u, _DEFAULT_VALUE_CAP)
+    # Subdivide exemption: only ever lifts a cap, never lowers one.
+    if (acres and acres > _SUBDIVIDE_MIN_ACRES
+            and u in _SUBDIVIDE_ELIGIBLE_USES):
+        cap = max(cap, _VALUE_CAP_BY_USE["VACANT LAND"])
+    return cap
+
+
+def _row_acres(row: dict) -> float | None:
+    """Parsed acreage off a CSV row, or None when blank/unparseable."""
+    raw = (row.get("Property Acres") or "").strip().replace(",", "")
+    if not raw:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def _cand_acres(c) -> float | None:
+    """Parsed acreage off a PropertyCandidate, or None when unset."""
+    try:
+        v = float(getattr(c, "lot_area", None) or 0)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def _set_row_acres(row: dict, acres: float | None) -> None:
+    """Write Property Acres, CLEARING it when acreage is unknown.
+
+    Must be called by every step that reassigns Parcel ID. Clearing on unknown
+    is the whole point: a swapped-in parcel that inherits the swapped-out
+    parcel's acreage gets the wrong buy-box cap. Same trap Property Value hit
+    in Week 26 (Walton 26E002339-590) — Step 1.7 only refills BLANK fields, so
+    a stale non-blank value survives a swap forever.
+    """
+    row["Property Acres"] = f"{acres:.2f}" if acres and acres > 0 else ""
+
+
+def _set_row_acres_from_candidate(row: dict, c) -> None:
+    _set_row_acres(row, _cand_acres(c))
+
+
+def _set_row_acres_from_attrs(row: dict, attrs: dict) -> None:
+    from nc_gis_lookup import acres_from_arcgis_attrs
+    _set_row_acres(row, acres_from_arcgis_attrs(attrs or {}))
 
 
 # Floor for a STANDALONE main parcel. Per Oren (Week 28 audit): a lone scrap
@@ -2508,8 +2600,16 @@ def drop_over_500k(rows: list[dict], cap: float = 500_000) -> tuple[list[dict], 
         if not v_str:
             kept.append(r)
             continue
-        use_cap = _cap_for_use(r.get("Property use", ""))
+        acres = _row_acres(r)
+        use_cap = _cap_for_use(r.get("Property use", ""), acres)
         if _money(v_str) <= use_cap:
+            # Log the subdivide exemption — a >$500K house staying in the
+            # workbook is surprising unless you know the acreage is why.
+            if acres and acres > _SUBDIVIDE_MIN_ACRES and _money(v_str) > _DEFAULT_VALUE_CAP:
+                tag_reason(r, "subdivide-exempt")
+                print(f"  SUBDIVIDE-EXEMPT {r.get('County','')}/{r.get('Deceased Owner','')}: "
+                      f"{r.get('Property use','')} at {v_str} on {acres:.2f}ac "
+                      f"(case {r.get('Case No.','')})")
             kept.append(r)
             continue
         # Over cap. Before dropping, try to repoint a multi-parcel estate to an
@@ -3852,6 +3952,7 @@ def _apply_sibling_swap(row: dict, best, old_pid: str, *,
         else:
             street = "No Address"
     row["Parcel ID"] = best.pid or ""
+    _set_row_acres_from_candidate(row, best)
     row["Property Address"] = street
     row["Property City"] = city
     row["Property State"] = "NC"
@@ -3941,7 +4042,8 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
     def _under_cap(c) -> bool:
         is_vac = _is_vacant(c)
         cap = _cap_for_use("VACANT LAND" if is_vac
-                           else (simplify_use_code(c.use_code, c.use_description, c.county) or ""))
+                           else (simplify_use_code(c.use_code, c.use_description, c.county) or ""),
+                           _cand_acres(c))
         # Unknown value: keep vacant lots (assumed under the $1M vacant cap),
         # skip unknown-value non-vacant (can't confirm under the $500K cap).
         if c.market_value is None:
@@ -4078,6 +4180,7 @@ def re_collapse_multi_parcel(rows: list[dict]) -> int:
         # Apply the new main's data
         street, city, zipc = _candidate_to_address_parts(new_main)
         r["Parcel ID"] = new_main.pid or ""
+        _set_row_acres_from_candidate(r, new_main)
         r["Property Address"] = street
         r["Property City"] = city
         r["Property State"] = "NC"
@@ -4808,6 +4911,7 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
                 continue
 
         r["Parcel ID"] = top.pid or ""
+        _set_row_acres_from_candidate(r, top)
         r["Property Address"] = street
         r["Property City"] = city
         r["Property State"] = "NC"

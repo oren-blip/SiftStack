@@ -50,6 +50,12 @@ FTM_COLUMNS = [
     "Property State",
     "Property Zip",
     "Property use",
+    # Lot size in acres from county GIS. Internal — drives the >2-acre
+    # subdivide exemption to the $500K buy-box cap (polish Step 1.8), so a
+    # house on a big subdividable tract isn't DQ'd on price alone. Hidden from
+    # the workbook like "Property use"; the data key has to exist for the
+    # polish to read it back off the CSV.
+    "Property Acres",
     "Property Value",
     "Notes",
     "Beneficiaries",
@@ -118,7 +124,8 @@ FTM_COLUMNS = [
 # the workbook. The DATA key stays for the pipeline's internal buy-box logic
 # (vacant-land exemptions, condo/townhouse drops, etc.) — it's just collapsed
 # from view. Dropped from the upload file too (nc_datasift_export).
-HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address", "Property use"}
+HIDDEN_FROM_WORKBOOK = {"Case Status", "Case ID (hex)", "Decedent Address",
+                        "Property use", "Property Acres"}
 
 # Display-only header relabels for the XLSX workbook. Empty now that "Property
 # use" is hidden (its Property Type rename was only to match the upload, which
@@ -409,6 +416,7 @@ def notice_to_ftm_row(
         "Property State":   notice.state if notice.state == "NC" else "NC",
         "Property Zip":     notice.zip,
         "Property use":     notice.property_use_simple,
+        "Property Acres":   notice.lot_acres or "",
         "Property Value":   notice.estimated_value or "",
         "Notes":            _build_notes(extra_parcels=extra_parcels),
         "Beneficiaries":    _build_beneficiaries(notice),

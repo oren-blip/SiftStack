@@ -60,6 +60,11 @@ class NoticeData:
     sqft: str = ""
     year_built: str = ""
     lot_size: str = ""             # Lot size in sqft
+    # Lot size in ACRES, straight from county GIS (NC pipeline). Deliberately
+    # separate from lot_size above, which is sqft — same concept, different
+    # unit, and silently mixing them would corrupt the buy-box acreage math.
+    # Feeds the >2-acre subdivide exemption in the polish's value cap.
+    lot_acres: str = ""            # Lot size in acres
     # Probate-specific fields
     decedent_name: str = ""        # Deceased person's name (probate only)
     # The decedent's OWN address, straight from Odyssey's Parties response.
