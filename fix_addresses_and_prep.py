@@ -5404,6 +5404,46 @@ def main() -> None:
         print(f"{'=' * 70}")
         run(by_week[wk], f"week{wk}", ts)
 
+    record_gis_outage_state(sorted(w for w in by_week if w not in archived))
+
+
+# Where a run leaves word that a county GIS was down. auto_archive_weeks.py
+# reads this and refuses to freeze a week whose data is known-incomplete;
+# scripts/daily_report.py surfaces it.
+GIS_OUTAGE_PATH = Path("output") / ".gis_outage_last_run.json"
+
+
+def record_gis_outage_state(weeks: list[int]) -> None:
+    """Record which county GIS servers went down during this polish.
+
+    A downed county returns zero rows, so its rows lose their parcel and get
+    dropped at Step 4. That drop is normally harmless -- the merged input still
+    holds the row, so the next night's polish restores it once the county is
+    back. It stops being harmless the moment the week is ARCHIVED, because then
+    no further polish ever runs. So a run that hit an outage must leave a note,
+    and archiving must honour it. Always written (empty counties on a clean
+    run) so a stale note can never defer archiving forever.
+    """
+    import json as _json
+    try:
+        from nc_gis_lookup import downed_counties
+        down = sorted(downed_counties())
+        GIS_OUTAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GIS_OUTAGE_PATH.write_text(_json.dumps({
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "counties": down,
+            "weeks": weeks,
+        }), encoding="utf-8")
+        if down:
+            print(f"\n{'*' * 70}")
+            print(f"*** GIS OUTAGE this run: {', '.join(down)}")
+            print("*** Rows for these counties are INCOMPLETE — they lost their")
+            print("*** parcel to a dead server, not to 'owns nothing'. Weeks "
+                  f"{weeks} will NOT be archived until a clean run.")
+            print(f"{'*' * 70}")
+    except Exception as e:  # never let bookkeeping break the pipeline
+        print(f"  (could not record GIS outage state: {e})")
+
 
 if __name__ == "__main__":
     main()
