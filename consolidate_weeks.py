@@ -302,8 +302,26 @@ def main() -> None:
         out_path = Path("output") / f"FTM_{latest_yr}_NC_Estates_throughWeek{latest_wk}.xlsx"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
-    logger.info("Wrote consolidated workbook: %s", out_path)
+    try:
+        wb.save(out_path)
+        logger.info("Wrote consolidated workbook: %s", out_path)
+    except PermissionError:
+        # The workbook is open in Excel (Windows locks it), so the nightly
+        # rebuild can't overwrite it. Silently failing means Oren keeps looking
+        # at a STALE workbook without knowing it (2026-07-17: a whole night's
+        # audit fixes never reached the file he had open). Write a timestamped
+        # fallback so the fresh data is never lost, and shout about it.
+        alt = out_path.with_name(out_path.stem + "_LOCKED_REOPEN" + out_path.suffix)
+        wb.save(alt)
+        logger.warning(
+            "Consolidated workbook %s is OPEN IN EXCEL — could not overwrite. "
+            "Wrote fresh copy to %s instead. CLOSE the workbook and rename this "
+            "file over it (or re-run consolidate_weeks.py) to get tonight's data.",
+            out_path.name, alt.name)
+        print(f"\n{'*' * 70}\n*** WORKBOOK LOCKED: {out_path.name} is open in Excel.\n"
+              f"*** Tonight's data was saved to {alt.name} instead.\n"
+              f"*** Close Excel and re-run consolidate_weeks.py to refresh the "
+              f"real workbook.\n{'*' * 70}")
 
 
 if __name__ == "__main__":

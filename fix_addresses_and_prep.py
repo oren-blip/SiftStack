@@ -56,6 +56,22 @@ def tag_reason(row: dict, code: str) -> None:
     row["Match Reason"] = " | ".join(parts)
 
 
+# Tags meaning "this parcel was confirmed by the decedent's OWN court address"
+# — the strongest identity signal we have. A parcel carrying one of these is
+# IDENTITY-LOCKED: later swap/repick steps must not move it to a same-name
+# sibling, because for a common surname those "siblings" are DIFFERENT PEOPLE.
+# James 26E002599-590: crosscheck confirmed the decedent's Glenbrier home
+# (owner "DAVID R JAMES", widow Elizabeth still there), then swap-on-DQ walked
+# it to an unrelated David James's $518K Woodview house.
+_COURT_CONFIRMED_TAGS = ("addr-corrected", "name-nearmiss-addr-corroborated",
+                         "decedent-address")
+
+
+def _is_court_confirmed(row: dict) -> bool:
+    reason = (row.get("Match Reason") or "")
+    return any(t in reason for t in _COURT_CONFIRMED_TAGS)
+
+
 # Counties whose GIS is so slow that we trim variations to just two
 # (the precise full-middle form + the middle-initial form). Cabarrus's
 # polaris3g endpoint averages 4-6 min per call; cutting from 4 to 2
@@ -4168,6 +4184,22 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
             continue
         is_dq, _reason = _row_dq_signals(r, prop)
         if is_dq:
+            # A court-address-confirmed parcel is the decedent's OWN home. If it
+            # reads occupied, that's usually the surviving spouse (a co-owner who
+            # may sell) — a real lead Oren keeps, not an heir who inherits+stays.
+            # NEVER swap it to a same-name sibling: for a common surname that's a
+            # DIFFERENT person's parcel (James -> a stranger's Woodview house).
+            # Keep it and flag for review instead of swapping or dropping.
+            if _is_court_confirmed(r):
+                tag_reason(r, "verify-occupied-confirmed")
+                marker = ("[VERIFY: decedent's court-confirmed home reads "
+                          "occupied (often the surviving spouse) — kept for "
+                          "review, not swapped]")
+                n = (r.get("Notes") or "").strip()
+                if "VERIFY: decedent's court-confirmed home" not in n:
+                    r["Notes"] = (n + ("\n" if n else "") + marker).strip()
+                kept.append(r)
+                continue
             # Before dropping, try to swap to a non-DQ sibling parcel from
             # the same decedent's estate. Catches multi-parcel cases like
             # Queen 26E000714-170 where decedent owns residence (heir-
@@ -4390,6 +4422,11 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
     from nc_gis_lookup import (
         lookup_properties, filter_for_lead_quality, _middle_match_strength,
     )
+    # NOTE: no court-confirmed lock here. Over-cap swaps to a GENUINE sibling of
+    # the same estate — Marinakos 26E002614-590: confirmed home Bloomfield
+    # ($500K+) swaps to the decedent's OWN Ashmore ($254K). The lock lives only
+    # in the heir-occupancy swap (drop_executor_at_property), where a common-name
+    # sibling is a different person (James -> a stranger's Woodview).
     dec = (row.get("Deceased Owner") or "").strip()
     county = (row.get("County") or "").strip()
     if not dec or not county or "IN THE MATTER" in dec.upper():
