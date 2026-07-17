@@ -46,11 +46,16 @@ _CACHE_TTL_DAYS = int(os.environ.get("ZILLOW_CACHE_TTL_DAYS", "4"))
 # Cap Firecrawl spend per run; shares no counter with the obituary enricher's
 # budget, so keep it modest — only survivor rows are ever checked.
 _BUDGET = int(os.environ.get("ZILLOW_BUDGET", "120"))
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # v2: added home_type; v1 entries lack it → invalidate
 
 # Statuses that mean "already in play — a mailer to the heir is wasted." Only
 # these, at high confidence, justify an auto-drop. off_market / unknown never do.
 DROP_STATUSES = {"for_sale", "pending", "under_contract", "sold_recently"}
+
+# Home types Oren doesn't work (see feedback_drop_condos_townhouses): SFR + MH +
+# vacant land only. County GIS often can't tell these apart — Catawba/Iredell
+# report zoning, not structure type — but Zillow states the home type outright.
+DROP_HOME_TYPES = {"condo", "townhouse"}
 
 _lock = threading.Lock()
 _calls_used = 0
@@ -63,12 +68,19 @@ class ZillowStatus:
     confidence: str        # high|low
     sale_date: str | None  # ISO, when status == sold_recently
     detail: str            # short human string for Notes / logs
+    home_type: str = "unknown"  # single_family|condo|townhouse|multi_family|manufactured|land|unknown
 
-    def should_drop(self) -> bool:
+    def should_drop_status(self) -> bool:
         return self.confidence == "high" and self.status in DROP_STATUSES
 
+    def should_drop_type(self) -> bool:
+        return self.confidence == "high" and self.home_type in DROP_HOME_TYPES
 
-_UNKNOWN = ZillowStatus("unknown", "low", None, "")
+    def should_drop(self) -> bool:
+        return self.should_drop_status() or self.should_drop_type()
+
+
+_UNKNOWN = ZillowStatus("unknown", "low", None, "", "unknown")
 
 
 def available() -> bool:
@@ -177,16 +189,21 @@ def _extract_status(markdown: str, addr: str) -> ZillowStatus:
         '{"status": one of "for_sale"|"pending"|"under_contract"|'
         '"sold_recently"|"off_market"|"unknown",\n'
         ' "sale_date": "YYYY-MM-DD" or null (only if recently sold),\n'
+        ' "home_type": one of "single_family"|"condo"|"townhouse"|'
+        '"multi_family"|"manufactured"|"land"|"unknown",\n'
         ' "confidence": "high"|"low",\n'
-        ' "detail": short human phrase like "Active listing $240k" or '
-        '"Sold 2025-01-14"}\n\n'
+        ' "detail": short human phrase like "Active listing $240k", '
+        '"Sold 2025-01-14", or "Townhouse"}\n\n'
         "Rules:\n"
         "- \"sold_recently\" ONLY if the page shows a sale dated within ~24 "
         "months of today. An older sale is \"off_market\".\n"
-        "- Use \"unknown\" with low confidence if the page didn't load, is a "
-        "search-results list (not one property), or the status is unclear.\n"
-        "- Only say \"high\" confidence when the status is unambiguous for this "
-        "exact property.\n\n"
+        "- home_type is Zillow's stated 'Home type' for THIS property "
+        "(Townhouse, Condo, Single Family, Manufactured, Lot/Land, etc.). Use "
+        "\"unknown\" if not clearly stated.\n"
+        "- Use \"unknown\" status/type with low confidence if the page didn't "
+        "load, is a search-results list (not one property), or is unclear.\n"
+        "- Only say \"high\" confidence when BOTH status and home_type are "
+        "unambiguous for this exact property.\n\n"
         f"PAGE:\n{markdown[:12000]}"
     )
     try:
@@ -205,7 +222,12 @@ def _extract_status(markdown: str, addr: str) -> ZillowStatus:
     sale_date = data.get("sale_date")
     sale_date = str(sale_date)[:10] if sale_date else None
     detail = str(data.get("detail") or "").strip()[:80]
-    return ZillowStatus(status, conf, sale_date, detail)
+    home_type = str(data.get("home_type") or "unknown").strip().lower()
+    valid_types = {"single_family", "condo", "townhouse", "multi_family",
+                   "manufactured", "land", "unknown"}
+    if home_type not in valid_types:
+        home_type = "unknown"
+    return ZillowStatus(status, conf, sale_date, detail, home_type)
 
 
 def get_status(street: str, city: str, state: str, zip_: str) -> ZillowStatus:

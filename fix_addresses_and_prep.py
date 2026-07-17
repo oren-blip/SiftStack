@@ -3088,9 +3088,15 @@ def drop_zillow_listed_or_sold(rows: list[dict]) -> tuple[list[dict], int]:
             if note not in existing:
                 r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
         if st.should_drop():
+            # A condo/townhouse (type) and an active/sold listing (status) are
+            # both auto-drops; name the reason for the audit.
+            if st.should_drop_type():
+                reason, why = f"zillow-{st.home_type}", st.home_type
+            else:
+                reason, why = f"zillow-{st.status.replace('_', '-')}", st.status
             print(f"  ZILLOW DROP {r.get('County')}/{r.get('Deceased Owner')}: "
-                  f"{street!r} — {st.status} ({st.detail})")
-            tag_reason(r, f"zillow-{st.status.replace('_', '-')}")
+                  f"{street!r} — {why} ({st.detail})")
+            tag_reason(r, reason)
             dropped += 1
             continue
         kept.append(r)
@@ -4346,6 +4352,21 @@ def _apply_sibling_swap(row: dict, best, old_pid: str, *,
         existing_notes = _strip_parcel_from_notes(existing_notes, new_main_pid)
     row["Notes"] = (existing_notes + ("\n" if existing_notes else "") + marker).strip()
     tag_reason(row, reason_tag)
+    # Flag a borderline swap target for review. The swap floor is 0.7, but a
+    # 0.7-0.85 name match is uncertain — often a DIFFERENT same-name person or a
+    # different co-owner than the DQ'd parcel. Stafford 26E000693-480: the house
+    # (owner "STAFFORD WILLIAM A + ROBYN W") DQ'd heir-occupied, swapped to a
+    # Debbie Ln vacant lot owned by "STAFFORD W A + WANDA T" (score 0.7, a
+    # different co-owner) — Oren didn't recognize it. Keep the swap (it may be
+    # right) but surface it rather than shipping silently.
+    score = getattr(best, "match_score", None)
+    if score is not None and score < 0.85:
+        tag_reason(row, "verify-swap-lowconf")
+        vmark = (f"[VERIFY SWAP: repointed to {best.pid} on a low-confidence name "
+                 f"match ({score:.2f}) — confirm it's the decedent's parcel]")
+        n = (row.get("Notes") or "").strip()
+        if "VERIFY SWAP" not in n.upper():
+            row["Notes"] = (n + ("\n" if n else "") + vmark).strip()
     print(f"  {log_label} {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
     return True
 
