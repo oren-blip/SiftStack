@@ -4688,17 +4688,47 @@ def refine_lincoln_structure_type(rows: list[dict]) -> int:
 
 
 def drop_condos_and_townhouses(rows: list[dict]) -> tuple[list[dict], int]:
-    """Drop rows whose Property use is Condo or Townhouse — per Oren's
-    investor buy-box, these don't pencil out (HOA constraints, thin margins).
+    """Drop rows whose Property use is Condo or Townhouse — per Oren's investor
+    buy-box, these don't pencil out (HOA constraints, thin margins).
+
+    BUT county GIS structure-type is unreliable in NC — Catawba/Lincoln report
+    zoning not structure, and Cabarrus miscodes: Harris 26E000739-120 (2254 Quail
+    Dr NW) came back "Condo" but Zillow confirms Single Family built 1976, and
+    the bad code dropped a real SFR lead. So before dropping, ask Zillow (the
+    reliable structure-type source); KEEP + correct to SFR only when Zillow
+    POSITIVELY says single_family at high confidence. A Zillow "condo"/"townhouse"
+    (Stephens 26E002654-590 Hunter Crest, confirmed) or an unsure/blocked read
+    still drops — so a genuine condo never survives on a Zillow miss.
     """
+    try:
+        import zillow_status as zs
+        arbiter = zs.available()
+    except Exception:
+        arbiter = False
     kept: list[dict] = []
     dropped = 0
     for r in rows:
         use = (r.get("Property use") or "").strip().upper()
-        if use in _DROP_CONDO_TOWNHOUSE_USES:
-            dropped += 1
+        if use not in _DROP_CONDO_TOWNHOUSE_USES:
+            kept.append(r)
             continue
-        kept.append(r)
+        street = (r.get("Property Address") or "").strip()
+        if arbiter and street and street[0].isdigit():
+            st = zs.get_status(street, (r.get("Property City") or "").strip(),
+                               (r.get("Property State") or "NC").strip(),
+                               (r.get("Property Zip") or "").strip())
+            if st.home_type == "single_family" and st.confidence == "high":
+                r["Property use"] = "SFR"
+                tag_reason(r, "condo-overruled-by-zillow")
+                note = f"[GIS said {use.title()} but Zillow confirms Single Family]"
+                n = (r.get("Notes") or "").strip()
+                if "Zillow confirms Single Family" not in n:
+                    r["Notes"] = (n + ("\n" if n else "") + note).strip()
+                print(f"  CONDO-OVERRULE {r.get('County')}/{r.get('Deceased Owner')}: "
+                      f"{street!r} GIS={use.title()} -> Zillow SFR, keeping")
+                kept.append(r)
+                continue
+        dropped += 1
     return kept, dropped
 
 
