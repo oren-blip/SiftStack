@@ -4259,6 +4259,7 @@ def _try_swap_to_non_dq_sibling(
     county = (row.get("County") or "").strip()
     if not dec or not county or "IN THE MATTER" in dec.upper():
         return False
+    from nc_gis_lookup import _middle_match_strength
     try:
         cands = lookup_properties(dec, county, min_score=0.7)
     except Exception:
@@ -4275,9 +4276,14 @@ def _try_swap_to_non_dq_sibling(
     if not siblings:
         return False
 
-    def rank(c) -> tuple[int, int]:
+    def rank(c) -> tuple:
         """Lower tuple = better. First tier: 0 = non-DQ vacant, 1 = non-DQ
-        other, 99 = DQ (skip)."""
+        other, 99 = DQ (skip). Then prefer the STRONGEST identity match, so a
+        common-name swap stays within the decedent's OWN parcels: Smith, William
+        Edward 26E002657-590 — his Delgany parcel (deed "WILLIAM E SMITH", the E
+        matches Edward) must beat an unrelated "WILLIAM SMITH" (no middle) that
+        merely has a higher value. Only discriminates when same-surname owners
+        differ on the middle; inert for unique names."""
         # Build a temp row-shape so dq_check can use the same predicate
         temp_situs = c.situs_address or ""
         if not temp_situs:
@@ -4305,21 +4311,39 @@ def _try_swap_to_non_dq_sibling(
         }
         is_dq, _ = dq_check(synth, temp_norm)
         if is_dq:
-            return (99, 0)
+            return (99, 0, 0)
         use_desc = (c.use_description or "").upper()
         is_vacant = "VACANT" in use_desc or "LAND" in use_desc or bool(c.is_vacant_land)
-        return (0 if is_vacant else 1, -int((c.market_value or 0)))
+        mid = _middle_match_strength(c.owner_name or "", dec)  # higher = better
+        return (0 if is_vacant else 1, -mid, -int((c.market_value or 0)))
 
     siblings.sort(key=rank)
     best = siblings[0]
-    if rank(best)[0] >= 99:
+    best_rank = rank(best)
+    if best_rank[0] >= 99:
         return False  # every sibling also heir-occupied
 
-    return _apply_sibling_swap(
+    swapped = _apply_sibling_swap(
         row, best, current_pid,
         marker=f"[SWAPPED-ON-HEIR-OCCUPIED from {current_pid}: prior main DQ'd]",
         reason_tag="swap-on-dq", log_label="SWAP-ON-DQ",
     )
+    # Ambiguity guard: when 2+ non-DQ siblings tie at the best (tier, identity)
+    # rank, they may be DIFFERENT people who share the decedent's full name —
+    # Smith, William Edward 26E002657-590 has TWO "WILLIAM E SMITH" households
+    # (his own Shelter Rock/Delgany, and an unrelated Woody Point/Park Ave pair
+    # co-owned with Deanna). We can't tell which parcel is his by name alone, so
+    # the pick is a guess. Flag it for review rather than shipping silently.
+    if swapped:
+        ties = sum(1 for c in siblings if rank(c)[:2] == best_rank[:2])
+        if ties >= 2:
+            tag_reason(row, "verify-swap-ambiguous")
+            vmark = ("[VERIFY SWAP: multiple parcels share the decedent's name — "
+                     "confirm this is the right one (possible same-name person)]")
+            n = (row.get("Notes") or "").strip()
+            if "VERIFY SWAP: multiple parcels" not in n:
+                row["Notes"] = (n + ("\n" if n else "") + vmark).strip()
+    return swapped
 
 
 def _apply_sibling_swap(row: dict, best, old_pid: str, *,

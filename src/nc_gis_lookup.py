@@ -1154,9 +1154,18 @@ def _lookup_mecklenburg(decedent_name: str, min_score: float = 0.7) -> list[Prop
     # name is stored as "FIRST M" (first + middle INITIAL) — so "BARBARA" misses
     # her but "BARBARA J" finds her exactly. Try both. Only fires on the capped
     # case, so it costs nothing for the common (uncommon-surname) lookup.
+    # Narrow by firstname whenever the surname fetch hit the page cap — NOT only
+    # when we found nothing. A MULTI-PARCEL decedent may have one parcel inside
+    # the 400 (e.g. their home) and others truncated past it. Smith, William
+    # Edward 26E002657-590: surname search returned 400 SMITHs incl. his home
+    # (10304 Shelter Rock, score 1.0), so the old `not target_found` gate skipped
+    # the narrow search — and his OTHER properties (3642 Delgany + Park Ave lots)
+    # were never fetched, so swap-on-DQ (his home is executor-occupied) had no
+    # sibling to move to and the lead was lost. Polaris exact-matches the whole
+    # firstname field, stored as "FIRST M" (first + middle INITIAL): "WILLIAM"
+    # returns 2 unrelated rows, "WILLIAM E" returns exactly his 5 parcels.
     _POLARIS_PAGE_CAP = 400
-    target_found = any((c.pid or "") for c in candidates if c.match_score >= 0.9)
-    if n_raw >= _POLARIS_PAGE_CAP and first and not target_found:
+    if n_raw >= _POLARIS_PAGE_CAP and first:
         seen_pids = {c.pid for c in candidates if c.pid}
         narrow_firsts = [first.upper()]
         if middle:
