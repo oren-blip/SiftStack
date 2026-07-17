@@ -1080,13 +1080,65 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
                 swapped += 1
             continue
 
-        # ── FLAG: uncorroborated namesake pick ──
-        if same_street(r.get("Property Address", ""), dec_addr):
-            continue  # picked the street the decedent lived on — good enough
+        # Name-search candidates — used by BOTH the name-search swap (next) and
+        # the flag below. Fetched once.
         try:
             cands = lookup_properties(dec, county)
         except Exception:  # noqa: BLE001
             cands = []
+
+        # ── SWAP via NAME-SEARCH candidate matching the decedent's address ──
+        # Mecklenburg (and any county whose _ARCGIS_CONFIG has no address-lookup
+        # endpoint) can't reach the lookup_by_address swap above, so a namesake
+        # mispick there could only be FLAGGED, never corrected. But name search
+        # already returns every same-name parcel WITH its situs, so match the
+        # decedent's court address against those. James 26E002599-590: three
+        # "David James" parcels tied at 1.0; the pipeline swapped off over-cap
+        # Woodview onto Kerns (PR Sandra co-owns it — a DIFFERENT, living David
+        # James), but the court address 5126 Glembriar uniquely identifies the
+        # Glenbrier parcel owned by DAVID R JAMES. Corroboration is deliberately
+        # strict for a swap: EXACT house number, owner full-name >= 0.9, street
+        # fuzzy >= 0.70 (clears the court typo, rejects any wrong street).
+        court_house = _leading_house_number(dec_addr)
+        swap_c = None
+        if court_house:
+            for c in cands:
+                cpid = (c.pid or "").strip()
+                if not cpid or cpid == pid:
+                    continue
+                if _leading_house_number(c.situs_address) != court_house:
+                    continue
+                if _name_match_score(dec, c.owner_name or "") < 0.9:
+                    continue
+                if not _dec_street_in_candidate(dec_addr, c.situs_address or ""):
+                    continue
+                swap_c = c
+                break
+        if swap_c:
+            from nc_gis_lookup import _candidate_to_address_parts, simplify_use_code
+            street, city, zipc = _candidate_to_address_parts(swap_c)
+            r["Parcel ID"] = swap_c.pid
+            _set_row_acres(r, _cand_acres(swap_c))
+            if street:
+                r["Property Address"] = street
+            if city:
+                r["Property City"] = city
+            if zipc:
+                r["Property Zip"] = zipc
+            r["Property Value"] = ""  # re-derived by Step 1.6/1.7
+            note = (f"[ADDR-CORRECTED (name search) to decedent's home "
+                    f"{dec_addr}; was parcel {pid}]")
+            existing = (r.get("Notes") or "").strip()
+            r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+            tag_reason(r, "addr-corrected")
+            print(f"  ADDR-CORRECT(name) {county}/{dec}: {pid} -> {swap_c.pid} "
+                  f"at {street!r} (decedent address {dec_addr!r})")
+            swapped += 1
+            continue
+
+        # ── FLAG: uncorroborated namesake pick ──
+        if same_street(r.get("Property Address", ""), dec_addr):
+            continue  # picked the street the decedent lived on — good enough
         top = [c for c in cands if c.match_score >= 0.99]
         if len(top) < 2:
             continue  # unique-ish name — not a coin-flip, don't cry wolf
@@ -1385,14 +1437,16 @@ def recover_parcel_via_corroborated_name(rows: list[dict]) -> int:
                                     c.pid))
         c = matched[0]
         name_score = _name_match_score(dec, c.owner_name or "")
+        from nc_gis_lookup import _candidate_to_address_parts
+        street, city, zipc = _candidate_to_address_parts(c)
         r["Parcel ID"] = c.pid
         _set_row_acres(r, _cand_acres(c))
-        if c.situs_address:
-            r["Property Address"] = c.situs_address
-        if court_addr.city and not (r.get("Property City") or "").strip():
-            r["Property City"] = court_addr.city.title()
-        if court_addr.zip and not (r.get("Property Zip") or "").strip():
-            r["Property Zip"] = str(court_addr.zip)[:5]
+        if street:
+            r["Property Address"] = street  # clean street; city/state stripped
+        if (city or court_addr.city) and not (r.get("Property City") or "").strip():
+            r["Property City"] = (city or court_addr.city.title())
+        if (zipc or court_addr.zip) and not (r.get("Property Zip") or "").strip():
+            r["Property Zip"] = (zipc or str(court_addr.zip)[:5])
         if c.market_value and not (r.get("Property Value") or "").strip():
             r["Property Value"] = f"{int(round(float(c.market_value)))}"
         if getattr(c, "use_description", "") or getattr(c, "use_code", ""):
@@ -3856,6 +3910,28 @@ def _streets_near_identical(a_addr: str | None, b_addr: str | None) -> bool:
             continue
         return False  # a distinctive token with no near-match — different street
     return True
+
+
+def _dec_street_in_candidate(dec_addr: str, cand_situs: str,
+                             threshold: float = 0.70) -> bool:
+    """True when every distinctive street token of the decedent's court address
+    fuzzy-matches (>= threshold) some token in the candidate's situs.
+
+    Looser than _streets_near_identical (0.80) ON PURPOSE: callers pair this
+    with an EXACT house-number match AND a >=0.9 owner-name match, so the street
+    only has to clear a court typo. "Glembriar" vs "Glenbrier" scores 0.78
+    (James 26E002599-590, court misspelled the street); any genuinely different
+    street scores < 0.30, so 0.70 has a wide safety gap.
+    """
+    import difflib
+    dec_toks = {t for t in _street_core_tokens(dec_addr)
+                if t.isalpha() and len(t) > 2 and t not in _DIRECTIONAL_WORDS}
+    cand_toks = {t for t in _street_core_tokens(cand_situs)
+                 if t.isalpha() and len(t) > 2}
+    if not dec_toks or not cand_toks:
+        return False
+    return all(any(difflib.SequenceMatcher(None, d, c).ratio() >= threshold
+                   for c in cand_toks) for d in dec_toks)
 
 
 def _same_property_by_number_zip(
