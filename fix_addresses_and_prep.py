@@ -1116,6 +1116,27 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
     return swapped, flagged
 
 
+# Memoize the per-case Parties fetch: Step 0.64 and Step 0.645 both need the
+# decedent's court detail for the SAME blank-parcel rows, and 0.645 only sees
+# the rows 0.64 couldn't recover — so without this every one of those ~80 rows
+# would hit the Parties API twice per polish. Cleared each process; a run's
+# fetches are stable within it.
+_CASE_DETAIL_CACHE: dict = {}
+
+
+def _fetch_case_detail_cached(client, case_hex: str):
+    """client.fetch_detail(case_hex), memoized by hex. Caches failures as None
+    so a dead case isn't retried by the second step."""
+    if case_hex in _CASE_DETAIL_CACHE:
+        return _CASE_DETAIL_CACHE[case_hex]
+    try:
+        detail = client.fetch_detail(case_hex)
+    except Exception:
+        detail = None
+    _CASE_DETAIL_CACHE[case_hex] = detail
+    return detail
+
+
 def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
     """For rows with a blank Parcel ID, look up the DECEDENT'S OWN address —
     the one Odyssey already returns on the Parties API — in county GIS.
@@ -1176,10 +1197,8 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
         _, _, dec_last = split_decedent_name(dec)
         if not dec_last:
             continue
-        try:
-            detail = client.fetch_detail((r.get("Case ID (hex)") or "").strip())
-        except Exception as e:  # noqa: BLE001
-            print(f"  decedent-addr: Parties fetch failed for {r.get('Case No.')}: {e}")
+        detail = _fetch_case_detail_cached(client, (r.get("Case ID (hex)") or "").strip())
+        if detail is None:
             continue
         dec_party = detail.decedent
         if not dec_party:
@@ -1263,6 +1282,133 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
         extra = f" (+{len(matched)-1} sibling parcel(s))" if len(matched) > 1 else ""
         print(f"  DECEDENT-ADDR {county}/{dec}: matched {pid} at {situs!r} "
               f"via decedent address {addr.line1!r} (owner {owner_str!r}){extra}")
+        recovered += 1
+    return recovered
+
+
+def recover_parcel_via_corroborated_name(rows: list[dict]) -> int:
+    """Rescue a parcel the NAME matcher rejected as a near-miss, when the
+    decedent's court address independently confirms it.
+
+    The scrape's matcher drops a candidate scoring < 0.7, which discards a
+    genuine parcel whenever the deed misspells the name by a letter:
+      DeViney 26E002640-590 — court "DeViney, Coldman Ray", deed "COLEMAN RAY
+      DEVINEY" (COLDMAN vs COLEMAN) scores 0.40 at 2235 Wilson Ave; the court's
+      decedent address IS 2235 Wilson Ave.
+      Stancil 26E000736-120 — "Stephen Dewitt" vs deed "DEWIT" scores 0.40.
+
+    Per Oren (Week 29): fix this class CAREFULLY — accept a near-miss name only
+    when something else backs it up, never on the name alone (which would start
+    matching wrong people). The corroboration here is the decedent's own court
+    address matching the parcel's situs.
+
+    Why NAME search, not address lookup (Step 0.64's approach): Mecklenburg has
+    no address-lookup endpoint (_ARCGIS_CONFIG url=None), so Step 0.64 can't
+    reach DeViney at all. lookup_properties (name search) works for every county
+    incl. Meck via polaris3g — it returns the 0.40 candidate; we just re-admit it
+    when its situs matches the court address.
+
+    Corroboration is STRICT: exact house number AND an exact core-street-token
+    match (suffix/directional-insensitive). A shared house number on a different
+    street does NOT qualify. Only runs on rows still lacking a parcel after
+    Steps 0.5/0.64/0.65, so it never overrides a confident match.
+
+    Stancil is NOT recovered today: Odyssey has no decedent address for it (and
+    its Application PDF isn't fetched yet), so there's nothing to corroborate —
+    correct under the careful rule. If the doc drain later lands its Application,
+    a subsequent run's decedent_address may let this step catch it.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from nc_gis_lookup import lookup_properties, split_decedent_name, _name_match_score
+
+    targets = [r for r in rows
+               if not (r.get("Parcel ID") or "").strip()
+               and (r.get("Case ID (hex)") or "").strip()
+               and (r.get("Deceased Owner") or "").strip()
+               and (r.get("County") or "").strip()]
+    if not targets:
+        return 0
+
+    waf_path = _Path("ecourts_waf_cookies.json")
+    if not waf_path.exists():
+        print("  (no cached WAF cookie — skipping corroborated-name rescue)")
+        return 0
+    try:
+        waf = _json.loads(waf_path.read_text())
+        from ecourts_case_api import CaseDetailClient
+        client = CaseDetailClient(waf_token=waf["aws_waf_token"],
+                                  user_agent=waf.get("user_agent") or "Mozilla/5.0")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (corroborated-name rescue unavailable: {e})")
+        return 0
+
+    recovered = 0
+    for r in targets:
+        dec = (r.get("Deceased Owner") or "").strip()
+        county = (r.get("County") or "").strip()
+        if "IN THE MATTER" in dec.upper():
+            continue
+        # The corroborating signal: the decedent's own court address. Reuses
+        # Step 0.64's memoized fetch — these rows were just fetched there.
+        detail = _fetch_case_detail_cached(client, (r.get("Case ID (hex)") or "").strip())
+        if detail is None:
+            continue
+        dp = detail.decedent
+        court_addr = dp.first_address if dp else None
+        if not court_addr or court_addr.is_blank() or not court_addr.line1:
+            continue  # nothing to corroborate against → leave for manual review
+        court_house = _leading_house_number(court_addr.line1)
+        court_core = _street_core_tokens(court_addr.line1)
+        if not court_house or not court_core:
+            continue
+        # Near-miss candidates from NAME search (works for all counties).
+        try:
+            cands = lookup_properties(dec, county, min_score=0.35)
+        except Exception:
+            continue
+        # A candidate qualifies only if its situs matches the court address:
+        # exact house number, and every distinctive street token of the court
+        # address present in the candidate's situs. Subset (not equality)
+        # because a name-search situs trails the city/state — polaris3g returns
+        # "2235 WILSON AV CHARLOTTE NC", so {wilson} ⊆ {wilson,charlotte,nc}.
+        # House-number-exact + full-street-name keeps it strict; the address is
+        # doing the work, the name only had to be close enough to surface it.
+        matched = [c for c in cands
+                   if c.pid
+                   and _leading_house_number(c.situs_address) == court_house
+                   and court_core <= _street_core_tokens(c.situs_address)]
+        if not matched:
+            continue
+        # Prefer a residential/house parcel as main; a bare situs sorts after.
+        matched.sort(key=lambda c: (not re.match(r"\s*\d", c.situs_address or ""),
+                                    c.pid))
+        c = matched[0]
+        name_score = _name_match_score(dec, c.owner_name or "")
+        r["Parcel ID"] = c.pid
+        _set_row_acres(r, _cand_acres(c))
+        if c.situs_address:
+            r["Property Address"] = c.situs_address
+        if court_addr.city and not (r.get("Property City") or "").strip():
+            r["Property City"] = court_addr.city.title()
+        if court_addr.zip and not (r.get("Property Zip") or "").strip():
+            r["Property Zip"] = str(court_addr.zip)[:5]
+        if c.market_value and not (r.get("Property Value") or "").strip():
+            r["Property Value"] = f"{int(round(float(c.market_value)))}"
+        if getattr(c, "use_description", "") or getattr(c, "use_code", ""):
+            from nc_gis_lookup import simplify_use_code
+            use = simplify_use_code(c.use_code or "", c.use_description or "", county.lower())
+            if use:
+                r["Property use"] = use
+        note = (f"[NAME-NEARMISS rescued: deed owner {c.owner_name!r} "
+                f"(name score {name_score:.2f}) confirmed by decedent court "
+                f"address {court_addr.line1}]")
+        existing = (r.get("Notes") or "").strip()
+        r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+        tag_reason(r, "name-nearmiss-addr-corroborated")
+        print(f"  NAME-NEARMISS {county}/{dec}: matched {c.pid} at "
+              f"{c.situs_address!r} (score {name_score:.2f}) via court address "
+              f"{court_addr.line1!r}")
         recovered += 1
     return recovered
 
@@ -5149,6 +5295,11 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 0.64: parcel-fallback lookup using the decedent's address (Odyssey Parties)")
     n_dec_recovered = parcel_fallback_from_decedent_address(rows)
     print(f"  Recovered via decedent-address GIS lookup: {n_dec_recovered}")
+
+    print("Step 0.645: name-nearmiss rescue — parcel the matcher dropped, "
+          "re-admitted when the decedent's court address confirms it")
+    n_nearmiss = recover_parcel_via_corroborated_name(rows)
+    print(f"  Recovered via address-corroborated near-miss name: {n_nearmiss}")
 
     print("Step 0.65: address-fallback lookup using Beneficiaries column")
     n_addr_recovered = address_fallback_from_beneficiaries(rows)
