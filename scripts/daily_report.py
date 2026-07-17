@@ -24,7 +24,7 @@ import re
 import smtplib
 import sys
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -374,6 +374,46 @@ def render_report(
     if polish_stats.get("refound"):
         lines.append(f"  Step 0.5 Re-found correct parcels:        {polish_stats['refound']}")
     lines.append("")
+
+    # A county GIS that went down during the polish. Its rows lost their parcel
+    # to a dead server (not to "owns nothing") and were dropped at Step 4 — so
+    # tonight's sheet is short for that county. The next clean run restores them,
+    # and auto_archive_weeks.py won't freeze the week until then; this is just so
+    # a short county count doesn't read as a quiet week.
+    try:
+        import json as _json
+        _o = _json.loads((Path("output") / ".gis_outage_last_run.json")
+                         .read_text(encoding="utf-8"))
+        if _o.get("counties"):
+            lines.append("*** COUNTY GIS OUTAGE THIS RUN ***")
+            lines.append(f"  Down: {', '.join(_o['counties'])}")
+            lines.append(f"  Rows for these counties are INCOMPLETE in week(s) "
+                         f"{_o.get('weeks', [])} — they will be recovered on the "
+                         f"next clean run, and the week won't be archived until then.")
+            lines.append("")
+    except Exception:
+        pass
+
+    # Wills/Applications that landed for weeks already archived. apply_late_docs.py
+    # writes the name onto the archived sheet, but an archived week is not in the
+    # workbook — this report is the ONLY place Oren would ever learn a dead
+    # "Heirs of" row turned into a real named contact. Nothing pushes these to
+    # DataSift, so they need typing in by hand; keep the case no. front and centre.
+    try:
+        import json as _json
+        _updates = Path("output") / ".late_doc_updates.json"
+        _recent = _json.loads(_updates.read_text(encoding="utf-8")).get("entries", [])
+        _cut = (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
+        _new = [e for e in _recent if e.get("found_iso", "") >= _cut]
+        if _new:
+            lines.append("LATE DOCS — ARCHIVED WEEKS JUST GOT A NAME (add to DataSift by hand)")
+            for e in _new:
+                _rel = f" ({e['relationship']})" if e.get("relationship") else ""
+                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
+                             f"wk{e.get('week','?')}  {e.get('was','')} -> {e.get('now','')}{_rel}")
+            lines.append("")
+    except Exception:
+        pass
 
     # Documents the court still hasn't scanned for high-priority leads. We retry
     # nightly for months, but if the Application/Will never appears the only way

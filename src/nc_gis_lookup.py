@@ -1214,6 +1214,77 @@ _ARCGIS_HEADERS = {
 _ARCGIS_QUERY_RETRIES = int(os.environ.get("NC_ARCGIS_RETRIES", "2"))
 _ARCGIS_QUERY_BACKOFF = float(os.environ.get("NC_ARCGIS_BACKOFF", "2.0"))
 
+# ── County GIS outage detection ───────────────────────────────────────
+#
+# A county server that is DOWN and a decedent who owns NOTHING both come back
+# as zero rows. That equivalence costs both time and leads:
+#
+#   * Time. Gaston died at 19:29 on 2026-07-16 and every lookup afterwards
+#     burned ~97s (3 tries x 30s timeout + backoff) before giving up empty --
+#     ~35 min of one night spent waiting on a server returning Cloudflare 525s.
+#   * Leads. The empty result flows into the has-parcel filter, which drops the
+#     row. Silently. Cabarrus did exactly this on 2026-07-09.
+#
+# So: count CONSECUTIVE failures per endpoint. Any success -- including a
+# legitimate 200 + zero features -- resets the count, because that proves the
+# server is answering. After _OUTAGE_THRESHOLD consecutive failures, declare
+# the endpoint down and fast-fail every later query against it for the rest of
+# the process: no network, no wait.
+#
+# Callers use downed_counties() / is_county_down() to tell "server broken" from
+# "owns nothing" and refuse to drop rows on the former. Nothing is cached from
+# a downed county (_persist_put already skips empty results), so tomorrow's run
+# re-fetches cleanly.
+_OUTAGE_THRESHOLD = int(os.environ.get("NC_GIS_OUTAGE_THRESHOLD", "3"))
+_outage_fails: dict[str, int] = {}
+_outage_down: set[str] = set()
+
+
+def _endpoint_key(url: str) -> str:
+    """Group failures by host — one county's layers share a server."""
+    m = re.match(r"https?://([^/]+)", url or "")
+    return m.group(1).lower() if m else (url or "?")
+
+
+def _outage_note_failure(url: str, why: str) -> None:
+    key = _endpoint_key(url)
+    if key in _outage_down:
+        return
+    _outage_fails[key] = _outage_fails.get(key, 0) + 1
+    if _outage_fails[key] >= _OUTAGE_THRESHOLD:
+        _outage_down.add(key)
+        logger.error(
+            "GIS OUTAGE: %s failed %d consecutive queries (%s). Marking it DOWN "
+            "for the rest of this run — further lookups fast-fail instead of "
+            "waiting. Rows for this county are INCOMPLETE and must NOT be "
+            "treated as 'no parcels found'.", key, _outage_fails[key], why)
+
+
+def _outage_note_success(url: str) -> None:
+    """A server that answers at all is up — even with zero features."""
+    _outage_fails.pop(_endpoint_key(url), None)
+
+
+def is_endpoint_down(url: str) -> bool:
+    return _endpoint_key(url) in _outage_down
+
+
+def downed_counties() -> set[str]:
+    """County keys (as used in _ARCGIS_CONFIG) whose GIS went down this run."""
+    return {county for county, cfg in _ARCGIS_CONFIG.items()
+            if cfg.get("url") and _endpoint_key(cfg["url"]) in _outage_down}
+
+
+def is_county_down(county: str) -> bool:
+    cfg = _ARCGIS_CONFIG.get((county or "").strip().lower())
+    return bool(cfg and cfg.get("url") and is_endpoint_down(cfg["url"]))
+
+
+def reset_outage_state() -> None:
+    """Clear outage bookkeeping (tests, or a caller retrying a later phase)."""
+    _outage_fails.clear()
+    _outage_down.clear()
+
 
 # Per-county config: how to query + which fields to read.
 # - url:        FeatureServer/MapServer layer URL ending in /<layer_index>
@@ -1376,6 +1447,11 @@ def _arcgis_query(
     """
     if not name_token:
         return []
+    # Server already declared down this run — don't spend another ~97s proving
+    # it. Returns empty like any other failure; is_county_down() is how callers
+    # tell this apart from a genuine "owns nothing".
+    if is_endpoint_down(url):
+        return []
     where = f"UPPER({owner_field}) LIKE '{name_token.upper()}%'"
     all_rows: list[dict] = []
     offset = 0
@@ -1405,12 +1481,14 @@ def _arcgis_query(
                     continue
                 logger.warning("ArcGIS: query failed at %s after %d tries: %s",
                                url, attempt + 1, e)
+                _outage_note_failure(url, f"request failed: {e}")
                 break
             if r.status_code != 200:
                 if r.status_code >= 500 and attempt < _ARCGIS_QUERY_RETRIES:
                     time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
                     continue
                 logger.warning("ArcGIS: HTTP %d at %s", r.status_code, url)
+                _outage_note_failure(url, f"HTTP {r.status_code}")
                 break
             try:
                 parsed = r.json()
@@ -1419,6 +1497,7 @@ def _arcgis_query(
                     time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
                     continue
                 logger.warning("ArcGIS: invalid JSON at %s", url)
+                _outage_note_failure(url, "invalid JSON")
                 break
             # Dead backend: HTTP 200 with {"status":"error",...} and no "error"
             # key — indistinguishable from "no parcels" without this check.
@@ -1430,14 +1509,26 @@ def _arcgis_query(
                 logger.error("ArcGIS SERVER DOWN at %s: %s — results empty; do "
                              "NOT treat as 'no parcels found'",
                              url, "; ".join(parsed.get("messages") or []))
+                _outage_note_failure(url, "status=error")
+                break
+            # HTTP 200 carrying {"error": {...}} — an ArcGIS Server still
+            # coming up answers every query with 500 9017$SITE_NOT_INITIALIZED
+            # (Gaston, 2026-07-16 21:06). Previously this fell straight through
+            # to `break` with no retry and no outage note, so a flapping server
+            # read as "nobody in this county owns anything". Retry it like any
+            # other transient, then count it.
+            if "error" in parsed:
+                if attempt < _ARCGIS_QUERY_RETRIES:
+                    time.sleep(_ARCGIS_QUERY_BACKOFF * (attempt + 1))
+                    continue
+                logger.warning("ArcGIS error at %s: %s", url, parsed["error"])
+                _outage_note_failure(url, str(parsed["error"])[:80])
                 break
             data = parsed
             break
         if data is None:
             break
-        if "error" in data:
-            logger.warning("ArcGIS error at %s: %s", url, data["error"])
-            break
+        _outage_note_success(url)  # answered — zero features here means zero
         feats = data.get("features") or []
         if not feats:
             break

@@ -47,6 +47,18 @@ echo. >> "logs\nc_daily_run.log"
 echo ====================================================== >> "logs\nc_daily_run.log"
 echo === Daily run started %DATE% %TIME% (since %SINCE%) === >> "logs\nc_daily_run.log"
 
+REM Archive finished weeks. A closed week stays live for the Mon+Tue runs --
+REM Friday's cases need a 2nd/3rd night, because LandPortal / phone / doc
+REM fetches are rationed per night, and a county GIS outage returns a false
+REM "no parcels" that only a later pass recovers. Weeks older than last week
+REM go at once: an un-archived week is re-polished from scratch EVERY night
+REM forever (nothing ages out on its own -- see scripts\auto_archive_weeks.py),
+REM a permanent ~1h45m each. Archived weeks keep getting their Wills hunted for
+REM 30 days; apply_late_docs.py lands them. To hold a week live longer, delete
+REM output\archive_week<N>_done\.
+echo [guard] Auto-archiving finished weeks...
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\auto_archive_weeks.py >> "logs\nc_daily_run.log" 2>&1
+
 echo [guard] GIS smoke test (stale-endpoint detection)...
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\gis_smoke_test.py >> "logs\nc_daily_run.log" 2>&1
 if errorlevel 1 (
@@ -94,6 +106,21 @@ if "%NC_PDF_PHONES%"=="0" (
 
 echo [6/6] Consolidating multi-week workbook...
 "D:\SiftStack\.venv\Scripts\python.exe" consolidate_weeks.py >> "logs\nc_daily_run.log" 2>&1
+
+REM Apply Wills/Applications that landed AFTER their week was archived. The
+REM polish does this for live weeks (Step -1.5) but skips archived ones, so
+REM without this a late doc is fetched, parsed, cached -- and applied to
+REM nothing. Pure + idempotent: a JSON lookup, no network, seconds. Must run
+REM after the scrape (which drains the doc queue) and before the report
+REM (which is the ONLY place these surface -- an archived week is not in the
+REM workbook). Off-switch:  set NC_LATE_DOCS=0
+echo [6.5/7] Applying late-arriving case docs to archived weeks...
+if "%NC_LATE_DOCS%"=="0" (
+    echo   skipped -- NC_LATE_DOCS=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" apply_late_docs.py >> "logs\nc_daily_run.log" 2>&1
+)
+
 echo [7/7] Daily report (file + email)...
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\daily_report.py >> "logs\nc_daily_run.log" 2>&1
 
