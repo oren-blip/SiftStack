@@ -2125,12 +2125,17 @@ def flag_no_middle_ambiguous_matches(rows: list[dict]) -> int:
         toks = [t for t in toks if t not in _SKIP_TOKENS]
         if len(toks) != 2:
             continue  # has a middle token (verify-middle-initial covers that) or malformed
-        # Competing homonyms: 2+ candidate parcels strongly matching the
-        # decedent's first+last. A unique name won't trip this.
+        # The deed is bare first+last while the court record HAS a middle, so
+        # nothing corroborates the match. Per Oren (Week 29): flag every one of
+        # these for an eyeball, not just the ones with an in-county homonym —
+        # Gibson 26E000948-350 (deed "GIBSON JEFFREY", court "Jeffrey Scott")
+        # had no competing Jeffrey Gibson and so passed silently at score 1.0.
+        # Two tiers so the audit shows which is riskier:
+        #   verify-name-ambiguous — a competing same-name parcel exists (2+
+        #     strong first+last matches). Could be the WRONG person.
+        #   verify-name-nomiddle  — unique name, just no middle to confirm.
         strong = sum(1 for c in cands if _name_match_score(dec, c.owner_name or "") >= 0.9)
-        if strong < 2:
-            continue
-        tag_reason(r, "verify-name-ambiguous")
+        tag_reason(r, "verify-name-ambiguous" if strong >= 2 else "verify-name-nomiddle")
         flagged += 1
     return flagged
 
@@ -2413,6 +2418,52 @@ def drop_under_min_value(rows: list[dict], floor: float = _MIN_STANDALONE_VALUE)
             continue
         print(f"  MIN-VALUE DROP {r.get('County')}/{r.get('Deceased Owner')}: "
               f"{r.get('Property Address')!r} valued {v_str} < {floor:,.0f} (standalone parcel)")
+        dropped += 1
+    return kept, dropped
+
+
+_MIN_VACANT_ACRES = 0.25
+
+
+def drop_tiny_vacant_lots(rows: list[dict],
+                          floor: float = _MIN_VACANT_ACRES) -> tuple[list[dict], int]:
+    """Drop a STANDALONE VACANT lot smaller than `floor` acres — scrap too small
+    to build on or resell, regardless of its dollar value.
+
+    The dollar floor (drop_under_min_value, Step 1.82) misses these two ways:
+    a sliver can carry a plausible tax value, or LandPortal can re-value it above
+    the $10K floor. Long, Rebecca M 26E000944-350 Week 29: 0.11 ac, county value
+    $1,010, LandPortal re-valued it to $57,141 and it survived — but Oren:
+    "obviously a scrap parcel, should not even go to LandPortal." A hard size
+    floor catches it before value ever enters the picture.
+
+    Guards mirror the dollar floor exactly, and matter as much as the rule:
+      * VACANT LAND ONLY. A 0.03-ac townhome (Anderson 26E000820-170) or a
+        0.07-ac SFR on a city lot (Massey) is a real building on a small parcel,
+        not scrap — size says nothing about those. Never size-floor a structure.
+      * Multi-parcel estates EXEMPT. 2+ adjacent vacant lots are the
+        mobile-home-on-land play Oren prizes; individual lot size is irrelevant
+        there (see the consecutive-vacant-lots rule).
+      * Never drop UNKNOWN acreage. Blank means we couldn't measure it — often a
+        county GIS outage (half of Week 29's Gaston rows had blank acres the
+        night Gaston was down). Dropping on blank would silently delete real
+        leads whenever a server hiccuped. Only a positive number under the floor
+        is scrap.
+    """
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        use = (r.get("Property use") or "").upper()
+        acres = _row_acres(r)
+        is_vacant = "VACANT" in use or use == "LAND"
+        if (not is_vacant or acres is None or acres >= floor
+                or _has_sibling_parcels(r)):
+            kept.append(r)
+            continue
+        print(f"  TINY-LOT DROP {r.get('County')}/{r.get('Deceased Owner')}: "
+              f"{r.get('Property Address')!r} {acres:.2f}ac < {floor}ac "
+              f"(standalone vacant scrap)")
+        tag_reason(r, "tiny-vacant-lot")
         dropped += 1
     return kept, dropped
 
@@ -2756,6 +2807,94 @@ def drop_non_pending(rows: list[dict]) -> tuple[list[dict], int, dict[str, int]]
 # Polish-side mirror of ecourts_scraper.SMALL_ESTATE_RECENT_DAYS — kept
 # in sync so both layers honor the same carve-out window.
 SMALL_ESTATE_RECENT_DAYS = 14
+
+
+_SMALL_ESTATE_NOTE = "SMALL ESTATE (disposed by affidavit)"
+
+
+def mark_small_estate_in_notes(rows: list[dict]) -> int:
+    """Put a visible SMALL ESTATE marker in the Notes column for surviving
+    small-estate-disposed cases.
+
+    Oren keeps these (a disposed estate doesn't mean the house is spoken for)
+    but wants to know which ones they are so he can treat them differently on
+    the call. Match Reason already carries `small-estate-disposed-recent`, but
+    that's an audit column he doesn't scan while dialing — Notes is the field
+    he reads. Keyed off the durable Match Reason tag rather than re-checking the
+    14-day File Date window, so a later re-polish (or an archived-week apply)
+    marks the same rows the scrape identified, not whatever is <14 days old now.
+
+    Idempotent: skips a row whose Notes already carries the marker.
+    """
+    marked = 0
+    for r in rows:
+        if "small-estate-disposed-recent" not in (r.get("Match Reason") or ""):
+            continue
+        notes = (r.get("Notes") or "").strip()
+        if _SMALL_ESTATE_NOTE in notes:
+            continue
+        r["Notes"] = (_SMALL_ESTATE_NOTE + ("\n" + notes if notes else "")).strip()
+        marked += 1
+    return marked
+
+
+def drop_zillow_listed_or_sold(rows: list[dict]) -> tuple[list[dict], int]:
+    """Drop rows whose property Zillow shows actively listed / under contract /
+    pending / recently sold — the live-MLS class county GIS can't see (it only
+    knows a sale once the deed records post-close). Always writes the status
+    into Notes, even when keeping, so Oren no longer clicks every Zillow link.
+
+    Per Oren (Week 29): auto-drop the obvious ones. Guardrails:
+      * FAIL TOWARD KEEPING. zillow_status returns "unknown" (→ keep) on any
+        fetch/parse failure, a blocked page, or an unsure LLM. Only a HIGH-
+        confidence for_sale/pending/under_contract/sold_recently drops.
+      * Survivors only (this runs at Step 4.93, after every cheaper filter),
+        because each check is a Firecrawl + LLM call — the pipeline's costliest
+        per-row step. Disk-cached ~4 days so nightly re-polishes are ~free.
+      * Skips rows with no real street property address (blank, or a vacant
+        "0 <street>" with no house number — Zillow can't resolve those).
+      * Multi-parcel estates: only the MAIN property is checked. A cluster whose
+        main is a vacant lot simply reads "unknown" and is kept.
+      * Off switch: ZILLOW_DISABLE=1.
+
+    Beam 26E000829-170 Week 29: sibling parcel 1392 21St Ave Ne actively listed
+    $285k — Oren's manual DQ, now automatic.
+    """
+    try:
+        import zillow_status as zs
+    except Exception as e:  # noqa: BLE001
+        print(f"  (zillow_status unavailable: {e}) — skipping")
+        return rows, 0
+    if not zs.available():
+        print("  (Firecrawl not configured or ZILLOW_DISABLE=1) — skipping")
+        return rows, 0
+
+    kept: list[dict] = []
+    dropped = 0
+    for r in rows:
+        street = (r.get("Property Address") or "").strip()
+        # Need a house number for Zillow to resolve a single property. A bare
+        # street or a vacant "0 Debbie Ln" won't; keep and move on.
+        if not street or not re.match(r"^\d", street) or street.startswith("0 "):
+            kept.append(r)
+            continue
+        st = zs.get_status(street,
+                           (r.get("Property City") or "").strip(),
+                           (r.get("Property State") or "NC").strip(),
+                           (r.get("Property Zip") or "").strip())
+        if st.status != "unknown" and st.detail:
+            note = f"[Zillow: {st.detail}]"
+            existing = (r.get("Notes") or "").strip()
+            if note not in existing:
+                r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+        if st.should_drop():
+            print(f"  ZILLOW DROP {r.get('County')}/{r.get('Deceased Owner')}: "
+                  f"{street!r} — {st.status} ({st.detail})")
+            tag_reason(r, f"zillow-{st.status.replace('_', '-')}")
+            dropped += 1
+            continue
+        kept.append(r)
+    return kept, dropped
 
 
 def _is_small_estate_disposed_recent(r: dict) -> bool:
@@ -4465,7 +4604,13 @@ def promote_dm_to_pr(row: dict) -> dict | None:
     #   - Pure relationship words like "Wife"/"Husband" (parser pulled
     #     the relation label instead of the actual person's name)
     dm_lower = dm_name.lower()
-    if dm_lower.startswith("heirs of") or dm_lower.startswith("estate of"):
+    # "estate of" / "heirs of" ANYWHERE, not just at the start: the enricher's
+    # estate-fallback inherits the decedent's "Last, First" name order, so it
+    # arrives comma-inverted as "Farley, Estate of Robert Matthew"
+    # (26E000827-170). A leading-only check let that promote to PR and split
+    # into First="Estate of Robert" — a mailer to no one. No real person's name
+    # contains either phrase, so substring matching is safe.
+    if "estate of" in dm_lower or "heirs of" in dm_lower:
         return None
     if dm_lower in {"wife", "husband", "spouse", "son", "daughter",
                     "brother", "sister", "mother", "father", "child",
@@ -5081,6 +5226,14 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     rows, n_over_500k = drop_over_500k(rows, cap=500_000)
     print(f"  Dropped over-cap: {n_over_500k}  Remaining: {len(rows)}")
 
+    # BEFORE the dollar floor: a tiny vacant lot is scrap on size alone, and Oren
+    # doesn't want it reaching LandPortal for a re-valuation (Long 26E000944-350:
+    # 0.11ac, LandPortal lifted $1,010 -> $57,141 and it wrongly survived).
+    print(f"Step 1.81: drop standalone vacant lots under {_MIN_VACANT_ACRES}ac "
+          "(scrap size — multi-parcel estates exempt, structures exempt)")
+    rows, n_tiny_lot = drop_tiny_vacant_lots(rows)
+    print(f"  Dropped tiny-vacant-lot: {n_tiny_lot}  Remaining: {len(rows)}")
+
     print("Step 1.82: drop standalone parcels under $10K (scrap land — multi-parcel estates exempt)")
     rows, n_under_min = drop_under_min_value(rows)
     print(f"  Dropped under-min-value: {n_under_min}  Remaining: {len(rows)}")
@@ -5189,6 +5342,39 @@ def run(src_path: Path, tag: str, ts: str) -> None:
           f"DM-promoted: {dm_promoted}  Beneficiary-promoted: {promoted}  "
           f"Generic Heirs-of: {heirs}  Out: {len(kept)}")
 
+    # Step 4.05: the heir-occupancy DQ, re-run for PRs that only came into
+    # existence at Step 4.
+    #
+    # Step 1.9 can only judge rows that HAVE a PR. A case where the court named
+    # nobody has no name to people-search at 1.93 and no mailing to compare at
+    # 1.9, so it sails through both; only at Step 4 does an obituary-derived DM
+    # get promoted in — carrying the address the enricher found for them. When
+    # that address IS the property, the row is heir-occupied and by Oren's rule
+    # it's a dead lead, but the check that would say so has already run.
+    #
+    # VanDriesen 26E000738-120 Week 29: no court PR, DM "Gary VanDriesen" (son)
+    # promoted at Step 4 with mailing 14 Search Dr == the property. Oren DQ'd it
+    # by hand off BeenVerified; the evidence was already sitting in the row.
+    #
+    # Scoped to promoted rows only. drop_executor_at_property also performs
+    # swap-on-DQ, and re-running it across rows that already cleared Step 1.9
+    # re-swaps their parcels (seen on James 26E002599-590).
+    print("Step 4.05: heir-occupancy re-check for DM/beneficiary-promoted PRs")
+    _promoted_ids = {id(r) for r in kept
+                     if any(t in (r.get("Match Reason") or "")
+                            for t in ("dm-promoted-pr", "beneficiary-promoted-pr"))}
+    if _promoted_ids:
+        _subset = [r for r in kept if id(r) in _promoted_ids]
+        _survivors, _n_dq = drop_executor_at_property(_subset)
+        _survivor_ids = {id(r) for r in _survivors}
+        kept = [r for r in kept
+                if id(r) not in _promoted_ids or id(r) in _survivor_ids]
+        print(f"  Promoted PRs checked: {len(_subset)}  "
+              f"Dropped heir-occupied: {_n_dq}  Remaining: {len(kept)}")
+    else:
+        print("  Promoted PRs checked: 0  Dropped heir-occupied: 0  "
+              f"Remaining: {len(kept)}")
+
     print("Step 4.5: second-pass aggressive obituary search for 'Heirs of' rows "
           "(replace with real heir name + address when found)")
     n_full, n_name, n_tried = second_pass_obituary_for_heirs_of(kept)
@@ -5209,6 +5395,18 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 4.9: default blank Property Type to SFR for valued residential parcels")
     n_sfr = default_property_type_residential(kept)
     print(f"  Property Type defaulted to SFR: {n_sfr}")
+
+    print("Step 4.92: surface SMALL ESTATE marker into Notes (kept but flagged)")
+    n_se_marked = mark_small_estate_in_notes(kept)
+    print(f"  Small-estate rows marked in Notes: {n_se_marked}")
+
+    # LAST filter, on survivors only: a Firecrawl + LLM call per row is the
+    # costliest per-row step, so spend it only on rows that would actually ship.
+    # Catches the live-MLS class county GIS is blind to (active listing, under
+    # contract, sold-but-not-yet-recorded). Disk-cached; fails toward keeping.
+    print("Step 4.93: Zillow listing-status check (drop actively-listed/sold; note status)")
+    kept, n_zillow = drop_zillow_listed_or_sold(kept)
+    print(f"  Dropped via Zillow status: {n_zillow}  Remaining: {len(kept)}")
 
     print("Step 4.95: apply durable manual field corrections (manual_corrections.csv)")
     n_corr, n_cases = apply_manual_corrections(kept)
