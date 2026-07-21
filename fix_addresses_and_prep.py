@@ -5597,6 +5597,138 @@ def fill_vacant_street_from_mailing(rows: list[dict]) -> int:
     return filled
 
 
+# ── Surviving-spouse occupancy flag (Step 3.9) ────────────────────────────
+# Noise tokens that appear in county GIS owner strings but aren't name parts.
+_OWNER_NOISE = {"wf", "hb", "etux", "etal", "et", "ux", "al", "tr", "trustee",
+                "trust", "sr", "jr", "ii", "iii", "iv", "v", "life", "estat",
+                "estate", "heirs", "of", "the", "and", "hsb", "revoc", "living"}
+# Relationship markers county GIS prepends to a spouse whose surname is implied
+# by the primary owner ("SMITH JOHN | WF MARY", "MARY BRAULT | HSB FREDERIC A").
+_SPOUSAL_MARKERS = {"wf", "hb", "hsb", "wife", "husband", "spouse", "h", "w"}
+
+
+def _dec_first_last(name: str) -> tuple[str, str]:
+    """(first, last) from a decedent 'Last, First Middle' string (or 'First Last')."""
+    name = (name or "").strip()
+    if "," in name:
+        last, _, rest = name.partition(",")
+        toks = rest.strip().split()
+        return (toks[0].lower() if toks else ""), last.strip().lower()
+    toks = name.split()
+    if len(toks) >= 2:
+        return toks[0].lower(), toks[-1].lower()
+    return "", ""
+
+
+def flag_surviving_spouse_occupied(rows: list[dict]) -> int:
+    """Distinguish surviving-spouse-occupied homes from generic occupied-heir
+    homes among the KEPT court-confirmed rows, so Oren can work spouse leads
+    deliberately (he under-works them out of long-timeline worry — see
+    feedback_surviving_spouse_leads memory).
+
+    Signal (two gates):
+      1. Name gate (cheap): kept court-confirmed occupied home
+         (verify-occupied-confirmed) where the PR shares the decedent's surname
+         but has a DIFFERENT first name. Excludes married children (different
+         surname) and same-name Jr relatives (same first name).
+      2. Deed gate (authoritative): the property title carries a same-surname
+         JOINT co-owner — a spouse co-owns; an adult child living in the parent's
+         home usually does not. This is what separates a widow/widower from a
+         same-surname son (Boone 26E000729-790: PR "Justin Boone" is a son, NOT
+         on the deed → not flagged, whereas Burris "BURRIS JAMES W SR | BURRIS
+         OLIVIA L" → Olivia co-owns → confirmed spouse).
+
+    Confirmed-on-deed → Tag 'Surviving Spouse' + reason 'surviving-spouse'. If
+    GIS is unavailable, degrade to the name signal only with softer Tag
+    'Surviving Spouse?' + reason 'likely-surviving-spouse'. Off-switch:
+    NC_SPOUSE_FLAG=0.
+    """
+    try:
+        from nc_gis_lookup import (lookup_by_address, lookup_properties,
+                                    extract_co_owner_names)
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for r in rows:
+        mr = r.get("Match Reason") or ""
+        if "verify-occupied-confirmed" not in mr or "surviving-spouse" in mr:
+            continue
+        dec = r.get("Deceased Owner") or ""
+        dec_first, dec_last = _dec_first_last(dec)
+        pr_first = (r.get("First Name") or "").strip().lower()
+        pr_last = (r.get("Last Name") or "").strip().lower()
+        if not (dec_first and dec_last and pr_first and pr_last):
+            continue
+        if dec_last != pr_last or dec_first == pr_first:
+            continue  # name gate: same surname, different first name
+        county = (r.get("County") or "").strip()
+        prop = (r.get("Property Address") or "").strip()
+        pid = (r.get("Parcel ID") or "").strip()
+        # Get the deed owner string — PID-match path first (reliable, same path
+        # that matched the parcel), address lookup as backup.
+        owner_full: str | None = None
+        try:
+            if pid:
+                for c in lookup_properties(dec, county, min_score=0.3):
+                    if (c.pid or "").strip() == pid:
+                        owner_full = c.owner_name or ""
+                        break
+            if not owner_full and prop:
+                hits = lookup_by_address(prop, county)
+                owner_full = (hits[0].get("owner") if hits else "") or ""
+        except Exception:  # noqa: BLE001
+            owner_full = None
+        # Confirmed widow/widower = the deed lists the PR as one owner AND a
+        # SEPARATE owner who shares the decedent's surname (the deceased spouse).
+        # This is spelling-tolerant on first names (Davis "Jeffery" court vs
+        # "Jeffrey" deed still confirms via the shared surname) and correctly
+        # rejects a same-surname son on his OWN deed (Boone: PR "Justin Boone"
+        # co-owns with "Sarah Terry" — no second Boone → not a spouse case). No
+        # owner string at all = inconclusive (soft name-only label).
+        if not owner_full:
+            confirmed: bool | None = None
+        else:
+            parts = [p for p in re.split(r"\s*[|&]\s*", owner_full) if p.strip()]
+            raw = [set(re.findall(r"[a-z]+", p.lower())) for p in parts]
+            ptoks = [t - _OWNER_NOISE for t in raw]
+            pr_idx = [i for i, t in enumerate(ptoks)
+                      if pr_first in t and pr_last in t]
+            # deceased spouse is another owner sharing the surname, OR a
+            # surname-shorthand spouse (WF/HSB) whose own first name (the
+            # decedent's) is on the deed — the guard stops this from firing on
+            # a son who co-owns his OWN home with a spouse (decedent absent).
+            all_toks = set().union(*raw) if raw else set()
+            has_other_same_surname = any(
+                dec_last in t and i not in pr_idx
+                for i, t in enumerate(ptoks))
+            has_spousal_marker = any(
+                (raw[i] & _SPOUSAL_MARKERS) for i in range(len(parts))
+                if i not in pr_idx)
+            confirmed = bool(pr_idx) and (
+                has_other_same_surname
+                or (has_spousal_marker and dec_first in all_toks))
+        if confirmed:
+            code, tagword, qualifier = ("surviving-spouse", "Surviving Spouse",
+                                        "confirmed co-owner on the deed")
+        elif confirmed is None:
+            code, tagword, qualifier = ("likely-surviving-spouse",
+                                        "Surviving Spouse?",
+                                        "name signal only — deed unverified")
+        else:
+            continue  # same surname but NOT on the deed → likely adult child, skip
+        tag_reason(r, code)
+        tags = (r.get("Tags") or "").strip()
+        if tagword not in tags:
+            r["Tags"] = (tags + ", " if tags else "") + tagword
+        pr = (r.get("Personal Representative") or "").strip()
+        _add_note(r, f"[SURVIVING SPOUSE — {pr} ({qualifier}) occupies the home; "
+                     f"longer follow-up but a strong lead, don't skip]")
+        print(f"  SURVIVING-SPOUSE {county}/{r.get('Case No.')}: {pr!r} "
+              f"[{qualifier}]")
+        n += 1
+    return n
+
+
 def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"\n=== {tag.upper()}: {src_path.name} ===")
     with src_path.open(newline="", encoding="utf-8-sig") as f:
@@ -5872,6 +6004,13 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         print("Step 3.8: reroute professional-fiduciary/administrator PR contact to the top heir")
         n_reroute, n_fid_flag = reroute_professional_fiduciary_pr(rows)
         print(f"  Rerouted to heir: {n_reroute}  Flagged-only (verify/no-heir): {n_fid_flag}")
+
+    if os.environ.get("NC_SPOUSE_FLAG") == "0":
+        print("Step 3.9: surviving-spouse flag — skipped (NC_SPOUSE_FLAG=0)")
+    else:
+        print("Step 3.9: flag surviving-spouse-occupied homes among kept court-confirmed rows")
+        n_spouse = flag_surviving_spouse_occupied(rows)
+        print(f"  Surviving-spouse homes flagged: {n_spouse}")
 
     print("Step 4: filter to has-parcel; promote DM/beneficiary or apply 'Heirs of' fallback")
     kept, dropped, dm_promoted, promoted, heirs = prep_for_datasift(rows)
