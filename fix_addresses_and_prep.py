@@ -5413,6 +5413,190 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
     return flagged
 
 
+def _add_note(row: dict, note: str) -> None:
+    """Append a bracketed note line to Notes if not already present."""
+    existing = (row.get("Notes") or "").strip()
+    if note in existing:
+        return
+    row["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+
+
+# ── Professional-fiduciary PR detection + heir reroute (Step 3.8) ──────────
+# When the court-appointed PR is a professional/administrator (attorney,
+# paralegal, public or corporate administrator) rather than a family member,
+# marketing to them is wasted postage — they won't sell the house. Redirect the
+# mail contact + DM to the top individual heir instead. See
+# project_administrator_pr_heir_routing memory. Motivating case: Wise
+# 26E002687-590 Week 30 — PR "Mary Immen" at "8008 Corporate Center Drive Ste
+# 206", decedent/heirs are "Wise".
+#
+# CSV-visible signals (validated zero-false-positive across Weeks 28-30):
+#   * corp  — business/fiduciary mailing address (Ste/Suite/PLLC/LLP/law/…)
+#   * mismatch — PR surname absent from the beneficiary surnames
+# A future upgrade can also consult the true eCourts connection_type
+# (administrator/applicant vs executor), captured at scrape time but flattened
+# to "executor" by output. Off-switch: NC_ADMIN_REROUTE=0.
+_FIDUCIARY_ADDR_RE = re.compile(
+    r"\b(suite|ste)\b"
+    r"|\bcorporate\s+(center|plaza|park)\b"
+    r"|\b(pllc|llp)\b"
+    r"|\blaw\s+(office|offices|firm|group)\b"
+    r"|\b(attorney|attorneys|fiduciary|paralegal)\b"
+    r"|\btrust\s+(co|company)\b", re.I)
+
+
+def _surname_of(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if "," in name:
+        return name.split(",")[0].strip().lower()
+    return name.split()[-1].strip().lower()
+
+
+def _beneficiary_surnames(row: dict) -> set[str]:
+    raw = row.get("Beneficiaries") or ""
+    lines = raw.split("\n") if "\n" in raw else raw.split(" | ")
+    out: set[str] = set()
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.lower() == "beneficiary":
+            continue
+        s = _surname_of(ln.split(" - ")[0].strip())
+        if s:
+            out.add(s)
+    return out
+
+
+def _pick_reroute_heir(row: dict, pr_last: str) -> dict | None:
+    """Best individual heir to become the mail contact. Parses every
+    Beneficiaries line, drops the PR themselves, and prefers a heir with a real
+    house-numbered street (better for direct mail), then an in-state address.
+    """
+    raw = (row.get("Beneficiaries") or "").strip()
+    if not raw:
+        return None
+    lines = raw.split("\n") if "\n" in raw else raw.split(" | ")
+    cands = []
+    for ln in lines:
+        h = _parse_beneficiary_line(ln.strip())
+        if h and _surname_of(h["name"]) != pr_last:
+            cands.append(h)
+    if not cands:
+        return None
+    def rank(h):
+        s = 0
+        if (h.get("street") or "")[:1].isdigit():   # has a house number
+            s += 2
+        if (h.get("state") or "").upper() == "NC":
+            s += 1
+        return s
+    cands.sort(key=rank, reverse=True)
+    return cands[0]
+
+
+def reroute_professional_fiduciary_pr(rows: list[dict]) -> tuple[int, int]:
+    """Redirect the contact/DM from a professional-fiduciary PR to the top heir.
+
+    Returns (rerouted, flagged_only). Rerouted rows have their First/Last +
+    Mailing + DM set to the heir and keep the professional as Personal
+    Representative (record). Softer matches are only tagged.
+    """
+    rerouted = flagged = 0
+    for r in rows:
+        pr = (r.get("Personal Representative") or "").strip()
+        if not pr or pr.lower().startswith("heirs of"):
+            continue  # no court PR, or already on the deep-prospect heir path
+        mail = " ".join(filter(None, [
+            r.get("Mailing Address"), r.get("Mailing City"),
+            r.get("Mailing State"), r.get("Mailing Zip")]))
+        corp = bool(_FIDUCIARY_ADDR_RE.search(mail))
+        role = " ".join(filter(None, [
+            r.get("PR Relationship (App)"), r.get("PR Relationship (Will)")]))
+        role_admin = bool(re.search(r"administ|applicant", role, re.I))
+        if not (corp or role_admin):
+            continue
+        pr_last = (r.get("Last Name") or _surname_of(pr)).strip().lower()
+        bene_surnames = _beneficiary_surnames(r)
+        mismatch = bool(bene_surnames) and pr_last not in bene_surnames
+        if not (corp and mismatch):
+            tag_reason(r, "verify-pr-fiduciary")   # softer signal — flag, don't rewrite
+            flagged += 1
+            continue
+        heir = _pick_reroute_heir(r, pr_last)        # best individual heir (not the PR)
+        if not heir:
+            tag_reason(r, "admin-pr-no-heir")        # deep-prospect will chase heirs
+            flagged += 1
+            continue
+        r["First Name"] = heir["first"]
+        r["Last Name"] = heir["last"]
+        r["Mailing Address"] = heir["street"]
+        r["Mailing City"] = heir["city"]
+        r["Mailing State"] = heir["state"]
+        r["Mailing Zip"] = heir["zip"]
+        r["DM Name"] = f"{heir['last']}, {heir['first']}".strip(", ")
+        r["DM Relationship"] = "heir"
+        tag_reason(r, "admin-pr-rerouted")
+        _add_note(r, f"[ADMIN-PR REROUTE: court PR '{pr}' is a professional "
+                     f"fiduciary ({mail.strip()}); contact redirected to heir "
+                     f"{heir['name']}]")
+        print(f"  ADMIN-REROUTE {r.get('County')}/{r.get('Case No.')}: "
+              f"{pr!r} -> heir {heir['name']!r}")
+        rerouted += 1
+    return rerouted, flagged
+
+
+# ── Vacant-lot street inference (Step 3.65) ───────────────────────────────
+# Catawba (empirically the ONLY county that produces "No Address") leaves the
+# situs street blank on many vacant parcels — and it has no map geometry to
+# reverse-geocode (parcel_centroid returns None) and a null `paddress` in its
+# GeoServer feed. The only signal that exists is the owner/PR mailing road,
+# which the row already carries as Mailing Address. When it parses, apply
+# Oren's vacant-lot convention "0 <road>" and TAG it verify-street-inferred:
+# it is an INFERENCE from the mailing, not a recorded situs. Low harm — the
+# mail piece goes to the PR mailing (not this field) and PID drives
+# DataSift/LandPortal resolution, so a wrong road here is identification-only.
+# Off-switch: NC_STREET_INFER=0.
+_STREET_SUFFIX_RE = re.compile(
+    r"\b(rd|road|st|street|ln|lane|dr|drive|ave|avenue|hwy|highway|ct|court|"
+    r"blvd|way|cir|circle|pl|place|trl|trail|loop|pkwy|ter|terrace|run|path|"
+    r"row|pike|xing|crossing)\b", re.I)
+
+
+def _road_from_mailing(addr: str) -> str:
+    """'3580 Yount Rd' -> 'Yount Rd'. '' for PO boxes or non-street strings."""
+    a = (addr or "").strip().rstrip(".")
+    if not a or re.search(r"\bp\.?\s*o\.?\s*box\b", a, re.I):
+        return ""
+    if not _STREET_SUFFIX_RE.search(a):
+        return ""
+    toks = a.split()
+    if toks and re.match(r"^\d", toks[0]):   # drop a leading house number
+        toks = toks[1:]
+    return " ".join(toks).strip()
+
+
+def fill_vacant_street_from_mailing(rows: list[dict]) -> int:
+    filled = 0
+    for r in rows:
+        pa = (r.get("Property Address") or "").strip()
+        if pa.lower() not in ("no address", "") and pa != "0":
+            continue
+        if "vacant" not in (r.get("Property use") or "").lower():
+            continue
+        road = _road_from_mailing(r.get("Mailing Address") or "")
+        if not road:
+            continue
+        r["Property Address"] = f"0 {road}"
+        tag_reason(r, "verify-street-inferred")
+        _add_note(r, f"[STREET INFERRED from mailing road — situs street is "
+                     f"blank in county GIS; verify frontage]")
+        print(f"  STREET-INFER {r.get('County')}/{r.get('Case No.')}: "
+              f"'No Address' -> '0 {road}'")
+        filled += 1
+    return filled
+
+
 def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"\n=== {tag.upper()}: {src_path.name} ===")
     with src_path.open(newline="", encoding="utf-8-sig") as f:
@@ -5671,9 +5855,23 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     n_centroid = fill_property_location_via_centroid(rows)
     print(f"  Filled via centroid geocode: {n_centroid}")
 
+    if os.environ.get("NC_STREET_INFER") == "0":
+        print("Step 3.65: vacant-lot '0 <road>' inference — skipped (NC_STREET_INFER=0)")
+    else:
+        print("Step 3.65: infer vacant-lot street '0 <road>' from mailing where county GIS has no situs (Catawba)")
+        n_street_inf = fill_vacant_street_from_mailing(rows)
+        print(f"  Vacant 'No Address' rows filled from mailing road: {n_street_inf}")
+
     print("Step 3.7: keep+flag blank-parcel rows with a distinct low-confidence match (review band)")
     n_lowconf = flag_low_confidence_parcels(rows)
     print(f"  Low-confidence parcels flagged (kept for review): {n_lowconf}")
+
+    if os.environ.get("NC_ADMIN_REROUTE") == "0":
+        print("Step 3.8: professional-fiduciary PR heir-reroute — skipped (NC_ADMIN_REROUTE=0)")
+    else:
+        print("Step 3.8: reroute professional-fiduciary/administrator PR contact to the top heir")
+        n_reroute, n_fid_flag = reroute_professional_fiduciary_pr(rows)
+        print(f"  Rerouted to heir: {n_reroute}  Flagged-only (verify/no-heir): {n_fid_flag}")
 
     print("Step 4: filter to has-parcel; promote DM/beneficiary or apply 'Heirs of' fallback")
     kept, dropped, dm_promoted, promoted, heirs = prep_for_datasift(rows)
