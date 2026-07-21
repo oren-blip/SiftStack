@@ -5517,6 +5517,15 @@ def reroute_professional_fiduciary_pr(rows: list[dict]) -> tuple[int, int]:
         if not (corp or role_admin):
             continue
         pr_last = (r.get("Last Name") or _surname_of(pr)).strip().lower()
+        # A PR who shares the DECEDENT's surname is family (spouse/child/sibling),
+        # never a professional fiduciary — even at a business-looking address and
+        # even absent from the beneficiary list (Barbee 26E000725-120 admin "Paul
+        # Barbee"; Kesler "Donald Kesler"). In NC intestate estates the court role
+        # is usually "administrator/applicant" for these family members too, so
+        # the surname is the real discriminator, not the role.
+        _, dec_last = _dec_first_last(r.get("Deceased Owner") or "")
+        if dec_last and pr_last == dec_last:
+            continue
         bene_surnames = _beneficiary_surnames(r)
         mismatch = bool(bene_surnames) and pr_last not in bene_surnames
         if not (corp and mismatch):
