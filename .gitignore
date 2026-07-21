@@ -81,7 +81,9 @@ Thumbs.db
 *.swp
 
 # Claude Code / planning
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/commands/
 .planning/
 .playwright-mcp/
 
