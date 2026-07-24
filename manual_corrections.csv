@@ -14,3 +14,16 @@ Case No.,Field,Value
 26E000688-480,Mailing Address,910 Crossroads Dr
 26E000688-480,Mailing City,Statesville
 26E000688-480,Mailing Zip,28625
+# --- Week 30 review (2026-07-22) ---
+# Medlin: pipeline's "surviving spouse" flag mislabeled the occupant DAUGHTER
+# (Tamala, 416 Maupin) as contact. Obit (Clark Funeral Home): wife Bessie
+# predeceased; property titled to son Joseph Jr in Tampa FL (the real owner).
+# Retarget the mailing to the out-of-state owner; Tamala stays a local 2nd contact.
+26E000756-790,First Name,Joseph
+26E000756-790,Last Name,Medlin
+26E000756-790,Mailing Address,817 E. New Orleans Ave.
+26E000756-790,Mailing City,Tampa
+26E000756-790,Mailing State,FL
+26E000756-790,Mailing Zip,33603
+26E000756-790,DM Name,Joseph Medlin Jr
+26E000756-790,DM Relationship,son (owner)
