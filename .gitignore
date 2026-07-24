@@ -68,6 +68,10 @@ storage/
 # Test data & photos
 test_photos/
 
+# Challenge recordings (huge video files; transcripts in knowledge/ are tracked)
+knowledge/**/videos/
+*.mp4
+
 # Skills distribution ZIPs (large, distributed separately)
 Skills for REI/
 *.skill
@@ -98,3 +102,8 @@ SiftStack Resend API.txt
 
 # DataSift automation debug screenshots (throwaway)
 datasift_*.png
+
+# Pipeline run lock — runtime state written/removed by each nightly build
+# (scripts/pipeline_lock.py), not code. Tracking it makes git flip-flop on
+# every run and risks committing a stale lock that blocks the next build.
+state/pipeline.lock

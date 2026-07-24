@@ -1,0 +1,196 @@
+00:02:00	John Sudlow:	Good afternoon everyone!
+00:02:15	Sarah Samson:	Hey all!
+00:03:35	John Sudlow:	Reacted to "Hey all!" with 👍
+00:09:16	Christian Hernandez:	Chris is cold!
+00:10:58	Kristi Taylor:	Happy Thursday!
+00:11:26	Kristi Taylor:	wow
+00:11:34	Phil Loesch:	it is worth it
+00:11:43	Jill Pachicano:	so very true
+00:11:52	John Sudlow:	Reacted to "it is worth it" with ❤️
+00:12:34	Assaf Barak:	Did Ty say 5 full days to set up Siftstack?
+00:12:53	Sarah Samson:	Replying to "Did Ty say 5 full da..."
+
+Yes
+00:13:13	Assaf Barak:	Replying to "Did Ty say 5 full days to set up Siftstack?"
+
+I need to go on a Siftstack vacation...
+00:13:30	Dino Brown:	Reacted to "I need to go on a Siftstack vacation..." with 😂
+00:13:30	Jerome Hill:	My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!
+00:14:02	Robin Adair:	Reacted to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!" with 👍🏻
+00:14:06	Dino Brown:	Replying to "Did Ty say 5 full days to set up Siftstack?"
+
+I am right there with you, Assaf 😂!
+00:14:12	Vishal Gupta:	Replying to "My dog died and I wa..."
+
+Sorry to hear Jerome
+00:14:38	Derek Wheeler:	If you use ChatGPT, very similar Nara.
+00:14:44	Jerome Hill:	Replying to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!"
+
+@Vishal Gupta thanks!
+00:14:49	Craig K:	was it hard to set up new siftstack presets?  i got super confused for some reason even though i set up the probate/obituary presets.
+00:14:59	Jill Pachicano:	Replying to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!"
+
+Yes, sorry for loss. Loss of a pet is a huge impact.
+00:15:15	Derek Wheeler:	Replying to "was it hard to set u..."
+
+But way better IMO (and Ty’s from what I heard/see lol)
+00:15:24	Robin Adair:	Replying to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!"
+
+Sorry Buddy!  Dog is definitely Man's Best Friend!
+00:16:10	Derek Wheeler:	Reacted to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!" with 🙏🏽
+00:16:22	John Sudlow:	Replying to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!"
+
+Hey Jerome, I'm really sorry to hear about the passing of your dog. It's devastating. I know exactly how you feel.
+00:16:31	Jerome Hill:	Replying to "My dog died and I was pissed and didn't want to see any humans, so I sat in my office and got siftstack done in 3 days. It keeps evolving and growing and I don't know how I ever lived without it! Take the time and get it done!"
+
+@Robin Adair Thanks! Definitely!
+00:16:45	Robin Adair:	Reacted to "@Robin Adair Thanks! Definitely!" with 👍🏻
+00:16:59	Jerome Hill:	Reacted to "Yes, sorry for loss. Loss of a pet is a huge impact." with ❤️
+00:17:08	Jerome Hill:	Reacted to "Hey Jerome, I'm really sorry to hear about the passing of your dog. It's devastating. I know exactly how you feel." with ❤️
+00:17:46	Assaf Barak:	Replying to "Did Ty say 5 full days to set up Siftstack?"
+
+I'm already looking for getaway places, I'll try to get us a group deal lol
+00:18:45	Nara DMV:	Reacted to "If you use ChatGPT..." with 👍
+00:18:49	Phil Loesch:	Does anyone here cover Montgomery AL
+00:19:17	Craig K:	we should get on a zoom and do it together i think that would be great
+00:19:27	Dustin R.:	Reacted to "we should get on a zoom and do it together i think that would be great" with 👍🏻
+00:19:33	Christian Hernandez:	Reacted to "we should get on a zoom and do it together i think that would be great" with 👍🏻
+00:19:49	Christian Hernandez:	Reacted to "I need to go on a Siftstack vacation..." with 😂
+00:19:50	Craig K:	This stuff has to be set up right, that is why we are here
+00:19:52	Ty Garrett:	I just reviewed everything that you submitted. I found an error where a lot of the property addresses seemed to be slightly inaccurate compared with what you actually scraped from the county auditor. Can you go back and verify the issue you found there? Fix that problem, run it again, and it should look like X or Y. If it doesn't look like that, run this in a loop until it is actually fully correct.Once you have done this process, let me know. I will then check it again. Lastly, whenever we have wrapped all this up and verified that it is all correct, we are going to update the CLAUDE.md file and all of the memory files associated with this so we do not make the same mistake twice.
+00:20:16	Assaf Barak:	Replying to "Does anyone here cover Montgomery AL"
+
+I do some deals there.. Have a good local JV guy I work with. PM me what you need.
+00:20:30	Christian Hernandez:	Replying to "Did Ty say 5 full da..."
+
+Ive been trying to set it up for over a month 🤣
+00:21:17	Sarah Samson:	Replying to "Did Ty say 5 full da..."
+
+I’ve been procrastinating and working without it… don’t recommend that as a long term option either LOL
+00:21:30	John Sudlow:	Reacted to "I’ve been procrastinating and working without it… don’t recommend that as a long term option either LOL" with 👍
+00:21:42	Craig K:	Hey Ty can claude go in and set up presets, i tried but it kept asking questions. im sure api will make it easier
+00:21:58	John Sudlow:	Replying to "Did Ty say 5 full days to set up Siftstack?"
+
+@Sarah Samson It is intimidating, but I got through it, and I'm not really a big computer guy. Just take your time, and you can ask Claude questions and ask it to fix things. That's what's great about it.
+00:22:16	Sarah Samson:	Reacted to "@Sarah Samson 
+It is..." with 👍
+00:22:25	Dino Brown:	Reacted to "I'm already looking for getaway places, I'll try to get us a group deal lol" with 😂
+00:23:52	Phil Loesch:	Replying to "Does anyone here cover Montgomery AL"
+
+I got a lead there, send me an email and I will send you the info. I don't want to spend anytime on it since I don't know it. Rather just hand it off. Phil@3genfam.com
+00:24:15	JC:	Reacted to @Sarah Samson 
+It is... with "👍"
+00:25:01	Assaf Barak:	Replying to "Does anyone here cover Montgomery AL"
+
+sent
+00:25:03	JC:	Replying to "Did Ty say 5 full da..." 
+
+ It's worth doing once everything's set up
+00:28:05	John Sudlow:	Reacted to "It's worth doing once everything's set up" with 👍
+00:32:25	Joey Smajd:	Replying to "Does anyone here cov..." 
+
+ Im 90min away if it's juicy I'll walk it
+00:33:30	Joey Smajd:	Replying to "Does anyone here cov..." 
+
+ Can get there & back before Ty finishes talking 😉😂
+00:34:55	Christian Hernandez:	Replying to "Does anyone here cov..."
+
+@Phil Loesch you don’t do virtual deals?
+00:39:59	Ron Michael Mallari:	Hi can I get help accepting someone in the waiting room.
+00:42:32	Phil Loesch:	Replying to "Does anyone here cover Montgomery AL"
+
+I do virtual, but my highest and best use of time is in my market.
+00:43:12	Allen Wallace:	Reacted to "Hi can I get help accepting someone in the waiting room." with ‼️
+00:44:23	Tyler Austin:	You can filter by tasks/events on the records page, siftline , and also there’s an events tab on left side
+00:46:16	Joey Smajd:	Reacted to I do virtual, but my... with "👍"
+00:46:44	Dustin R.:	@Ty Garrett is a Claude Skill that can do a full Title Search or can we build one??
+00:47:17	Aileen Arnoco:	Reacted to "You can filter by tasks/events on the records page, siftline , and also there’s an events tab on left side" with 👍
+00:57:58	Christian Hernandez:	Don’t forget to star the number bro!
+00:58:04	Tyler Austin:	Reacted to "Don’t forget to star the number bro!" with 👌
+00:58:11	Shani Smith:	Reacted to "Don’t forget to star the number bro!" with 👍
+01:00:07	Dylan Boyd:	This can also be done with sequences right? New Lead Status trigger- add task and assigned to lead manager, create card on lead board.
+01:01:38	Christian Hernandez:	Replying to "This can also be don..."
+
+Yes
+01:05:20	Gordon Thornton:	Right hat in the right seat
+01:05:32	Tyler Austin:	Reacted to "Right hat in the right seat" with 👌
+01:05:36	Tyler Austin:	Reacted to "This can also be done with sequences right? New Lead Status trigger- add task and assigned to lead manager, create card on lead board." with 👌
+01:10:50	Christian Hernandez:	Damn and the pink toe hurts too lol
+01:11:18	Derek Wheeler:	Reacted to "I need to go on a Siftstack vacation..." with 😂
+01:17:56	Ty Garrett:	https://github.com/lfiaschi/audiencekit
+01:18:31	Tyler Austin:	Stepping away a bit , don’t to forget we have a details lead management training under help center , we host it live monthly , I highly recommend taking that because it’s a lot info to try and cover in this challenge. 
+
+But it’s step by step
+01:18:45	Phil Loesch:	Reacted to "Stepping away a bit , don’t to forget we have a details lead management training under help center , we host it live monthly , I highly recommend taking that because it’s a lot info to try and cover in this challenge. 
+
+But it’s step by step" with 👏
+01:19:49	Gordon Thornton:	Reacted to "Stepping away a bit , don’t to forget we have a details lead management training under help center , we host it live monthly , I highly recommend taking that because it’s a lot info to try and cover in this challenge. 
+
+But it’s step by step" with ❤️
+01:21:31	Micah Redden:	Reacted to "Stepping away a bit , don’t to forget we have a details lead management training under help center , we host it live monthly , I highly recommend taking that because it’s a lot info to try and cover in this challenge. 
+
+But it’s step by step" with 👏
+01:22:39	Assaf Barak:	Phil do you do that manually or have an ai that does that? And only transcribe or also summarize give recommendations etc?
+01:23:41	Ty Garrett:	Hey, I just uploaded the cold calling skill, the lead management skill, and the closing skill. These are all for the coaching frameworks for getting a higher-performing team in terms of the sales process. Can you help me set this up? I'm on X tool for calling. I'm on Y tool for transcribing, and these are my team members whose calls you're going to be listening to
+01:24:11	Ty Garrett:	I want you to go back and pull all of the notable calls in the last week from our team. Let's go ahead and pull just Adriana and Tina's calls in for the week and give me an idea of what that looks like.
+01:25:16	Ty Garrett:	https://docs.google.com/spreadsheets/d/18TdhghJw5yE-BVJyrBDmto5oj4AjSkBJ/edit?usp=sharing&ouid=114370733537958861976&rtpof=true&sd=true
+01:26:15	Nara DMV:	Once the API integration happens, will this feature be better at teaching VAs to improve their call skills
+01:26:28	dustinbrooks:	It works on mine
+01:26:39	Lav:	it worked on mine - was able to hear the call
+01:26:52	Joshua English SOUTH JERSEY:	Different links have different destinations
+01:27:04	Joshua English SOUTH JERSEY:	the audio or the sift
+01:27:06	Dylan Boyd:	Some links go to the call, some links go to the record
+01:28:32	Vishal Gupta:	That is awesome! This will be great to train the callers
+01:32:33	Jill Pachicano:	This is great! Thank you.
+01:34:26	Dustin R.:	@Ty Garrett What OCR are you using to read and look image docs???
+01:47:16	Abe i:	BOOOM
+01:48:25	Abe i:	Ty I feel u live in 2036 and we are here in 2026 LOL
+01:48:39	Robin Adair:	Replying to "Ty I feel u live in 2036 and we are here in 2026 LOL"
+
+Isn't that the truth
+01:48:43	Nara DMV:	Reacted to "Ty I feel u live i..." with 💯
+01:48:52	Dion Parba:	Reacted to "Ty I feel u live in 2036 and we are here in 2026 LOL" with 💯
+01:49:03	Nara DMV:	Replying to "Ty I feel u live i..."
+
+That's exactly my thought too lmao
+01:49:23	Robin Adair:	Reacted to "Ty I feel u live in 2036 and we are here in 2026 LOL" with 💯
+01:52:51	Assaf Barak:	Reacted to "Ty I feel u live in 2036 and we are here in 2026 LOL" with 💯
+01:58:31	Vishal Gupta:	Giphy [ID:5aLrlDiJPMPFS]
+[Full message cannot be displayed on this version]
+01:59:00	Shani Smith:	Reacted to "Giphy [ID:5aLrlDiJPMPFS]" with 😂
+02:03:07	Josh Goodwin:	This is pure GOLD.
+02:05:58	Phil Loesch:	i creted a skill to do that @Micah Redden super easy
+02:05:59	Amit Raut:	Where can we get access to these videos/trainings?
+02:06:50	Ty Garrett:	https://www.facebook.com/groups/reisift
+02:07:10	Craig K:	Reacted to "Hi can I get help accepting someone in the waiting room." with 👍
+02:15:43	Micah Redden:	Reacted to "i creted a skill to do that @Micah Redden super easy" with 👍
+02:15:56	Micah Redden:	Replying to "i creted a skill to do that @Micah Redden super easy"
+
+I just put it on my calendar to do next week!
+02:16:58	Christian Hernandez:	Can you show the filters again pls
+02:18:17	Ty Garrett:	can you please pull in the top 25 buyers using the file that I uploaded here from Sift, and then also use the files that are inside of the buyer-prospector skill?
+02:18:57	Christian Hernandez:	This is insane!!!!
+02:19:03	Christian Hernandez:	🔥
+02:21:58	Ty Garrett:	I want you to:1. Pull in the top 25 buyers.2. Exclusively focus on individual people that are ideal for wholesaling properties.3. Exclude governmental entities, large home developers, hedge funds, or any I buyers.4. Do your best to research each of the individual entities to understand the profile of that person.5. Exclude all of those.6. Come back and find the best 25 according to the rubric of this skill.
+02:22:39	Nara DMV:	its great information:)
+02:23:33	Megan McFarland:	This is great!
+02:23:49	Rick Gamboa:	only 5 times!
+02:24:00	Phil Loesch:	THIS
+02:24:26	Craig K:	incredible, my mind is blown
+02:27:34	Nara DMV:	Reacted to "incredible, my min..." with ❤️
+02:37:48	Robin Adair:	Audantic
+02:37:54	Joey Smajd:	Audantic
+02:38:02	Joey Smajd:	Reacted to Audantic with "👍"
+02:38:43	Micah Redden:	Shade...
+02:38:53	Joey Smajd:	Reacted to Shade... with "😂"
+02:39:14	Carlos Torres:	Do you have any coaching agents or skills for dispo?
+02:39:42	Carlos Torres:	Sales Coaching
+02:44:22	Ty Garrett:	https://www.loom.com/share/a5e3fccd338945dea5af9f65811bfa16
+02:51:13	Jill Pachicano:	What are the dates of the next 5 Day challenge?
+02:52:08	Jill Pachicano:	THanks!
+02:54:03	Abe i:	I need this guide
+02:54:04	Abe i:	plz
+02:54:09	Christian Hernandez:	Thanks guys!
+02:54:14	Abe i:	Facebook link plz?
+02:54:16	Abe i:	For the group
+02:54:16	Rick Gamboa:	Thanks!
