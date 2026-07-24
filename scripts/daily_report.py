@@ -243,6 +243,92 @@ def compute_diffs(today_rows: list[dict], yesterday_rows: list[dict]) -> dict:
     }
 
 
+# One-line plain-English description per Match Reason tag, shown as a glossary
+# under the distribution and appended inline to each line. Dynamic-suffix tags
+# (lot-cluster-N, low-confidence-parcel(NN%)) are matched by prefix in
+# _describe_reason(). Keep in sync with tag_reason() calls in fix_addresses_and_prep.py.
+REASON_GLOSSARY: dict[str, str] = {
+    "(scrape direct)": "Parcel + PR came straight from the court record — no guessing",
+    "default-sfr": "Property type unknown — labeled Single-Family (safe default)",
+    "addr-corrected": "Property street address fixed/standardized from county records",
+    "centroid-geocode": "No exact street number — map pin placed at the parcel's center",
+    "name-research": "Property found by searching county records for the deceased's name",
+    "name-nearmiss-addr-corroborated": "Name wasn't exact but the address confirmed it — treated as solid",
+    "decedent-address": "Property matched using the deceased's own address from the court file",
+    "app-realestate-parcel": "Parcel read from the real-estate section of the court Application PDF",
+    "collapsed-same-property": "Duplicate rows for the same property merged into one",
+    "condo-overruled-by-zillow": "Zillow says it's a house, not a condo — kept",
+    "lincoln-ahdesc-structure": "Lincoln County structure type read from the GIS description field",
+    # --- flagged: the matcher made a call but isn't fully sure (eyeball) ---
+    "verify-middle-initial": "Matched via middle initial to separate same-named people — double-check",
+    "verify-name-nomiddle": "Name matched but deed had no middle name to confirm — eyeball",
+    "verify-name-ambiguous": "Several people could fit the name — best guess, eyeball",
+    "verify-swap-lowconf": "Parcel swapped in with low confidence — eyeball",
+    "verify-swap-ambiguous": "Parcel swap was ambiguous — eyeball",
+    "low-confidence-parcel": "Property match scored below the 'strong' bar — eyeball",
+    "addr-uncorroborated": "Address applied but not independently confirmed — eyeball",
+    "verify-occupied-confirmed": "Court-confirmed home the surviving spouse occupies — kept (locked)",
+    # --- multi-parcel / land ---
+    "lot-cluster": "Estate with adjacent lots on one street — mobile-home-on-land play",
+    "swap-on-dq": "Main property disqualified (e.g. heir lives there) — mailed a different estate parcel",
+    "swap-on-over-cap": "Main house over your $500K cap — points to an under-cap estate parcel",
+    "subdivide-exempt": "SFR/MH on >2 acres — gets the $1M cap (land is the play)",
+    "tiny-vacant-lot": "Small vacant lot (low standalone value)",
+    # --- where the contact / PR came from ---
+    "heirs-of-fallback": "No usable PR/beneficiary — contact defaults to 'Heirs of [Deceased]' (deep-prospecting)",
+    "coowner-dm": "Contact taken from a co-owner on the deed",
+    "coowner-address": "Mailing address taken from a co-owner on the deed",
+    "dm-promoted-pr": "No court executor — the obituary-found living heir (a real person) was promoted to mail target",
+    "beneficiary-promoted-pr": "No court executor + no obit heir — a named beneficiary (real person w/ address) was promoted to mail target",
+    "beneficiary-address": "Mailing address taken from a named beneficiary",
+    "pr-backfill-parties": "PR filled from the eCourts Parties list",
+    "pr-from-app-over-obit": "PR taken from the court Application, overriding a weaker obituary guess",
+    "pr-from-app-override": "PR taken from the court Application, overriding another source",
+    "pr-people-search": "PR's address found via free people-search",
+    "pr-tracerfy": "PR's contact found via Tracerfy skip trace",
+    "tracerfy": "Contact found via Tracerfy skip trace",
+    "mailing-from-property": "PR mailing filled from the property address (so mail still lands)",
+    "mailing-addr-split": "Mailing address split out of a combined field",
+    "second-pass-obit-full": "Heir/PR found on a second obituary pass (full-name match)",
+    "second-pass-obit-name-only": "Heir/PR found on a second obituary pass (name-only match)",
+    # --- case data / values ---
+    "landportal-revalued": "Vacant lot's value filled from the LandPortal data source",
+    "late-doc-apply": "A court document arrived late — its info was applied",
+    "small-estate-disposed-recent": "Recently-filed small-estate/disposed case (you work these)",
+    "small-estate-address": "Property address from a small-estate filing",
+    "heir-transferred-deed": "Deed already moved to a next-gen heir — still a lead, flagged",
+    "dq-recently-sold": "Flagged — the property sold recently",
+    "rowan-condo": "Rowan County condo (flagged — condos are normally dropped)",
+    "audit-repick": "Nightly audit re-picked a better parcel for this case",
+    "audit-blanked": "Nightly audit removed a parcel that no longer passes the matcher",
+    "pdf-phone": "Phone number pulled from the court PDF",
+    "pdf-phone-verified": "Phone number pulled from the court PDF and cross-checked",
+}
+
+# Tags meaning "matched, but not fully sure" — summed into the 'Cases to eyeball'
+# headline. Matched by prefix so dynamic-suffix variants are included.
+_EYEBALL_PREFIXES = (
+    "verify-middle-initial", "verify-name-nomiddle", "verify-name-ambiguous",
+    "verify-swap-lowconf", "verify-swap-ambiguous",
+    "low-confidence-parcel", "addr-uncorroborated",
+)
+
+
+def _describe_reason(tag: str) -> str:
+    """Plain-English one-liner for a Match Reason tag (handles dynamic suffixes)."""
+    if tag in REASON_GLOSSARY:
+        return REASON_GLOSSARY[tag]
+    for key, desc in REASON_GLOSSARY.items():
+        if tag.startswith(key):
+            return desc
+    return ""
+
+
+def _is_eyeball_reason(tag: str) -> bool:
+    """True if the tag means the matcher made an uncertain call worth a glance."""
+    return any(tag.startswith(p) for p in _EYEBALL_PREFIXES)
+
+
 def render_report(
     workbook_path: Path | None,
     workbook_rows: list[dict],
@@ -252,6 +338,7 @@ def render_report(
     heir_transfer_rows: list[dict],
     polish_stats: dict,
     runtime_min: float | None,
+    include_heir_transfer: bool = False,
 ) -> str:
     today_str = date.today().strftime("%a %b %d, %Y")
     diffs = compute_diffs(today_csv_rows, yesterday_csv_rows)
@@ -271,6 +358,8 @@ def render_report(
     lines.append(f"  Workbook:           {workbook_path.name if workbook_path else '(missing!)'}")
     lines.append(f"  Total cases:        {total}")
     lines.append(f"  New today:          {len(new_today)}")
+    eyeball_n = sum(n for tag, n in diffs["reason_today"].items() if _is_eyeball_reason(tag))
+    lines.append(f"  Cases to eyeball:   {eyeball_n}   (uncertain matches — see >> rows below)")
     if runtime_min is not None:
         lines.append(f"  Pipeline runtime:   {runtime_min:.0f} min")
     lines.append("")
@@ -329,26 +418,27 @@ def render_report(
             lines.append(f"  ... and {len(pc) - 15} more")
     lines.append("")
 
-    # Heir-transfer
-    lines.append("HEIR-TRANSFER FLAGS (review file)")
-    if not heir_transfer_rows:
-        lines.append("  (none flagged)")
-    else:
-        # Count unique decedents
-        unique_decedents = {(r.get("County"), r.get("Case No.")) for r in heir_transfer_rows}
-        lines.append(f"  {len(unique_decedents)} decedent(s) with {len(heir_transfer_rows)} candidate parcel(s) flagged")
-        # Top 5 highest-acreage rows (proxy for "biggest lead")
-        # Heir-transfer XLSX may not have acreage; just show first 5 by case
-        # Group by case
-        by_case: dict[tuple, list[dict]] = {}
-        for r in heir_transfer_rows:
-            key = (r.get("County"), r.get("Case No."), r.get("Deceased Owner"))
-            by_case.setdefault(key, []).append(r)
-        for (cty, cn, dec), cands in list(by_case.items())[:5]:
-            lines.append(f"  {cn}  {cty}  {dec}  ({len(cands)} candidate parcels)")
-        if len(by_case) > 5:
-            lines.append(f"  ... and {len(by_case) - 5} more decedents")
-    lines.append("")
+    # Heir-transfer — off by default (Oren, 2026-07-18). The review XLSX still
+    # generates in output/; it's just no longer summarized here or emailed.
+    # Re-enable with `daily_report.py --include-heir-transfer`.
+    if include_heir_transfer:
+        lines.append("HEIR-TRANSFER FLAGS (review file)")
+        if not heir_transfer_rows:
+            lines.append("  (none flagged)")
+        else:
+            # Count unique decedents
+            unique_decedents = {(r.get("County"), r.get("Case No.")) for r in heir_transfer_rows}
+            lines.append(f"  {len(unique_decedents)} decedent(s) with {len(heir_transfer_rows)} candidate parcel(s) flagged")
+            # Group by case; show first 5
+            by_case: dict[tuple, list[dict]] = {}
+            for r in heir_transfer_rows:
+                key = (r.get("County"), r.get("Case No."), r.get("Deceased Owner"))
+                by_case.setdefault(key, []).append(r)
+            for (cty, cn, dec), cands in list(by_case.items())[:5]:
+                lines.append(f"  {cn}  {cty}  {dec}  ({len(cands)} candidate parcels)")
+            if len(by_case) > 5:
+                lines.append(f"  ... and {len(by_case) - 5} more decedents")
+        lines.append("")
 
     # Polish drops
     lines.append("POLISH DROPS")
@@ -453,11 +543,14 @@ def render_report(
     # no polish-step fallback fired). Other tags name the fallback step.
     reason_today = diffs["reason_today"]
     lines.append("MATCH REASON DISTRIBUTION (today's polished output)")
+    lines.append("  (how each kept case got its property + contact — '>>' = worth an eyeball)")
     if not reason_today:
         lines.append("  (no rows in today's CSV)")
     else:
         for tag, n in reason_today.most_common():
-            lines.append(f"  {tag:30} {n}")
+            flag = ">>" if _is_eyeball_reason(tag) else "  "
+            desc = _describe_reason(tag)
+            lines.append(f"  {flag} {tag:30} {n:>4}   {desc}")
     lines.append("")
 
     lines.append("=" * 60)
@@ -465,11 +558,126 @@ def render_report(
     return "\n".join(lines)
 
 
+# ── HTML email rendering ─────────────────────────────────────────────
+# The plain-text report above stays the single source of truth for content;
+# the HTML email wraps it in a branded shell (header + stat tiles + county
+# chips) and syntax-highlights the body (section headers, >> eyeball rows,
+# *** alerts). Email-safe: inline styles only, table layout, system fonts.
+
+_GREEN = "#1b5e20"
+
+
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _highlight_body(text: str) -> str:
+    """Turn the plain-text report body into styled, monospace HTML lines.
+    Drops the top title block and the trailing divider/Generated footer
+    (both are rendered elsewhere in the shell)."""
+    lines = text.split("\n")
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip() == "HEADLINES")
+    except StopIteration:
+        start = 0
+    end = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        s = lines[i].strip()
+        if s and set(s) == {"="}:
+            end = i
+            break
+    mono = ("font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;"
+            "font-size:12.5px;line-height:1.55;white-space:pre;padding:1px 12px;margin:0;")
+    out: list[str] = []
+    for ln in lines[start:end]:
+        stripped = ln.strip()
+        if not stripped:
+            out.append('<div style="height:9px;line-height:9px">&nbsp;</div>')
+            continue
+        esc = _esc(ln)
+        if ln.startswith("***"):
+            out.append(f'<div style="{mono}color:#b91c1c;font-weight:700;'
+                       f'background:#fef2f2;">{esc}</div>')
+        elif ln[0] != " " and not ln.startswith("="):
+            out.append(f'<div style="color:{_GREEN};font-weight:700;font-size:11.5px;'
+                       f'letter-spacing:.5px;text-transform:uppercase;margin:16px 0 4px;'
+                       f'padding:0 12px 5px;border-bottom:1px solid #e4e8eb;">{esc}</div>')
+        elif stripped.startswith(">>"):
+            out.append(f'<div style="{mono}background:#fff8e1;color:#7a5300;">{esc}</div>')
+        else:
+            out.append(f'<div style="{mono}color:#3a3f45;">{esc}</div>')
+    return "\n".join(out)
+
+
+def _stat_tile(number, label, accent_bg, accent_fg) -> str:
+    return (
+        f'<td style="width:33.3%;padding:6px;" valign="top">'
+        f'<div style="background:{accent_bg};border-radius:8px;padding:14px 12px;text-align:center;">'
+        f'<div style="font-size:30px;font-weight:800;color:{accent_fg};line-height:1;">{number}</div>'
+        f'<div style="font-size:10.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;'
+        f'color:#6b7280;margin-top:6px;">{label}</div>'
+        f'</div></td>'
+    )
+
+
+def render_html_email(text: str, *, total: int, new_count: int, eyeball_n: int,
+                      counties, week_n: int) -> str:
+    d = date.today()
+    date_str = d.strftime("%A, %B ") + str(d.day) + d.strftime(", %Y")
+    gen = next((l for l in reversed(text.split("\n")) if l.startswith("Generated ")), "")
+
+    # Stat tiles — eyeball tile turns amber only when there's something to check.
+    eye_bg, eye_fg = (("#fff8e1", "#b45309") if eyeball_n else ("#eef1f4", "#374151"))
+    tiles = (
+        _stat_tile(total, "Total cases", "#eef1f4", "#111827")
+        + _stat_tile(new_count, "New today", "#e7f4ea", _GREEN)
+        + _stat_tile(eyeball_n, "To eyeball", eye_bg, eye_fg)
+    )
+
+    chips = ""
+    for name, n in counties:
+        label = name if name else "(blank)"
+        chips += (f'<span style="display:inline-block;background:#eef1f4;color:#374151;'
+                  f'border-radius:12px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px;">'
+                  f'{_esc(label)}&nbsp;<b>{n}</b></span>')
+
+    body_html = _highlight_body(text)
+
+    return f"""\
+<!doctype html><html><body style="margin:0;padding:0;background:#eef0f2;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;padding:24px 12px;">
+<tr><td align="center">
+<table role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <tr><td style="background:{_GREEN};padding:22px 24px;">
+    <div style="color:#ffffff;font-size:19px;font-weight:800;letter-spacing:.2px;">NC Probate Pipeline</div>
+    <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">Daily Report &middot; Week {week_n} &middot; {date_str}</div>
+  </td></tr>
+  <tr><td style="padding:14px 18px 4px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{tiles}</tr></table>
+  </td></tr>
+  <tr><td style="padding:6px 24px 2px;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county</div>
+    <div>{chips}</div>
+  </td></tr>
+  <tr><td style="padding:8px 12px 4px;">
+    <div style="overflow-x:auto;border:1px solid #eceef1;border-radius:8px;padding:8px 0;background:#fbfbfc;">
+      {body_html}
+    </div>
+  </td></tr>
+  <tr><td style="padding:12px 24px 22px;color:#9aa1a9;font-size:11px;">
+    {_esc(gen)} &middot; SiftStack
+  </td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
+
+
 # ── Email ────────────────────────────────────────────────────────────
 
 
 def _send_email_resend(
     subject: str, body: str, attachments: list[Path] | None = None,
+    html: str | None = None,
 ) -> tuple[bool, str]:
     """Send via Resend HTTP API. Used when RESEND_API_KEY is in .env."""
     import base64
@@ -486,8 +694,10 @@ def _send_email_resend(
         "from": sender,
         "to": recipients,
         "subject": subject,
-        "text": body,
+        "text": body,   # plain-text fallback for clients that don't render HTML
     }
+    if html:
+        payload["html"] = html
 
     if attachments:
         attached = []
@@ -517,6 +727,7 @@ def _send_email_resend(
 
 def _send_email_smtp(
     subject: str, body: str, attachments: list[Path] | None = None,
+    html: str | None = None,
 ) -> tuple[bool, str]:
     """Fallback: send via Gmail/Workspace SMTP using app password."""
     smtp_user = os.environ.get("SMTP_USER")
@@ -532,7 +743,10 @@ def _send_email_smtp(
     msg["From"] = smtp_user
     msg["To"] = report_to
     msg["Subject"] = subject
-    msg.set_content(body)
+    msg.set_content(body)   # plain-text part
+    if html:
+        # multipart/alternative — clients pick HTML, fall back to text
+        msg.add_alternative(html, subtype="html")
 
     for att in attachments or []:
         if not att.exists():
@@ -556,11 +770,12 @@ def _send_email_smtp(
     return True, f"Sent via SMTP to {report_to}"
 
 
-def send_email(subject: str, body: str, attachments: list[Path] | None = None) -> tuple[bool, str]:
+def send_email(subject: str, body: str, attachments: list[Path] | None = None,
+               html: str | None = None) -> tuple[bool, str]:
     """Send via Resend if RESEND_API_KEY is set, else fall back to SMTP."""
     if os.environ.get("RESEND_API_KEY"):
-        return _send_email_resend(subject, body, attachments=attachments)
-    return _send_email_smtp(subject, body, attachments=attachments)
+        return _send_email_resend(subject, body, attachments=attachments, html=html)
+    return _send_email_smtp(subject, body, attachments=attachments, html=html)
 
 
 def _count_new_cases(today_rows: list[dict], yesterday_rows: list[dict]) -> int:
@@ -578,6 +793,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-email", action="store_true", help="Skip the email send (file output only)")
     ap.add_argument("--attach-workbook", action="store_true", help="Attach the FTM workbook to the email")
+    ap.add_argument("--include-heir-transfer", action="store_true",
+                    help="Re-enable the heir-transfer review section + XLSX attachment "
+                         "(off by default per Oren; the XLSX still generates in output/)")
     args = ap.parse_args(argv)
 
     wb_path = find_latest_workbook()
@@ -607,6 +825,7 @@ def main(argv: list[str] | None = None) -> int:
         heir_transfer_rows=heir_rows,
         polish_stats=polish_stats,
         runtime_min=runtime,
+        include_heir_transfer=args.include_heir_transfer,
     )
 
     out_path = OUTPUT / f"daily_report_{date.today().strftime('%Y-%m-%d')}.txt"
@@ -619,14 +838,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     attachments = [out_path]
-    if heir_path:
+    if heir_path and args.include_heir_transfer:
         attachments.append(heir_path)
     if args.attach_workbook:
         attachments.append(wb_path)
 
     new_count = _count_new_cases(today_rows, yesterday_rows)
     subject = f"NC Probate Daily — Week {week_n} — {new_count} new"
-    ok, msg = send_email(subject, report, attachments=attachments)
+
+    # Build the HTML email from the same report text + headline stats.
+    _diffs = compute_diffs(today_rows, yesterday_rows)
+    _eyeball = sum(n for tag, n in _diffs["reason_today"].items() if _is_eyeball_reason(tag))
+    _counties = Counter((r.get("County") or "").strip() for r in workbook_rows).most_common()
+    html = render_html_email(
+        report, total=len(workbook_rows), new_count=len(_diffs["new"]),
+        eyeball_n=_eyeball, counties=_counties, week_n=week_n,
+    )
+
+    ok, msg = send_email(subject, report, attachments=attachments, html=html)
     print(f"\nEmail: {msg}")
     return 0 if ok else 0  # File was written; email is best-effort
 
