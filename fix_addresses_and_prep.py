@@ -1569,14 +1569,22 @@ def address_lookup_for_small_estate_disposed(rows: list[dict]) -> int:
     the row's Mailing Address (populated from the Interested Person on
     the OData Parties response) in county GIS and accept the first hit.
 
-    No surname-on-owner check (unlike address_fallback_from_beneficiaries)
-    because Small Estate Affidavits often transfer title to the heir
-    immediately — the deed is in their name, not the decedent's. The
-    Disposed-recent + Small-Estate gate is the signal that this row is
-    a Small Estate Affidavit lead.
+    The deed is NOT required to be in the decedent's name — Small Estate
+    Affidavits often transfer title to the heir immediately — but it must
+    belong to the decedent's family. The owner surname has to match either the
+    DECEDENT's or the INTERESTED PERSON's, which still accepts the
+    transferred-to-heir case (including a married daughter, whose surname is
+    the one on the row's First/Last Name) while rejecting an unrelated owner.
+
+    Without that floor this step accepted whoever happened to own the building
+    where the IP receives mail. Mallacoccio 26E000723-480 Week 30: IP Geno
+    Mallacoccio gave "137 Candlestick", which is owned by KELLER KRISTI L —
+    and Iredell has NO Mallacoccio-owned parcel at all, so a stranger's house
+    was published as the estate's property.
     """
     from nc_gis_lookup import (
         lookup_by_address, _ARCGIS_CONFIG, _compose_address, simplify_use_code,
+        split_decedent_name,
     )
     recovered = 0
     for r in rows:
@@ -1598,6 +1606,21 @@ def address_lookup_for_small_estate_disposed(rows: list[dict]) -> int:
         if not hits:
             continue
         attrs = hits[0]
+        # Family gate: the deed owner must share a surname with the decedent or
+        # the interested person, else we're attaching a stranger's house.
+        owner_name = " ".join(
+            str(attrs.get(f) or "").strip()
+            for f in (cfg.get("owner_fields") or [])
+        ).strip()
+        owner_tokens = set(re.findall(r"[A-Z]+", owner_name.upper()))
+        _f, _m, dec_last = split_decedent_name(r.get("Deceased Owner") or "")
+        ip_last = (r.get("Last Name") or "").strip().upper()
+        wanted = {s for s in ((dec_last or "").upper(), ip_last) if s}
+        if not wanted or not (owner_tokens & wanted):
+            print(f"  SMALL-ESTATE-SKIP {county}/{r.get('Deceased Owner','')}: "
+                  f"{mailing!r} is owned by {owner_name.title().strip()!r} "
+                  f"— not the decedent's or IP's surname, leaving blank")
+            continue
         pid = str(attrs.get(cfg.get("parcel_field") or "PIN") or "")
         if not pid:
             continue

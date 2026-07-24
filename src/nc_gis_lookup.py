@@ -186,6 +186,14 @@ _MIDDLE_NOISE_TOKENS = {
 
 _GENERATIONAL_SUFFIXES = {"SR", "JR", "II", "III", "IV", "V"}
 _HEIRS_MARKERS = {"HEIRS", "ESTATE", "ESTATEOF"}
+# Short business-entity suffixes. These are 1-2 characters, so the first-initial
+# matcher would otherwise read them as a person's initials: "BEAVER LP" (a
+# limited partnership) scored 0.70 against decedent "Beaver, Linda Gale" because
+# "LP" starts with L — outranking the four REAL Linda Beavers in Rowan at 0.60
+# and attaching six of the partnership's parcels to her estate
+# (26E000762-790 Week 30). Longer forms (LLC, INC, CORP) already fail the
+# 2-char test; these are the ones that slipped through.
+_ENTITY_ABBREVS = {"LP", "LP.", "PA", "PC", "CO", "LC", "PL"}
 
 
 def _extract_suffix(name: str) -> str:
@@ -482,6 +490,8 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
 
         d_first_initial = d_first[0]
         for t in o_tokens:
+            if t in _ENTITY_ABBREVS:
+                continue  # "LP"/"PA"/"CO" are entity suffixes, not initials
             if t == d_first_initial or (len(t) <= 2 and t[0] == d_first_initial):
                 first_initial_match = True
                 break
@@ -2843,7 +2853,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 17  # bumped 2026-07-23 — _name_match_score_one now scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4 (surname-only noise), so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. Cached candidates carry the old 0.4 score baked in, so without this bump the change never fires on an already-cached decedent.
+_PERSIST_VERSION = 18  # bumped 2026-07-23 (twice today). v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.
