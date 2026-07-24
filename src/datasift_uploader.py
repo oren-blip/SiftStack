@@ -1475,33 +1475,54 @@ async def export_phone_enrichment(
             logger.error(result["message"])
             return result
 
-        # Click Manage → Export
+        # Click Manage → Export.
+        # Export lives in the Manage dropdown as an <a class="...DropdownNavItem">
+        # (verified 2026-07-24: it never moved). The prior one-shot check with a
+        # fixed 1.5s wait raced the render — the select-all banner's own dropdown
+        # can still be overlaying the menu when we look — so an early miss aborted
+        # the whole flow. Now: click Manage, WAIT for the Export item to actually
+        # be visible, and if it isn't, re-open the menu once before giving up.
         manage_btn = page.locator('button:has-text("Manage")')
         if await manage_btn.count() == 0:
             manage_btn = page.locator('text="Manage"')
-        if await manage_btn.count() > 0:
-            await manage_btn.first.click()
-            await page.wait_for_timeout(1500)
-            logger.debug("Opened Manage dropdown")
-        else:
+        if await manage_btn.count() == 0:
             await _screenshot(page, "export_no_manage")
             result["message"] = "Could not find Manage button"
             logger.error(result["message"])
             return result
 
-        await _screenshot(page, "export_manage_opened")
+        # The item is <a class="...DropdownNavItem"> with exact text "Export"
+        # and NO href (React onClick), so get_by_role("link") never matches it —
+        # target it by class + exact text only. Do NOT pre-check count() here:
+        # the menu is still closed, count is 0, and any fallback chosen now would
+        # be the wrong (role-based) locator. Resolve it after the menu opens.
+        export_option = page.locator(
+            'a[class*="DropdownNavItem"]:text-is("Export")')
 
-        # Click "Export" option from Manage dropdown
-        export_option = page.locator('text="Export"')
-        if await export_option.count() > 0:
-            await export_option.first.click()
-            await page.wait_for_timeout(2000)
-            logger.debug("Clicked Export option")
-        else:
+        opened = False
+        for attempt in range(2):
+            # Escape any stray open dropdown (e.g. the select-all banner menu)
+            # so the Manage click isn't intercepted, then open Manage.
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+            await manage_btn.first.click()
+            try:
+                await export_option.first.wait_for(state="visible", timeout=6000)
+                opened = True
+                break
+            except PwTimeout:
+                logger.warning("Export item not visible after opening Manage "
+                               "(attempt %d) — retrying", attempt + 1)
+        if not opened:
             await _screenshot(page, "export_no_option")
             result["message"] = "Could not find 'Export' option in Manage menu"
             logger.error(result["message"])
             return result
+
+        await _screenshot(page, "export_manage_opened")
+        await export_option.first.click()
+        await page.wait_for_timeout(2000)
+        logger.debug("Clicked Export option")
 
         await _screenshot(page, "export_modal")
 
