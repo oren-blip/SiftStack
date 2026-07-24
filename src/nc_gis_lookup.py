@@ -560,6 +560,24 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
                 # deed-never-updated inheritance cases.
                 if o_set & _HEIRS_MARKERS:
                     return 0.6
+                # Full first name + full last name, but the middles disagree.
+                # That is much stronger evidence than a bare surname hit, yet
+                # 0.4 rated it identically — so the parcel sank into the pool of
+                # every same-surname stranger in the county and could never be
+                # surfaced, even when the first+last pair was unique.
+                # Lackey 26E000718-480 Week 30: court "Lackey, Donnie Church"
+                # vs deed "LACKEY DONNIE P" (Church is almost certainly the
+                # mother's maiden name; a Church family owns the adjacent
+                # parcel). Only two DONNIE LACKEY parcels exist in Iredell and
+                # both are his — Oren pulled 262 Halyburton Rd by hand while the
+                # pipeline dropped the case for having no parcel at all.
+                # 0.6 lands in the existing review band (_LOWCONF_MIN 0.55 <=
+                # s < _LOWCONF_MAX 0.70), so Step 3.7 attaches it FLAGGED for
+                # verification and it still cannot clear the 0.7 confident-accept
+                # gate or the 0.9 address-corroboration gate on its own.
+                # A first-INITIAL-only match keeps 0.4 — too weak to bother.
+                if first_full_match:
+                    return 0.6
                 return 0.4
 
     if first_full_match:
@@ -1417,7 +1435,14 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "owner_fields": ["NAME1", "NAME2"],
         "mailing_fields": ["ADDRESS1", "ADDRESS2", "CITY", "STATE", "ZIP"],
         "situs_fields": ["PHYSICALADDR"],
-        "parcel_field": "PIN",
+        # Changed PIN -> PARCELID 2026-07-23 per Oren: his hand-entered APN for
+        # Francis 26E000455-540 was 88873, which is this parcel's PARCELID; the
+        # 10-digit PIN (3684513243) is the ArcGIS grid id. Same call as Gaston's
+        # PIN -> PID switch on 2026-07-09. Coverage is identical (2 nulls in
+        # 56,966 parcels for either field). Rewrites every Lincoln row once.
+        # The PIN is still published, in Notes — see alt_parcel_field.
+        "parcel_field": "PARCELID",
+        "alt_parcel_field": "PIN",
         "use_field": "ZONING",
         "use_desc_field": "VACANT",  # "YES"/"NO"
     },
@@ -1680,8 +1705,15 @@ def acres_from_arcgis_attrs(rec: dict) -> float | None:
 
 def _arcgis_to_candidate(
     rec: dict, county: str, decedent_name: str, cfg: dict,
+    *, force_score: float | None = None,
 ) -> PropertyCandidate | None:
-    """Convert one ArcGIS attribute dict → PropertyCandidate. None if unusable."""
+    """Convert one ArcGIS attribute dict → PropertyCandidate. None if unusable.
+
+    force_score: when set, bypass person-name scoring and stamp this score on
+    the candidate. Used by the trust/LLC fallback, where the owner is an
+    entity with no person first/middle name to match against — the caller
+    supplies a capped "worth a human look" score instead.
+    """
     # Owner string — concatenate all owner fields
     owner_parts: list[str] = []
     for f in cfg["owner_fields"]:
@@ -1704,9 +1736,12 @@ def _arcgis_to_candidate(
     # both present, but they come from different people. _split_owner_segments
     # needs the separator to tell the owners apart. Week 28 audit: this put
     # Barbee on a stranger's parcel and the row was dropped.
-    score = _name_match_score(decedent_name, owner_full)
-    if score == 0.0:
-        return None
+    if force_score is not None:
+        score = force_score
+    else:
+        score = _name_match_score(decedent_name, owner_full)
+        if score == 0.0:
+            return None
 
     # Mailing address (single line composed)
     mailing = _compose_address(rec, cfg["mailing_fields"])
@@ -1997,10 +2032,131 @@ def _lookup_arcgis_county(
             continue
         candidates.append(c)
     candidates.sort(key=lambda c: -c.match_score)
+    if not candidates:
+        # Nothing titled in the decedent's own name — the property is
+        # sometimes held by a family trust or LLC (e.g. "THE PIERCE FAMILY
+        # TRUST"). Try surname-anchored entity patterns before giving up.
+        candidates = _lookup_trust_variants(decedent_name, county_key, min_score)
     logger.info(
         "%s GIS: %r → %d raw rows → %d scoring matches",
         county_key.title(), decedent_name, len(raw_rows), len(candidates),
     )
+    return candidates
+
+
+# ── Trust / LLC ownership fallback ───────────────────────────────────
+# When a decedent's regular name search returns 0 accepted candidates, the
+# property is sometimes titled to a family trust or LLC rather than the
+# person (e.g. "THE PIERCE SR FAMILY TRUST", "SMITH FAMILY LLC"). The
+# regular search (LIKE 'PIERCE%') misses these when the entity name doesn't
+# START with the surname, and _arcgis_to_candidate score-rejects them when
+# it does (an entity has no first/middle name to match). This fallback runs
+# a small set of surname-ANCHORED entity patterns and accepts hits at a
+# capped 0.75 "worth a human look" score — a FAMILY trust could belong to a
+# relative, not this decedent's estate, so it's a lead to verify, not a
+# confirmed parcel.
+#
+# Deliberately NARROW to avoid the junk-parcel blow-up that made
+# find_heir_transfer_candidates skip trusts entirely: every query pattern is
+# anchored on the decedent's actual surname, AND every hit is re-checked for
+# a trust/LLC marker + the surname as a token before it's accepted.
+#
+# ArcGIS counties only (Cabarrus, Gaston, Iredell, Lincoln, Rowan). Catawba
+# (PHP) and Mecklenburg (polaris3g) are out of scope — Catawba's trust gap
+# needs the separate GeoServer WFS route. Off-switch: NC_TRUST_FALLBACK=0.
+
+_TRUST_MARKER_RE = re.compile(
+    r"\b(TRUSTEE|TRUST|REVOCABLE|IRREVOCABLE|LIVING|FAMILY|PROPERTIES|"
+    r"L\.?L\.?C\.?|ESTATE)\b",
+    re.IGNORECASE,
+)
+
+_TRUST_FALLBACK_SCORE = 0.75
+
+
+def _lookup_trust_variants(
+    decedent_name: str, county_key: str, min_score: float = 0.7,
+    *, max_rows: int = 300,
+) -> list[PropertyCandidate]:
+    """Surname-anchored trust/LLC fallback for ArcGIS counties. Fires only
+    when the regular decedent-name search found nothing. Returns candidates
+    stamped at the capped _TRUST_FALLBACK_SCORE."""
+    if os.environ.get("NC_TRUST_FALLBACK", "1") == "0":
+        return []
+    # Capped score must still clear the caller's threshold to be worth querying.
+    if _TRUST_FALLBACK_SCORE < min_score:
+        return []
+    if county_key in {"catawba", "mecklenburg"}:
+        return []
+    _first, _middle, last = split_decedent_name(decedent_name)
+    if not last or len(last) < 3:
+        return []
+    last_upper = last.upper()
+    # Don't run on decedents who are THEMSELVES entities — the regular search
+    # already handled them and these patterns would be nonsense.
+    if last_upper in {"TRUST", "ESTATE", "LLC", "INC", "CORP", "FUND", "BENEFIT"}:
+        return []
+    cfg = _ARCGIS_CONFIG.get(county_key)
+    if not cfg:
+        return []
+    if is_endpoint_down(cfg["url"]):
+        return []
+    esc = last_upper.replace("'", "''")
+    # Every pattern carries the surname; the marker re-check below rejects
+    # coincidental hits like "THE <LAST> COMPANY" (no trust/LLC/family word).
+    patterns = [
+        f"{esc} FAMILY%",   # SMITH FAMILY TRUST / SMITH FAMILY LLC
+        f"{esc}%TRUST",     # SMITH TRUST, SMITH REVOCABLE TRUST
+        f"{esc}%LLC",       # SMITH PROPERTIES LLC
+        f"THE {esc}%",      # THE SMITH FAMILY TRUST
+        f"% {esc} %TRUST",  # <first> <LAST> LIVING TRUST (surname mid-string)
+    ]
+    seen_pids: set[str] = set()
+    candidates: list[PropertyCandidate] = []
+    for owner_field in cfg["owner_fields"]:
+        for pat in patterns:
+            where = f"UPPER({owner_field}) LIKE '{pat}'"
+            try:
+                r = requests.get(cfg["url"] + "/query", params={
+                    "where": where, "outFields": "*", "returnGeometry": "false",
+                    "f": "json", "resultRecordCount": max_rows,
+                }, headers=_ARCGIS_HEADERS, timeout=30)
+            except requests.RequestException as e:
+                logger.warning("trust-fallback: query failed at %s: %s",
+                               cfg["url"], e)
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                feats = r.json().get("features") or []
+            except ValueError:
+                continue
+            for feat in feats:
+                rec = feat.get("attributes", {})
+                pid = str(rec.get(cfg["parcel_field"]) or "")
+                if not pid or pid in seen_pids:
+                    continue
+                owner_join = " ".join(
+                    str(rec.get(fld) or "") for fld in cfg["owner_fields"]).upper()
+                # Re-verify: must carry a trust/LLC marker AND the surname as
+                # a whole token (guards "THE <LAST> COMPANY", stranger LLCs).
+                if not _TRUST_MARKER_RE.search(owner_join):
+                    continue
+                if last_upper not in re.findall(r"[A-Z']+", owner_join):
+                    continue
+                c = _arcgis_to_candidate(
+                    rec, county_key.title(), decedent_name, cfg,
+                    force_score=_TRUST_FALLBACK_SCORE)
+                if not c:
+                    continue
+                seen_pids.add(pid)
+                candidates.append(c)
+    if candidates:
+        logger.info(
+            "%s GIS trust-fallback: %r → %d entity parcel(s) at capped %.2f",
+            county_key.title(), decedent_name, len(candidates),
+            _TRUST_FALLBACK_SCORE,
+        )
     return candidates
 
 
@@ -2687,7 +2843,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 16  # bumped 2026-07-16 — _arcgis_to_candidate now reads lot acreage (was hardcoded lot_area=None for all 5 ArcGIS counties). Feeds the >2-acre subdivide exemption to the $500K buy-box cap. Every cached ArcGIS candidate has lot_area=None baked in, so without this bump the exemption never fires on a cached decedent.
+_PERSIST_VERSION = 17  # bumped 2026-07-23 — _name_match_score_one now scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4 (surname-only noise), so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. Cached candidates carry the old 0.4 score baked in, so without this bump the change never fires on an already-cached decedent.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.

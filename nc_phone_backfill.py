@@ -40,21 +40,27 @@ from case_pdf_extractor import (  # noqa: E402
     extract_text_with_ocr,
     list_case_documents,
 )
-from nc_pdf_phone_extractor import PHONE_DOC_PATTERNS, extract_contacts  # noqa: E402
+from nc_pdf_phone_extractor import (  # noqa: E402
+    PHONE_DOC_PATTERNS,
+    extract_contacts,
+    extract_pr_address,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("nc_phone_backfill")
 
 WAF_PATH = "ecourts_waf_cookies.json"
 PENDING_PATH = "output/pending_case_docs.json"
+MIN_ADDR_SCORE = 5  # min score to accept a PR mailing address from a case PDF
 MIN_SCORE = 3      # min score to FILL a blank Phone 1
-OVERRIDE_SCORE = 6  # min score to OVERRIDE an existing (skip-trace) Phone 1 —
-                    # a court cover-sheet number sitting next to the PR's name
-                    # (score >=6 needs the name or a strong cue nearby) is more
-                    # authoritative than a skip-trace guess. Flowers/McNeil Week
-                    # 29: skip-trace filled a wrong number; the cover sheet had
-                    # the right one at score 9. The prior number is preserved in
-                    # Notes so nothing is lost.
+PROMOTE_SCORE = 6  # min score to PROMOTE a court number to primary (Phone 1)
+                   # when Phone 1 is already filled. Per Oren (2026-07-20): a
+                   # court-verified number is authoritative, so it becomes the
+                   # primary — but nothing is discarded. The prior Phone 1 slides
+                   # down to Phone 2 (DM Phone); any number already in Phone 2
+                   # slides into Notes. Skip-trace numbers are preserved, just
+                   # re-ranked below the court number. Both cases tag the row
+                   # court-verified-phone at export.
 
 
 def _latest_enriched_csv() -> str:
@@ -115,6 +121,7 @@ def main() -> None:
 
     fetched = 0
     found = 0
+    found_addr = 0
     for r in todo:
         if fetched >= args.limit:
             logger.info("Hit --limit %d doc fetches; stopping (rerun to continue).", args.limit)
@@ -136,6 +143,7 @@ def main() -> None:
             continue
 
         best = None
+        best_addr = None
         for key, doc in picks:
             if fetched >= args.limit:
                 break
@@ -148,7 +156,7 @@ def main() -> None:
                 )
             except DocRateLimited:
                 logger.info("  THROTTLED at %s — stopping; rerun later.", case)
-                _write(csv_path, rows, fieldnames, args.dry_run, found)
+                _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr)
                 return
             except Exception as e:
                 logger.info("  fetch fail %s/%s: %s", case, key, str(e)[:80])
@@ -158,13 +166,23 @@ def main() -> None:
             c = extract_contacts(txt, r.get("First Name", ""), r.get("Last Name", ""))
             if c["phone_digits"] and c["score"] >= MIN_SCORE and (best is None or c["score"] > best["score"]):
                 best = {**c, "doc": key}
-            if best and best["score"] >= 7:
-                break  # strong hit — stop spending quota on this case
+            # Same OCR'd text, no extra (throttled) fetch: the PR's own mailing
+            # address. Lambert 26E002739-590 Week 30 — the funeral bill carried
+            # "Reid Carter / 9001 Carindale Rd. / Waxhaw, NC 28173" while the
+            # workbook was mailing the decedent's house.
+            a = extract_pr_address(txt, r.get("First Name", ""), r.get("Last Name", ""))
+            if a["street"] and a["score"] >= MIN_ADDR_SCORE and (
+                    best_addr is None or a["score"] > best_addr["score"]):
+                best_addr = {**a, "doc": key}
+            if best and best["score"] >= 7 and best_addr:
+                break  # strong hit on both — stop spending quota on this case
 
         existing = (r.get("Phone 1") or "").strip()
         existing_digits = "".join(ch for ch in existing if ch.isdigit())
+        dm_existing = (r.get("DM Phone") or "").strip()
+        dm_existing_digits = "".join(ch for ch in dm_existing if ch.isdigit())
         if best and not existing:
-            # Fill a blank.
+            # Phone 1 is empty — the court number becomes the primary contact.
             found += 1
             logger.info("  FILL  %s (%s): %s  [%s, score %d]  email=%s",
                         case, name, best["phone"], best["doc"], best["score"], best["email"] or "-")
@@ -173,40 +191,116 @@ def main() -> None:
                 if best["email"] and not (r.get("DM Email") or "").strip():
                     r["DM Email"] = best["email"]
                 r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone").strip(" |")
-        elif best and existing and best["phone_digits"] != existing_digits and best["score"] >= OVERRIDE_SCORE:
-            # Override a skip-trace number with a high-confidence court number,
-            # preserving the old one in Notes.
+        elif (best and best["score"] >= PROMOTE_SCORE
+              and best["phone_digits"] not in (existing_digits, dm_existing_digits)):
+            # Phone 1 already has a number — PROMOTE the court number to primary
+            # (it's authoritative) but keep everything: the prior Phone 1 slides
+            # to Phone 2 (DM Phone); any number already in Phone 2 slides into
+            # Notes. Nothing is discarded. Row is tagged court-verified-phone.
             found += 1
-            logger.info("  UPGRADE %s (%s): %s (court, score %d) replaces %s (skip-trace)",
-                        case, name, best["phone"], best["score"], existing)
+            logger.info("  PROMOTE %s (%s): %s (court, score %d) → Phone 1; %s → Phone 2%s",
+                        case, name, best["phone"], best["score"], existing,
+                        f"; {dm_existing} → Notes" if dm_existing else "")
             if not args.dry_run:
+                if dm_existing and dm_existing_digits != existing_digits:
+                    note = (r.get("Notes") or "").strip()
+                    alt = f"[alt phone: {dm_existing}]"
+                    r["Notes"] = f"{note}\n{alt}".strip() if note else alt
                 r["Phone 1"] = best["phone"]
-                note = (r.get("Notes") or "").strip()
-                alt = f"[alt phone (skip-trace): {existing}]"
-                r["Notes"] = f"{note}\n{alt}".strip() if note else alt
+                r["DM Phone"] = existing
                 if best["email"] and not (r.get("DM Email") or "").strip():
                     r["DM Email"] = best["email"]
-                r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone-verified").strip(" |")
+                r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone").strip(" |")
         elif best:
-            logger.info("  KEEP  %s (%s): existing %s stands (court score %d)", case, name, existing, best["score"])
+            logger.info("  KEEP  %s (%s): existing %s stands (court score %d, dup or low)",
+                        case, name, existing, best["score"])
         else:
             logger.info("  MISS  %s (%s): docs filed but no PR phone in them", case, name)
 
-    _write(csv_path, rows, fieldnames, args.dry_run, found)
+        if best_addr:
+            found_addr += _apply_pr_address(r, best_addr, case, name, args.dry_run)
+
+    _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr)
 
 
-def _write(csv_path, rows, fieldnames, dry_run, found) -> None:
+def _norm_addr(s: str) -> str:
+    """Suffix-normalized, alphanumeric-only form for address equality.
+
+    The suffix rewrite has to happen BEFORE the alphanumeric strip, or
+    "3432 Back Creek Church Road" (PDF) and "3432 Back Creek Church Rd"
+    (GIS situs) compare as different addresses and the "this is just the
+    property address again" guard never fires.
+    """
+    try:
+        from fix_addresses_and_prep import _STREET_SUFFIX_NORMALIZE as SUF
+    except Exception:  # pragma: no cover
+        SUF = {}
+    toks = [SUF.get(t, t) for t in
+            (t.strip(".,").lower() for t in (s or "").split()) if t]
+    return "".join(ch for ch in " ".join(toks) if ch.isalnum())
+
+
+def _apply_pr_address(r: dict, addr: dict, case: str, name: str, dry_run: bool) -> int:
+    """Write a PDF-sourced PR mailing address onto the row when it beats what's
+    already there. Returns 1 if applied, 0 otherwise.
+
+    Only overwrites a mailing we ourselves synthesized or guessed:
+      * blank
+      * `mailing-from-property` — the "mail to the decedent's house" backstop
+      * `pr-people-search` / `pr-tracerfy` — third-party guesses
+    A mailing that came from Odyssey's Parties API with no tag is court-supplied
+    already and is left alone. A PDF address identical to the property address
+    is no better than the fallback, so it's skipped too.
+    """
+    reason = r.get("Match Reason") or ""
+    existing = (r.get("Mailing Address") or "").strip()
+    synthesized = any(t in reason for t in
+                      ("mailing-from-property", "pr-people-search", "pr-tracerfy"))
+    if existing and not synthesized:
+        return 0
+    if _norm_addr(addr["street"]) == _norm_addr(r.get("Property Address")):
+        return 0
+    if existing and _norm_addr(addr["street"]) == _norm_addr(existing):
+        return 0
+    logger.info("  ADDR  %s (%s): %s, %s %s  [%s, score %d]%s",
+                case, name, addr["street"], addr.get("city", ""), addr.get("zip", ""),
+                addr["doc"], addr["score"],
+                f"  (was {existing})" if existing else "")
     if dry_run:
-        logger.info("DRY RUN — found %d phone(s), nothing written.", found)
+        return 1
+    r["Mailing Address"] = addr["street"]
+    if addr.get("city"):
+        r["Mailing City"] = addr["city"]
+    if addr.get("state"):
+        r["Mailing State"] = addr["state"]
+    if addr.get("zip"):
+        r["Mailing Zip"] = addr["zip"]
+    # The property fallback / people-search guess is no longer what's on the row.
+    kept = [p.strip() for p in reason.split("|") if p.strip() and p.strip() not in
+            ("mailing-from-property", "pr-people-search", "pr-tracerfy")]
+    kept.append("pdf-pr-address")
+    r["Match Reason"] = " | ".join(kept)
+    # Step 1.95 tags these rows for manual address hunting; we just found it.
+    tags = [t.strip() for t in (r.get("Tags") or "").split(",")
+            if t.strip() and t.strip() != "Verify: No PR Address"]
+    r["Tags"] = ", ".join(tags)
+    return 1
+
+
+def _write(csv_path, rows, fieldnames, dry_run, found, found_addr=0) -> None:
+    if dry_run:
+        logger.info("DRY RUN — found %d phone(s) and %d address(es), nothing written.",
+                    found, found_addr)
         return
-    if not found:
-        logger.info("No phones found; %s unchanged.", csv_path)
+    if not found and not found_addr:
+        logger.info("No phones or addresses found; %s unchanged.", csv_path)
         return
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(fieldnames))
         w.writeheader()
         w.writerows(rows)
-    logger.info("Wrote %d PR phone(s) into %s", found, csv_path)
+    logger.info("Wrote %d PR phone(s) and %d PR address(es) into %s",
+                found, found_addr, csv_path)
 
 
 if __name__ == "__main__":

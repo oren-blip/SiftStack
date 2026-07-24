@@ -63,6 +63,8 @@ def tag_reason(row: dict, code: str) -> None:
 # James 26E002599-590: crosscheck confirmed the decedent's Glenbrier home
 # (owner "DAVID R JAMES", widow Elizabeth still there), then swap-on-DQ walked
 # it to an unrelated David James's $518K Woodview house.
+# "decedent-address" also covers "decedent-address-confirmed" (Step 0.68's
+# CONFIRM outcome: the name-matched pick already WAS the court-recorded home).
 _COURT_CONFIRMED_TAGS = ("addr-corrected", "name-nearmiss-addr-corroborated",
                          "decedent-address")
 
@@ -990,7 +992,7 @@ def recover_parcel_from_app_realestate(rows: list[dict]) -> int:
     return recovered
 
 
-def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
+def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int, int]:
     """Validate a NAME-matched parcel against the decedent's OWN address.
 
     Targets the common-name false positive (Week 28: Morris, Michael and
@@ -1007,6 +1009,12 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
       parcel. The decedent literally owned the home they lived in; that beats
       any namesake guess. Repoint the row (value cleared so Step 1.6/1.7
       re-derive; flows through the rest of the pipeline normally).
+
+    CONFIRM ("decedent-address-confirmed") — the picked parcel IS the decedent's
+      court-recorded home (same house number AND same street). Nothing to
+      correct, but the pick is now identity-locked exactly like a swap, so tag
+      it: downstream steps (heir-occupied DQ, sibling swap) must treat it as
+      the decedent's OWN property and never re-point or silently drop it.
 
     FLAG ("addr-uncorroborated") — the decedent's address is NOT surname-owned,
       the picked parcel is not on that street, AND the name search is ambiguous
@@ -1042,7 +1050,50 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
         da, db = _distinctive(a), _distinctive(b)
         return bool(da and db and (da & db))
 
-    swapped = flagged = 0
+    def _situs_city_zip(hit: dict, cfg: dict) -> tuple[str, str]:
+        """(city, zip) of the PARCEL from a raw GIS hit.
+
+        County layers carry the situs city/ZIP under their own names (Catawba:
+        pcity/pzip) and `situs_fields` only declares the street, so a swap that
+        copies just the street leaves the PREVIOUS parcel's city/ZIP behind.
+        Lail 26E000862-170 Week 30: corrected onto the decedent's 2355 24th St
+        Dr NE (Hickory 28601) but kept Conover 28613 from the Remington Dr
+        parcel it swapped off — an address that doesn't exist.
+
+        Identified by name, minus the keys cfg declares as the OWNER's mailing
+        (oaddress/ocity/ozip) — those are where the tax bill goes, not where the
+        parcel is. Returns ("", "") when the layer exposes neither.
+        """
+        mail_keys = {k.lower() for k in (cfg.get("mailing_fields") or [])}
+        city = zipc = ""
+        for k, v in (hit or {}).items():
+            kl = str(k).lower()
+            if kl in mail_keys or not str(v or "").strip():
+                continue
+            if not city and "city" in kl:
+                city = str(v).strip().title()
+            elif not zipc and "zip" in kl:
+                zipc = str(v).strip().split("-")[0]
+        return city, zipc
+
+    def _is_decedents_own_home(prop_addr: str, court_addr: str) -> bool:
+        """True when the picked parcel is literally the address the court says
+        the decedent lived at: same leading house number AND a shared street
+        word. Street-word overlap alone is too weak to identity-lock a parcel
+        (neighbours share a street), so the house number is required."""
+        hn_p, hn_c = _leading_house_number(prop_addr), _leading_house_number(court_addr)
+        return bool(hn_p and hn_c and hn_p == hn_c and same_street(prop_addr, court_addr))
+
+    def _confirm(r: dict, court_addr: str) -> None:
+        """Identity-lock a parcel corroborated by the decedent's court address."""
+        tag_reason(r, "decedent-address-confirmed")
+        note = (f"[CONFIRMED: parcel is the decedent's court-recorded home "
+                f"{court_addr}]")
+        existing = (r.get("Notes") or "").strip()
+        if "CONFIRMED: parcel is the decedent" not in existing:
+            r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
+
+    swapped = flagged = confirmed_n = 0
     for r in rows:
         pid = (r.get("Parcel ID") or "").strip()
         dec = (r.get("Deceased Owner") or "").strip()
@@ -1087,13 +1138,28 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
                 _set_row_acres_from_attrs(r, home)
                 if situs:
                     r["Property Address"] = situs
+                # City/ZIP must move WITH the parcel — see _situs_city_zip.
+                new_city, new_zip = _situs_city_zip(home, cfg)
+                if new_city:
+                    r["Property City"] = new_city
+                if new_zip:
+                    r["Property Zip"] = new_zip
                 r["Property Value"] = ""   # re-derived by Step 1.6/1.7
-                existing = (r.get("Notes") or "").strip()
+                # The promoted parcel may already be listed in this row's own
+                # PLUS-N-PARCELS note — drop it so the row doesn't cite itself
+                # as its own extra parcel (Lail 26E000862-170 Week 30).
+                existing = _strip_parcel_from_notes(
+                    (r.get("Notes") or "").strip(), home_pid)
                 r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
                 tag_reason(r, "addr-corrected")
                 print(f"  ADDR-CORRECT {county}/{dec}: {pid} -> {home_pid} "
                       f"at {situs!r} (decedent's own address {dec_addr!r})")
                 swapped += 1
+            else:
+                # Address lookup landed on the parcel we ALREADY picked — the
+                # strongest corroboration there is. Identity-lock it.
+                _confirm(r, dec_addr)
+                confirmed_n += 1
             continue
 
         # Name-search candidates — used by BOTH the name-search swap (next) and
@@ -1144,7 +1210,8 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
             r["Property Value"] = ""  # re-derived by Step 1.6/1.7
             note = (f"[ADDR-CORRECTED (name search) to decedent's home "
                     f"{dec_addr}; was parcel {pid}]")
-            existing = (r.get("Notes") or "").strip()
+            existing = _strip_parcel_from_notes(
+                (r.get("Notes") or "").strip(), swap_c.pid)
             r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
             tag_reason(r, "addr-corrected")
             print(f"  ADDR-CORRECT(name) {county}/{dec}: {pid} -> {swap_c.pid} "
@@ -1152,8 +1219,22 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
             swapped += 1
             continue
 
-        # ── FLAG: uncorroborated namesake pick ──
-        if same_street(r.get("Property Address", ""), dec_addr):
+        # ── CONFIRM: the pick IS the decedent's court-recorded home ──
+        # Same house number + street as the address the court has on file. This
+        # used to just `continue` as "good enough", which left the row untagged
+        # — so Step 1.9 saw an ordinary name-matched parcel with the PR living
+        # at it and dropped it as heir-occupied. Mozeley 26E002738-590 Week 30:
+        # deed "JAMES EDWIN JR MOZELEY" (SOLE owner, score 1.00) at 1906 Dove
+        # Dr == the court's decedent address; PR Tonya Mozeley lives there. Sole
+        # ownership means the house MUST pass through probate — a real lead, and
+        # Oren pulled it by hand. Tagging it court-confirmed routes it to the
+        # keep-and-review branch (and on to the Step 3.9 spouse flag) instead.
+        prop_addr = r.get("Property Address", "")
+        if _is_decedents_own_home(prop_addr, dec_addr):
+            _confirm(r, dec_addr)
+            confirmed_n += 1
+            continue
+        if same_street(prop_addr, dec_addr):
             continue  # picked the street the decedent lived on — good enough
         top = [c for c in cands if c.match_score >= 0.99]
         if len(top) < 2:
@@ -1181,7 +1262,7 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int]:
                   f"{r.get('Property Address')!r} not corroborated by decedent "
                   f"address {dec_addr!r} ({len(top)} namesakes)")
             flagged += 1
-    return swapped, flagged
+    return swapped, flagged, confirmed_n
 
 
 # Memoize the per-case Parties fetch: Step 0.64 and Step 0.645 both need the
@@ -4516,45 +4597,78 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
     )
 
 
-def _strip_parcel_from_notes(notes: str, pid_to_strip: str) -> str:
-    """Remove a vertical PLUS-N-PARCELS block that references the given
-    PID — used after swap-on-DQ to deduplicate the new main from Notes.
+_PLUS_HEADER_RE = re.compile(r"^PLUS\s+(\d+)\s+PARCELS?(\s*\([^)]*\))?\s*$", re.I)
 
-    Recognizes both vertical format ("PLUS N PARCELS" header followed by
-    address / meta / "  PID xxx" trios separated by blank lines) and the
-    legacy horizontal format. Best-effort — leaves Notes unchanged when
-    structure doesn't match the expected shape.
+
+def _strip_parcel_from_notes(notes: str, pid_to_strip: str) -> str:
+    """Remove the vertical PLUS-N-PARCELS block that references `pid_to_strip`
+    and renumber the header — used after any step that PROMOTES a listed
+    sibling to be the row's main parcel, so the row doesn't list itself as its
+    own extra parcel.
+
+    Week 30 audit: 3 of 17 multi-parcel rows did exactly that (Lail
+    26E000862-170, Thomas 26E000761-120, Burris 26E000966-350 — all
+    ADDR-CORRECTED onto a parcel already named in their own Notes). The count
+    in the header is what Oren scans to spot consecutive-vacant-lot estates, so
+    an inflated one is actively misleading, not just cosmetic.
+
+    Notes layout parsed here:
+
+        PLUS 2 PARCELS[ (suffix)]
+        <blank>
+        <address>
+          <meta>
+          PID <pid>
+        <blank>
+        ...
+        [ADDR-CORRECTED ...]   <- bracketed markers end the parcel region
+
+    Best-effort: returns `notes` unchanged when there's no header, or when no
+    block matches the PID.
     """
     if not notes or not pid_to_strip:
         return notes
     lines = notes.split("\n")
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Look ahead 5 lines for the PID marker to confirm a block to skip
-        ahead = "\n".join(lines[i:i + 6])
-        if pid_to_strip in ahead and (line.strip().startswith("PLUS ") or
-                                       (line.strip() and not line[0].isspace())):
-            # Skip lines until we hit a blank-line gap OR end OR a non-related block
-            j = i
-            block_end = len(lines)
-            in_target_block = False
-            while j < len(lines):
-                if pid_to_strip in lines[j]:
-                    in_target_block = True
-                if in_target_block and (j > i and lines[j].strip() == ""):
-                    block_end = j + 1
-                    break
-                j += 1
-            if in_target_block:
-                i = block_end
-                continue
-        out.append(line)
-        i += 1
-    # Also collapse the now-orphan "PLUS 1 PARCEL" header if its only item was stripped
-    cleaned = "\n".join(out).strip()
-    return cleaned
+    hdr_i = next((i for i, ln in enumerate(lines)
+                  if _PLUS_HEADER_RE.match(ln.strip())), None)
+    if hdr_i is None:
+        return notes
+    suffix = (_PLUS_HEADER_RE.match(lines[hdr_i].strip()).group(2) or "").strip()
+
+    # The parcel region runs to the first bracketed marker line, or to the end.
+    end = len(lines)
+    for j in range(hdr_i + 1, len(lines)):
+        if lines[j].lstrip().startswith("["):
+            end = j
+            break
+
+    blocks: list[list[str]] = []
+    cur: list[str] = []
+    for ln in lines[hdr_i + 1:end]:
+        if not ln.strip():
+            if cur:
+                blocks.append(cur)
+                cur = []
+        else:
+            cur.append(ln)
+    if cur:
+        blocks.append(cur)
+
+    pid_re = re.compile(r"\bPID\s+" + re.escape(pid_to_strip) + r"\b", re.I)
+    kept = [b for b in blocks if not any(pid_re.search(x) for x in b)]
+    if len(kept) == len(blocks):
+        return notes  # nothing referenced that PID — leave Notes alone
+
+    out = lines[:hdr_i]
+    if kept:
+        out.append(f"PLUS {len(kept)} PARCEL{'S' if len(kept) > 1 else ''}"
+                   f"{(' ' + suffix) if suffix else ''}")
+        for b in kept:
+            out.append("")
+            out.extend(b)
+        out.append("")
+    out.extend(lines[end:])
+    return "\n".join(out).strip()
 
 
 def _parcel_use_tier(use: str) -> int:
@@ -5323,7 +5437,9 @@ _LOWCONF_MIN = 0.55          # floor: below this is too weak to bother surfacing
 _LOWCONF_MAX = 0.70          # ceiling: the confident accept threshold
 _LOWCONF_SEPARATION = 0.15   # top must be this far ahead of the 2nd candidate
 
-def flag_low_confidence_parcels(rows: list[dict]) -> int:
+def flag_low_confidence_parcels(
+    rows: list[dict], audit_rejected_pids: set[tuple[str, str]] | None = None,
+) -> int:
     """Keep-and-flag blank-parcel rows whose best GIS candidate sits just under
     the accept threshold AND is a clear front-runner (a distinct top score in
     [0.55, 0.70), at least 0.15 ahead of the runner-up). Fills the parcel from
@@ -5333,8 +5449,16 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
     Deliberately does NOT surface flat ties (e.g. a decedent whose surname
     yields many equal 0.40 candidates — Owensby-class): with no front-runner
     there's no signal to pick the right parcel, so those stay blank and drop as
-    before. Oren works those by hand."""
+    before. Oren works those by hand.
+
+    `audit_rejected_pids` is the same (county_lower, pid) blacklist
+    `validate_existing_matches` hands to the re-search step: parcels it already
+    judged homonym false positives. Honouring it here matters because the
+    review band starts at 0.55 — without it, a parcel the audit deliberately
+    blanked at the 0.70 gate could walk straight back in at 0.60 (the
+    "James Lee Osborne" vs "JAMES D OSBORNE" class)."""
     from nc_gis_lookup import lookup_properties
+    rejected = audit_rejected_pids or set()
     flagged = 0
     for r in rows:
         if (r.get("Parcel ID") or "").strip():
@@ -5347,16 +5471,43 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
             cands = lookup_properties(dec, county, min_score=0.4)
         except Exception:
             continue
+        cands = [c for c in cands
+                 if (county.lower(), (c.pid or "").strip()) not in rejected]
         if not cands:
             continue
         cands = sorted(cands, key=lambda c: (c.match_score or 0), reverse=True)
         top_score = cands[0].match_score or 0
-        second = (cands[1].match_score or 0) if len(cands) > 1 else 0
         if not (_LOWCONF_MIN <= top_score < _LOWCONF_MAX):
             continue
+        # Separation must be measured against a DIFFERENT PERSON, not merely a
+        # different parcel. One owner routinely holds several parcels, and those
+        # all score identically — which reads as a flat tie and got the whole
+        # estate discarded as "ambiguous". Lackey 26E000718-480 Week 30: both
+        # top candidates are "LACKEY DONNIE P" (262 Halyburton Rd + the vacant
+        # lot beside it) — one man, two parcels, and exactly the adjacent-lot
+        # pattern Oren wants surfaced. Genuine homonym ambiguity (several
+        # DIFFERENT people tied at the top) still has no front-runner and is
+        # still skipped.
+        def _owner_key(c) -> str:
+            return " ".join(sorted(re.findall(r"[a-z]+", (c.owner_name or "").lower())))
+
+        top_owner = _owner_key(cands[0])
+        siblings = [c for c in cands[1:]
+                    if _owner_key(c) == top_owner and (c.match_score or 0) == top_score]
+        second = max((c.match_score or 0) for c in cands
+                     if _owner_key(c) != top_owner) if any(
+                         _owner_key(c) != top_owner for c in cands) else 0
         if (top_score - second) < _LOWCONF_SEPARATION:
             continue  # ambiguous — no clear front-runner, don't guess
-        top = cands[0]
+        # Same-owner group: main parcel is the residence when there is one
+        # (Oren's convention — vacant lots go to the PLUS-N note, not the
+        # Property Address column).
+        same_owner = [cands[0]] + siblings
+        if len(same_owner) > 1:
+            same_owner.sort(key=lambda c: (bool(getattr(c, "is_residential", False)),
+                                           float(c.market_value or 0)), reverse=True)
+            siblings = same_owner[1:]
+        top = same_owner[0]
         street, city, zipc = _candidate_to_address_parts(top)
         if not street:
             situs = (top.situs_address or "").strip()
@@ -5407,10 +5558,63 @@ def flag_low_confidence_parcels(rows: list[dict]) -> int:
             r["Tags"] = (tags + ", " if tags else "") + "Low-Confidence Parcel"
         note = f"[LOW-CONFIDENCE PARCEL {pct}% — VERIFY owner: {owner}]"
         existing = (r.get("Notes") or "").strip()
+        # Same-owner extra parcels go to Notes under the usual PLUS-N block —
+        # for these estates the adjacent vacant lot is often the actual play.
+        if siblings:
+            from nc_ftm_writer import format_extra_parcels_vertical
+            items = []
+            for e in siblings:
+                es, ec, ez = _candidate_to_address_parts(e)
+                items.append({
+                    "address": " ".join(filter(None, [es, ec, ez])).strip(),
+                    "use": simplify_use_code(e.use_code, e.use_description, e.county) or "",
+                    "lot": e.lot_area,
+                    "value": e.market_value,
+                    "pid": e.pid,
+                })
+            block = format_extra_parcels_vertical(items)
+            existing = (block + ("\n" + existing if existing else "")).strip()
         r["Notes"] = (existing + ("\n" if existing else "") + note).strip()
         print(f"  LOW-CONF {county}/{dec}: pid={top.pid} score={top_score:.2f} owner={owner!r}")
         flagged += 1
     return flagged
+
+
+def annotate_alt_parcel_id(rows: list[dict]) -> int:
+    """Record the county's OTHER parcel identifier in Notes.
+
+    Some counties carry two ids for the same parcel and Oren's sheet uses the
+    short tax/account number while the GIS grid id is what resolves the parcel
+    online. Lincoln is the live case (Francis 26E000455-540: PARCELID 88873 ==
+    PIN 3684513243) — the Parcel ID column now publishes the number he types,
+    and this keeps the other one on the row so nothing is lost. Driven by the
+    county's optional `alt_parcel_field`; a no-op for every other county.
+    """
+    from nc_gis_lookup import lookup_properties, _ARCGIS_CONFIG
+    n = 0
+    for r in rows:
+        county = (r.get("County") or "").strip()
+        cfg = _ARCGIS_CONFIG.get(county.lower()) or {}
+        alt = cfg.get("alt_parcel_field")
+        pid = (r.get("Parcel ID") or "").strip()
+        dec = (r.get("Deceased Owner") or "").strip()
+        if not (alt and pid and dec) or "IN THE MATTER" in dec.upper():
+            continue
+        if f"[{alt} " in (r.get("Notes") or ""):
+            continue
+        try:
+            cands = lookup_properties(dec, county, min_score=0.3)
+        except Exception:  # noqa: BLE001
+            continue
+        cand = next((c for c in cands if (c.pid or "").strip() == pid), None)
+        if not cand:
+            continue
+        val = str((getattr(cand, "raw", None) or {}).get(alt) or "").strip()
+        if not val or val == pid:
+            continue
+        _add_note(r, f"[{alt} {val}]")
+        n += 1
+    return n
 
 
 def _add_note(row: dict, note: str) -> None:
@@ -5604,6 +5808,30 @@ def fill_vacant_street_from_mailing(rows: list[dict]) -> int:
               f"'No Address' -> '0 {road}'")
         filled += 1
     return filled
+
+
+def prefix_numberless_vacant_streets(rows: list[dict]) -> int:
+    """Apply Oren's "0 <street>" vacant-lot convention to rows where the county
+    DID return a situs street but with no house number ("GREEN LEAF LN").
+
+    Step 3.65 above only covers the blank / "No Address" case, and the
+    candidate-attach paths only prefix when `_candidate_to_address_parts`
+    returns an EMPTY street — so a bare street name slipped through unprefixed.
+    Week 30: Lincoln's three vacant lots (Francis 26E000455-540 'GREEN LEAF LN',
+    Willis 26E000442-540, Lane 26E000446-540) all shipped without the prefix
+    while Oren's sheet has "0 Green Leaf Ln". See
+    [[feedback_vacant_lot_zero_prefix]].
+    """
+    n = 0
+    for r in rows:
+        pa = (r.get("Property Address") or "").strip()
+        if not pa or pa[0].isdigit() or pa.lower() == "no address":
+            continue
+        if "vacant" not in (r.get("Property use") or "").lower():
+            continue
+        r["Property Address"] = f"0 {pa}"
+        n += 1
+    return n
 
 
 # ── Surviving-spouse occupancy flag (Step 3.9) ────────────────────────────
@@ -5827,8 +6055,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"  Parcels recovered via Application real-estate address: {n_app_re}")
 
     print("Step 0.68: cross-check name-matched parcels against the decedent's own address")
-    n_addr_swap, n_addr_flag = crosscheck_parcel_vs_decedent_address(rows)
-    print(f"  Corrected to decedent's home: {n_addr_swap}  Flagged uncorroborated: {n_addr_flag}")
+    n_addr_swap, n_addr_flag, n_addr_confirm = crosscheck_parcel_vs_decedent_address(rows)
+    print(f"  Corrected to decedent's home: {n_addr_swap}  "
+          f"Confirmed as decedent's home: {n_addr_confirm}  "
+          f"Flagged uncorroborated: {n_addr_flag}")
 
     print("Step 0.6: scan blank-parcel rows for heir-transfer candidates (embedded surname)")
     heir_transfer_rows = collect_heir_transfer_candidates(rows)
@@ -6003,9 +6233,26 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         n_street_inf = fill_vacant_street_from_mailing(rows)
         print(f"  Vacant 'No Address' rows filled from mailing road: {n_street_inf}")
 
+    print("Step 3.66: apply '0 <street>' convention to vacant lots whose situs has no house number")
+    n_zero_prefix = prefix_numberless_vacant_streets(rows)
+    print(f"  Vacant streets prefixed with '0 ': {n_zero_prefix}")
+
     print("Step 3.7: keep+flag blank-parcel rows with a distinct low-confidence match (review band)")
-    n_lowconf = flag_low_confidence_parcels(rows)
+    n_lowconf = flag_low_confidence_parcels(rows, audit_rejected_pids=audit_rejected_pids)
     print(f"  Low-confidence parcels flagged (kept for review): {n_lowconf}")
+
+    if n_lowconf:
+        # A parcel attached at 3.7 arrives AFTER the Step 3.6 geocode, so its
+        # City/Zip would ship blank — and DataSift needs the zip. Re-run the
+        # (blank-only, so cheap) fill for the rows just attached.
+        print("Step 3.75: re-run centroid geocode for parcels attached at Step 3.7")
+        n_centroid2 = fill_property_location_via_centroid(rows)
+        print(f"  Filled via centroid geocode: {n_centroid2}")
+
+    # After every parcel-attaching step, so late attachments get noted too.
+    print("Step 3.76: record the county's alternate parcel id in Notes (Lincoln PIN)")
+    n_alt_pid = annotate_alt_parcel_id(rows)
+    print(f"  Alternate parcel ids noted: {n_alt_pid}")
 
     if os.environ.get("NC_ADMIN_REROUTE") == "0":
         print("Step 3.8: professional-fiduciary PR heir-reroute — skipped (NC_ADMIN_REROUTE=0)")
