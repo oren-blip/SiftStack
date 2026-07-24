@@ -32,9 +32,19 @@ MAX_CHARS = 320  # 2 SMS segments; pools aim well under 160
 
 ENTITY_RX = re.compile(
     r"\b(llc|l\.l\.c|inc|corp|trust|trustee|estate|properties|property|holdings|"
-    r"investments|ventures|partners|lp|llp|company|bank|assoc|church|city of|county)\b",
+    r"investments|ventures|partners|lp|llp|company|bank|assoc|church|city of|county|"
+    r"heir|heirs|unknown|occupant|et al)\b",
     re.I,
 )
+
+# GIS exports shout; these tokens should stay shouting when we quiet the rest down
+KEEP_UPPER = {"N", "S", "E", "W", "NE", "NW", "SE", "SW", "US", "SR", "II", "III", "IV",
+              "AL", "AR", "AZ", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "IA", "ID",
+              "IL", "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MS",
+              "MT", "NC", "ND", "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA",
+              "RI", "SC", "SD", "TN", "TX", "UT", "VA", "VT", "WA", "WI", "WV", "WY"}
+ORDINAL_RX = re.compile(r"^(\d+)(ST|ND|RD|TH)$", re.I)
+COMPASS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
 
 # {first} owner first name, {addr} street line, {city} city, {sender} caller name.
 # Rewrite these in YOUR voice; keep the structure (see references/message-recipe.md).
@@ -84,7 +94,8 @@ POOLS = [(TOUCH1, TOUCH1_NONAME), (TOUCH2, TOUCH2_NONAME),
 
 # common DataSift export header spellings, first match wins (case-insensitive)
 COLUMN_GUESSES = {
-    "street": ["property street", "street address", "property address", "street", "address"],
+    "street": ["property street address", "property street", "street address",
+               "property address", "site address", "situs address", "street", "address"],
     "city": ["property city", "city"],
     "state": ["property state", "state"],
     "zip": ["property zip", "property zip code", "zip", "zip code", "postal code"],
@@ -115,6 +126,41 @@ def clean_first(raw: str) -> str:
         if len(tok) >= 2 and tok.replace("'", "").replace("-", "").isalpha():
             return tok.title()
     return ""
+
+
+def tidy_place(raw: str) -> str:
+    """Quiet a SHOUTED city/street down to something that reads handwritten,
+    and repair the ordinals/compass points that upstream title-casing mangles
+    ('36Th Ave Dr Ne' -> '36th Ave Dr NE')."""
+    s = " ".join((raw or "").split())
+    shouted = s.isupper()
+    out = []
+    for tok in s.split():
+        m = ORDINAL_RX.match(tok)
+        if m:  # 36TH / 36Th -> 36th
+            out.append(m.group(1) + m.group(2).lower())
+        elif tok.upper() in COMPASS:  # Ne / ne -> NE
+            out.append(tok.upper())
+        elif not shouted:  # mixed case: only the two repairs above
+            out.append(tok)
+        elif tok in KEEP_UPPER:
+            out.append(tok)
+        elif tok.startswith("MC") and len(tok) > 2:
+            out.append("Mc" + tok[2:].title())
+        else:
+            out.append(tok.title())
+    return " ".join(out)
+
+
+def tidy_addr(raw: str) -> str:
+    """Message-safe address. Vacant parcels carry a '0 <street>' bookkeeping
+    prefix (or no house number at all), which reads as a typo to the owner --
+    phrase those as 'the lot on <street>' instead."""
+    s = tidy_place(raw)
+    stripped = re.sub(r"^0+\s+", "", s)
+    if stripped != s or not re.match(r"^\d", s):
+        return "the lot on " + stripped
+    return s
 
 
 def render(seed_text: str, first: str, addr: str, city: str, sender: str,
@@ -177,8 +223,8 @@ def main() -> int:
             skipped.append((street, "no Assigned To value and no --sender"))
             continue
 
-        touches = render(f"{street}|{owner_full}".lower(), first, street,
-                         city or "the area", sender, no_name)
+        touches = render(f"{street}|{owner_full}".lower(), first, tidy_addr(street),
+                         tidy_place(city) or "the area", sender, no_name)
         if any(len(t) > MAX_CHARS for t in touches):
             skipped.append((street, f"a touch exceeded {MAX_CHARS} chars"))
             continue
@@ -205,8 +251,13 @@ def main() -> int:
     senders: dict[str, int] = {}
     for r in out_rows:
         senders[r["_sender"]] = senders.get(r["_sender"], 0) + 1
+    two_seg = sum(1 for r in out_rows for i in range(1, 5)
+                  if len(r[f"Text Touch {i}"]) > 160)
     print(f"\nrendered {len(out_rows)} records -> {a.out}")
     print(f"skipped {len(skipped)}", f"e.g. {skipped[:5]}" if skipped else "")
+    if two_seg:
+        print(f"note: {two_seg} of {len(out_rows) * 4} messages run past 160 chars "
+              "(2 SMS segments -- delivers fine, just costs double)")
     print(f"signer distribution: {senders}")
     print("\nsamples:")
     for r in out_rows[: a.show]:

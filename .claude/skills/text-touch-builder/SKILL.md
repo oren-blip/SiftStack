@@ -53,6 +53,8 @@ The script auto-detects common DataSift export column names (override with `--co
 
 Always show the user samples (and offer the full CSV) BEFORE importing. Check: names render correctly (no "Hi E A!"), no message over 320 chars, sign-offs match the assigned callers.
 
+The script already handles three things that bite on SiftStack FTM exports: owner first name `Heirs` (from the "Heirs of <Decedent>" transform) drops to the no-name variants instead of greeting "Hi Heirs"; SHOUTED county-GIS addresses are quieted to title case (`3021 MARIGOLD LN` -> `3021 Marigold Ln`, directionals and `24th` preserved); and vacant parcels carrying the `0 <street>` bookkeeping prefix — or no house number at all — are phrased as "the lot on Yount Rd". The exported address column keeps the ORIGINAL string so DataSift still upserts by address.
+
 ### Step 5: Import back into DataSift
 
 Upload File -> Add Data -> choose the **existing list** the records belong to (this upserts by address instead of duplicating) -> upload the generated CSV -> in the column-mapping step, drag `Text Touch 1-4` onto the matching custom fields (custom fields never auto-map) -> Finish Upload.
