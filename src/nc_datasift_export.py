@@ -67,6 +67,13 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
 DATASIFT_UPLOAD_COLUMNS = [h for h, _ in _FIELD_MAP]
 
 
+# Tag stamped on any row whose Phone 1 / secondary phone was pulled straight
+# from a court-filed PDF (cover sheet / family history / funeral bill). Lets
+# Oren filter court-verified numbers apart from DataSift skip-trace numbers.
+# The signal is the "pdf-phone" marker nc_phone_backfill writes into Match Reason.
+COURT_PHONE_TAG = "court-verified-phone"
+
+
 def _tags_for_week(week: int | None, year: int) -> str:
     tags = ["Courthouse Data"]
     if week:
@@ -97,7 +104,35 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
         out["Phone 1"] = dm_phone
     out["Email 1"] = (r.get("DM Email") or "").strip()
 
-    out["Tags"] = tags
+    # Vacant lots have no street-numbered address ("KING WILKINSON RD"), so
+    # DataSift's address-based enrichment can't resolve their parcel and leaves
+    # it blank — even though our pipeline found it. The parcel column isn't
+    # uploaded (DataSift ignores an uploaded APN), so surface it in Notes for
+    # vacant-land rows only, where it's the sole way to keep the number, along
+    # with a LandPortal deep link to the parcel (Oren works vacant lots there).
+    # See Painter 26E000440-540 (Week 29): pipeline had 3665410548, DataSift blank.
+    parcel = (r.get("Parcel ID") or "").strip()
+    if parcel and "vacant" in (r.get("Property use") or "").lower():
+        note = out.get("Notes", "").strip()
+        additions = []
+        if parcel not in note:
+            additions.append(f"[Parcel ID: {parcel}]")
+        try:
+            from landportal_lookup import get_property_url
+            url = get_property_url(parcel, r.get("County", ""))
+        except Exception:
+            url = ""
+        if url and url not in note:
+            additions.append(f"LandPortal: {url}")
+        if additions:
+            out["Notes"] = "\n".join([note] + additions).strip() if note else "\n".join(additions)
+
+    # Append the court-verified-phone tag when this row's number came from a
+    # court PDF (never overwrites the base per-week tags).
+    if "pdf-phone" in (r.get("Match Reason") or ""):
+        out["Tags"] = f"{tags},{COURT_PHONE_TAG}"
+    else:
+        out["Tags"] = tags
     return out
 
 

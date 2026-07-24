@@ -10,6 +10,7 @@ Requires: DATASIFT_EMAIL and DATASIFT_PASSWORD in .env or environment.
 
 import logging
 import os
+import re
 from pathlib import Path
 
 import config
@@ -366,19 +367,91 @@ async def upload_csv(
     except Exception as e:
         logger.debug("Date field: %s", e)
 
-    # "DOES DATA CONTAIN PHONE NUMBERS?" — select "Yes" (Oren: phone columns present)
+    # "Does data contain phone numbers?" — MUST be "Yes" or DataSift DROPS every
+    # uploaded phone column on import (verified 2026-07-18: all 18 Week-29 phones
+    # were silently discarded when this fell to "No"). The dropdown is a styled
+    # Selectstyles container whose options are divs with value="true"/"false"
+    # ("Yes"/"No"). Two hard-won rules (2026-07-18):
+    #   1. Find the container as the first SelectContainer FOLLOWING the phone
+    #      label (an ancestor-xpath matched the wrong dropdown).
+    #   2. Use a Playwright real-click on the option — a JS element.click() does
+    #      NOT update React state (the value silently stays "No"). Verified: real
+    #      click flips the displayed value to "Yes".
+    phone_yes_selected = False
     try:
-        phone_dropdown = page.locator('text="DOES DATA CONTAIN PHONE NUMBERS?"').locator(
-            '..').locator('text="Select an option"')
-        if await phone_dropdown.count() > 0:
-            await phone_dropdown.first.click()
-            await page.wait_for_timeout(500)
-            yes_opt = page.locator('text="Yes"')
-            if await yes_opt.count() > 0:
-                await yes_opt.first.click()
-            await page.wait_for_timeout(500)
+        phone_label = page.get_by_text("Does data contain phone numbers?", exact=False)
+        if await phone_label.count() > 0:
+            container = phone_label.first.locator(
+                'xpath=following::*[contains(@class,"SelectContainer")][1]')
+            if await container.count() > 0:
+                await container.locator('[class*="SelectValue"]').first.click()
+                await page.wait_for_timeout(800)
+                yes = container.locator('[class*="SelectOptionContainer"][value="true"]')
+                if await yes.count() == 0:  # fallback: match by "Yes" text
+                    yes = container.locator(
+                        '[class*="SelectOptionContainer"]').filter(
+                        has_text=re.compile(r'^\s*Yes\s*$', re.I))
+                if await yes.count() > 0:
+                    try:
+                        await yes.first.click(timeout=4000)
+                    except Exception:
+                        await yes.first.click(force=True, timeout=4000)
+                    await page.wait_for_timeout(500)
+                    # Confirm the displayed value actually flipped to "Yes".
+                    val = await container.locator(
+                        '[data-testid="Select__SelectValue_Span"]').first.text_content()
+                    phone_yes_selected = bool(val and val.strip().lower().startswith("yes"))
+        if phone_yes_selected:
+            logger.info("Setup: phone numbers = Yes")
+        else:
+            logger.warning("Setup: could NOT confirm 'phone numbers = Yes' — DataSift "
+                           "will DROP uploaded phone columns. Check the Review screen.")
     except Exception as e:
-        logger.debug("Phone numbers dropdown: %s", e)
+        logger.warning("Phone-numbers dropdown (CRITICAL for phone import): %s", e)
+
+    # Selecting phones=Yes makes "Where was it skiptraced?" a REQUIRED field. If
+    # it's left blank, the wizard silently reverts phones back to "No" — exactly
+    # how the Week-29 phones were dropped despite the Yes read-back. Our phones
+    # come from web people-search, so choose "Other" and type "People Search".
+    # Hard-won details (2026-07-18):
+    #   - ALL dropdowns render their options in the DOM at once, and there are
+    #     TWO options with value="__OTHER__" (purchase-source AND skiptrace), so
+    #     the click MUST be scoped to the skiptrace container.
+    #   - The skiptrace container is the first SelectContainer FOLLOWING the phone
+    #     one. Pin it with an element_handle BEFORE clicking, because picking
+    #     "Other" injects a "Type new value" text box that shifts the DOM and
+    #     re-resolves relative locators onto the wrong dropdown.
+    if phone_yes_selected:
+        try:
+            skip_c = container.locator(
+                'xpath=following::*[contains(@class,"SelectContainer")][1]')
+            skip_handle = await skip_c.element_handle()
+            if skip_handle:
+                sv = await skip_handle.query_selector('[class*="SelectValue"]')
+                if sv:
+                    await sv.click()
+                    await page.wait_for_timeout(700)
+                other = await skip_handle.query_selector(
+                    '[class*="SelectOptionContainer"][value="__OTHER__"]')
+                if other:
+                    await other.click()
+                    await page.wait_for_timeout(600)
+                    # "Other" swaps the dropdown for a checkbox + "Type new value"
+                    # text box — fill it so the field validates.
+                    spec = page.locator('input[placeholder="Type new value"]')
+                    if await spec.count() > 0:
+                        await spec.first.fill("People Search")
+                        await spec.first.press("Enter")
+                        await page.wait_for_timeout(400)
+                        logger.info("Setup: skiptrace source = Other / People Search")
+                    else:
+                        logger.warning("Setup: skiptrace 'Type new value' box did not "
+                                       "appear — phones=Yes may revert to No.")
+                else:
+                    logger.warning("Setup: skiptrace 'Other' option not found — "
+                                   "phones=Yes may revert to No.")
+        except Exception as e:
+            logger.warning("Skiptrace-source dropdown (needed to keep phones=Yes): %s", e)
 
     # "ASSOCIATE DATA WITH LIST" — enter or search for list name
     try:
