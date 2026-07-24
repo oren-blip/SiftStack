@@ -563,6 +563,36 @@ def _serper_web_search(query: str, num: int = 8) -> list[dict] | None:
     ]
 
 
+def _web_search_results(query: str, max_results: int = 5) -> list[dict]:
+    """Unified web search returning DDG-shaped dicts ({href, title, body}).
+
+    Tries Serper (Google) first — the reliable paid backend — and only falls
+    back to direct DDGS scraping when Serper is unconfigured or errors. Scraping
+    Google/DuckDuckGo/Brave directly gets HTTP 429 rate-limited under the
+    per-heir query volume of the survivor + people-search finders, silently
+    starving them (this is what left "Heirs of" rows with no spouse name).
+    Routing through Serper is the same fix already applied to the primary
+    obituary search; this extends it to the remaining call sites.
+
+    An empty Serper result (search ran, matched nothing) is returned as-is and
+    does NOT fall through to DDG — Serper is authoritative, and falling back
+    would just re-trigger the rate-limiting we're avoiding.
+    """
+    serper = _serper_web_search(query, num=max_results)
+    if serper is not None:
+        return [
+            {"href": r.get("url", ""), "title": r.get("title", ""),
+             "body": r.get("snippet", "")}
+            for r in serper
+        ]
+    try:
+        return list(DDGS().text(query, max_results=max_results,
+                                backend="google,duckduckgo,brave"))
+    except Exception as e:
+        logger.debug("Web search failed for '%s': %s", query, e)
+        return []
+
+
 def _search_obituary(
     name: str, city: str, extra_terms: str = "", state: str = "TN",
 ) -> list[dict]:
@@ -753,7 +783,7 @@ def _refetch_specific_obituary(
 
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = _web_search_results(query, max_results=5)
         except Exception:
             continue
 
@@ -848,7 +878,7 @@ def _search_survivors_targeted(
     all_snippets = []
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = _web_search_results(query, max_results=5)
             for r in results:
                 snippet = r.get("body", "")
                 title = r.get("title", "")
@@ -1048,7 +1078,7 @@ def _lookup_dm_address_web(
 
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = _web_search_results(query, max_results=5)
         except Exception:
             time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue

@@ -24,10 +24,12 @@ Docs: https://landportal.com/wp-json/lp-rest-api/v1  (External API Reference, v1
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -203,6 +205,82 @@ def get_vacant_market_value(pin: str, county: str) -> dict | None:
     cache[ck] = {"_v": 1, "_ts": time.time(), "result": result}
     _save_cache()
     return result
+
+
+_PROPERTY_URL = "https://landportal.com/?property="
+_LINCOLN_PARCEL_URL = ("https://arcgisserver.lincolncountync.gov/arcgis/rest/"
+                       "services/Server_TaxParcelViewerSP/MapServer/0/query")
+
+
+def _build_property_url(fips: str, apn: str, propertyid) -> str:
+    """LandPortal's shareable deep link is ?property=<base64 of a query string>.
+    Verified against a live browser URL (Painter, Lincoln 26E000440-540):
+    fips=37109&apn=24578&propertyid=97844945 → the exact ?property= token."""
+    payload = f"fips={fips}&apn={apn}&propertyid={propertyid}"
+    token = base64.b64encode(payload.encode()).decode()
+    return _PROPERTY_URL + urllib.parse.quote(token)
+
+
+def _search_feature(query: str, fips: str) -> dict | None:
+    """First /search feature's properties for a parcel query, or None."""
+    status, body = _get("/search", {"type": "parcelnumb", "query": query, "fips": fips})
+    if status != 200 or not body.get("success"):
+        return None
+    feats = ((body.get("data") or {}).get("features")) or []
+    return (feats[0].get("properties") or {}) if feats else None
+
+
+def _lincoln_tax_parcel_id(pin: str) -> str:
+    """Translate a Lincoln geo-PIN to its tax-account id (PARCELID). LandPortal
+    indexes Lincoln by PARCELID (e.g. 24578), NOT the PIN (3665410548), so a
+    /search on the PIN returns nothing. The county GIS record we already read
+    carries both. Best-effort; returns "" on any failure."""
+    try:
+        r = requests.get(_LINCOLN_PARCEL_URL, timeout=_TIMEOUT, params={
+            "where": f"PIN='{pin}'", "outFields": "PARCELID",
+            "returnGeometry": "false", "f": "json"})
+        feats = r.json().get("features", [])
+        if feats:
+            return str(feats[0].get("attributes", {}).get("PARCELID") or "").strip()
+    except Exception:  # pragma: no cover
+        return ""
+    return ""
+
+
+def get_property_url(parcel_id: str, county: str) -> str:
+    """Return a landportal.com deep link for a parcel, or "" if unresolvable.
+
+    Most NC counties resolve directly from our stored parcel number (LandPortal
+    reformats it to its dashed APN). Lincoln is the exception — it indexes by the
+    tax-account id, so we translate PIN → PARCELID first. Result (including a ""
+    miss) is cached to disk so nightly rebuilds don't re-query. Never raises.
+    """
+    if not available():
+        return ""
+    fips = county_fips(county)
+    if not fips or not parcel_id:
+        return ""
+
+    cache = _load_cache()
+    ck = f"url:{fips}:{_norm_pin(parcel_id)}"
+    hit = cache.get(ck)
+    if isinstance(hit, dict) and hit.get("_v") == 1:
+        if (time.time() - hit.get("_ts", 0)) / 86400 <= _CACHE_TTL_DAYS:
+            return hit.get("result") or ""
+
+    props = _search_feature(parcel_id, fips)
+    if props is None and (county or "").strip().lower() == "lincoln":
+        alt = _lincoln_tax_parcel_id(parcel_id)
+        if alt:
+            props = _search_feature(alt, fips)
+
+    url = ""
+    if props and props.get("propertyid") and props.get("apn"):
+        url = _build_property_url(fips, str(props["apn"]), props["propertyid"])
+
+    cache[ck] = {"_v": 1, "_ts": time.time(), "result": url}
+    _save_cache()
+    return url
 
 
 def _to_float(v) -> float | None:
