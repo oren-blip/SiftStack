@@ -47,6 +47,7 @@ import argparse
 import csv
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -185,6 +186,18 @@ def enriched_output_path(src: Path) -> Path:
             stem = stem[: -len(token)]
             break
     return src.with_name(f"{stem}_dm_enriched.csv")
+
+
+def _upload_output_path(src: Path) -> Path | None:
+    """The `*_datasift_upload.csv` the polish wrote for this same week.
+
+    Only returned for a `_datasift.csv` input -- that is the one whose upload
+    sibling the polish pipeline produces. Returns None otherwise so an
+    `_ecourts_backfilled` or ad-hoc `--csv` run never invents a new upload file.
+    """
+    if not src.stem.endswith("_datasift"):
+        return None
+    return src.with_name(f"{src.stem}_upload.csv")
 
 
 def select_target_files(all_weeks: bool, explicit_csv: str | None) -> list[Path]:
@@ -368,6 +381,24 @@ def process_file(
     write_csv(rows, out_csv)
     write_xlsx(rows, out_xlsx)
     stats["output"] = out_csv.name
+
+    # Refresh the DataSift upload CSV with what we just found. The polish wrote
+    # it BEFORE this step ran, so it carries only the pipeline's own
+    # people-search phones -- every Tracerfy number and Trestle tier found here
+    # was landing in the workbook and never reaching the CRM (Week 30: upload
+    # had 3/53 phones, this file 39/53). Same filename the polish used, so
+    # upload_netnew_datasift.py picks up the refreshed one.
+    upload_csv = _upload_output_path(src)
+    if upload_csv is not None:
+        try:
+            from nc_datasift_export import write_datasift_upload_csv
+            wk_m = re.search(r"week(\d+)", src.stem)
+            write_datasift_upload_csv(rows, upload_csv,
+                                      week=int(wk_m.group(1)) if wk_m else None)
+            stats["upload_refreshed"] = upload_csv.name
+            logger.info("refreshed DataSift upload CSV -> %s", upload_csv.name)
+        except Exception as e:  # never let this sink an otherwise-good run
+            logger.warning("could not refresh DataSift upload CSV: %s", e)
     logger.info("%s: DM filled %d | phones traced %d | tier-scored %d -> %s",
                 src.name, stats["dm_filled"], stats["traced"], stats["tiers_scored"], out_csv.name)
     return stats

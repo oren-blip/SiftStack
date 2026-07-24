@@ -29,6 +29,7 @@ import glob
 import json
 import logging
 import os
+import re
 import sys
 import time
 
@@ -301,6 +302,31 @@ def _write(csv_path, rows, fieldnames, dry_run, found, found_addr=0) -> None:
         w.writerows(rows)
     logger.info("Wrote %d PR phone(s) and %d PR address(es) into %s",
                 found, found_addr, csv_path)
+    _refresh_datasift_upload(csv_path, rows)
+
+
+def _refresh_datasift_upload(enriched_csv: str, rows: list[dict]) -> None:
+    """Push these court-verified phones into the week's DataSift upload CSV.
+
+    The polish wrote that file before this step ran, so without this the numbers
+    reach the workbook but never the CRM. Same filename the polish used, so
+    upload_netnew_datasift.py picks up the refreshed one. See the twin refresh
+    in nc_deep_prospect.py.
+    """
+    stem = os.path.basename(enriched_csv)[: -len("_dm_enriched.csv")]
+    upload = os.path.join(os.path.dirname(enriched_csv), f"{stem}_datasift_upload.csv")
+    if not os.path.exists(upload):
+        logger.info("No %s to refresh — skipping DataSift upload refresh.",
+                    os.path.basename(upload))
+        return
+    try:
+        from nc_datasift_export import write_datasift_upload_csv
+        wk = re.search(r"week(\d+)", stem)
+        write_datasift_upload_csv(rows, upload,
+                                  week=int(wk.group(1)) if wk else None)
+        logger.info("Refreshed DataSift upload CSV -> %s", os.path.basename(upload))
+    except Exception as e:  # never sink an otherwise-good backfill run
+        logger.warning("Could not refresh DataSift upload CSV: %s", e)
 
 
 if __name__ == "__main__":
