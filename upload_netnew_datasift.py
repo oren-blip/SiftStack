@@ -14,9 +14,17 @@ on the Review screen. From there:
 Detection uses the wizard's own canonical signal: the "Review your upload"
 heading disappearing == Finish was clicked and the wizard closed.
 
+After the upload commits, it fires DataSift's OWN skip trace on just this week's
+rows (scoped by the per-week tag "NC Estates Week N YYYY", so it never re-traces
+the whole PROBATE list and burns the monthly limit). The uploaded Tracerfy/court
+phones stay; DataSift's numbers get ADDED alongside. Needs --week to scope the
+tag; disable with --no-skip-trace.
+
 Usage:
     python upload_netnew_datasift.py --csv output/week29_NETNEW_datasift_upload.csv \
         --list PROBATE --week 29
+    python upload_netnew_datasift.py --csv <file> --list PROBATE --week 30 \
+        --no-skip-trace           # upload only, don't trigger DataSift skip trace
     python upload_netnew_datasift.py --csv <file> --list PROBATE --week 30 \
         --review-wait 5            # wait 5 min for a manual Finish, else auto-finish
     python upload_netnew_datasift.py --csv <file> --no-auto-finish   # never auto-click
@@ -34,7 +42,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
-from datasift_uploader import login, upload_csv
+from datasift_uploader import login, upload_csv, skip_trace_records
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -55,8 +63,30 @@ async def _wait_for_wizard_close(page, timeout_ms: int = 60000) -> bool:
         return False
 
 
+async def _skip_trace_week(page, list_name: str, week: int, year: int,
+                           settle_s: int) -> None:
+    """Fire DataSift's own skip trace on JUST this week's rows, after the upload
+    finishes importing. Scoped by the per-week tag ("NC Estates Week N YYYY") so
+    it never re-traces the whole PROBATE list (protects the monthly limit). The
+    uploaded Tracerfy/court phones stay — DataSift's numbers get ADDED alongside.
+    """
+    tag = f"NC Estates Week {week} {year}"
+    logger.info("Upload committed. Waiting %ds for DataSift to import the rows "
+                "before skip trace (so the tag filter finds them)...", settle_s)
+    await page.wait_for_timeout(settle_s * 1000)
+    logger.info("Skip tracing this week's rows only (tag=%r)...", tag)
+    res = await skip_trace_records(page, list_name, filter_tag=tag)
+    if res.get("success"):
+        logger.info("DataSift skip trace started: %s", res.get("message"))
+    else:
+        logger.error("DataSift skip trace did NOT start: %s — run it by hand: "
+                     "Records -> filter tag %r -> Select all -> Send To -> Skip Trace.",
+                     res.get("message"), tag)
+
+
 async def run(csv_path: Path, list_name: str, week: int | None, year: int,
-              review_wait_min: float, auto_finish: bool, headless: bool) -> None:
+              review_wait_min: float, auto_finish: bool, headless: bool,
+              skip_trace: bool = True, skiptrace_settle_s: int = 90) -> None:
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
@@ -98,7 +128,7 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
 
             # ── Hold for a manual Finish, then auto-finish as fallback ──
             polls = int(review_wait_min * 6)   # poll every 10s
-            finished_by_human = False
+            committed = False
             if review_wait_min > 0:
                 logger.info("Review screen is up. Click 'Finish Upload' within %g min "
                             "to stay in control; otherwise it auto-finishes.", review_wait_min)
@@ -109,33 +139,40 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                     except Exception:
                         visible = False
                     if not visible:
-                        finished_by_human = True
+                        committed = True
                         logger.info("Review screen closed — you clicked Finish. Upload committed.")
                         break
                     if (i + 1) % 6 == 0:
                         logger.info("...waiting for manual Finish (%d min elapsed)", (i + 1) // 6)
 
-            if finished_by_human:
-                return
-
-            if not auto_finish:
-                logger.info("No manual Finish within the window and auto-finish is OFF — "
-                            "closing WITHOUT committing. Nothing was uploaded.")
-                return
-
-            # Fallback: click Finish ourselves.
-            logger.info("No manual Finish within %g min — auto-clicking 'Finish Upload'.",
-                        review_wait_min)
-            finish_btn = page.locator(FINISH_SELECTOR)
-            if await finish_btn.count() > 0:
-                await finish_btn.first.click()
-                logger.info("Auto-clicked 'Finish Upload'.")
-                if await _wait_for_wizard_close(page):
-                    logger.info("Upload committed (wizard closed) — processing in background.")
+            if not committed:
+                if not auto_finish:
+                    logger.info("No manual Finish within the window and auto-finish is OFF — "
+                                "closing WITHOUT committing. Nothing was uploaded.")
+                    return
+                # Fallback: click Finish ourselves.
+                logger.info("No manual Finish within %g min — auto-clicking 'Finish Upload'.",
+                            review_wait_min)
+                finish_btn = page.locator(FINISH_SELECTOR)
+                if await finish_btn.count() > 0:
+                    await finish_btn.first.click()
+                    logger.info("Auto-clicked 'Finish Upload'.")
+                    if await _wait_for_wizard_close(page):
+                        committed = True
+                        logger.info("Upload committed (wizard closed) — processing in background.")
+                    else:
+                        logger.warning("Wizard did not close within 60s — verify on the Activity page.")
                 else:
-                    logger.warning("Wizard did not close within 60s — verify on the Activity page.")
-            else:
-                logger.error("Finish button not found — nothing committed. Check the browser.")
+                    logger.error("Finish button not found — nothing committed. Check the browser.")
+
+            # ── Fire DataSift's own skip trace on just this week's rows ──
+            if committed and skip_trace:
+                if week is None:
+                    logger.warning("Skip trace requested but --week not set — can't scope the "
+                                   "per-week tag, so SKIPPING it to avoid tracing the whole list. "
+                                   "Pass --week N (or --no-skip-trace to silence this).")
+                else:
+                    await _skip_trace_week(page, list_name, week, year, skiptrace_settle_s)
         finally:
             await browser.close()
 
@@ -146,18 +183,28 @@ def main():
     ap.add_argument("--csv", required=True, help="DataSift-native upload CSV")
     ap.add_argument("--list", dest="list_name", default="PROBATE",
                     help="Existing DataSift list to add into (default: PROBATE)")
-    ap.add_argument("--week", type=int, default=None, help="ISO week (for logging only)")
+    ap.add_argument("--week", type=int, default=None,
+                    help="ISO week — scopes the post-upload skip trace to this week's "
+                         "tag ('NC Estates Week N YYYY'). Without it, skip trace is skipped.")
     ap.add_argument("--year", type=int, default=2026)
     ap.add_argument("--review-wait", type=float, default=5.0,
                     help="Minutes to wait for a manual Finish before auto-finishing "
                          "(default 5; 0 = finish immediately)")
     ap.add_argument("--no-auto-finish", action="store_true",
                     help="Never auto-click Finish; close uncommitted if no human acts")
+    ap.add_argument("--no-skip-trace", action="store_true",
+                    help="Don't fire DataSift's own skip trace after commit "
+                         "(default: skip-trace this week's rows, scoped by the week tag)")
+    ap.add_argument("--skiptrace-settle", type=int, default=90,
+                    help="Seconds to wait after commit for DataSift to import the rows "
+                         "before skip trace, so the tag filter finds them (default 90)")
     ap.add_argument("--headless", action="store_true", help="Run browser headless")
     args = ap.parse_args()
 
     asyncio.run(run(Path(args.csv), args.list_name, args.week, args.year,
-                    args.review_wait, not args.no_auto_finish, args.headless))
+                    args.review_wait, not args.no_auto_finish, args.headless,
+                    skip_trace=not args.no_skip_trace,
+                    skiptrace_settle_s=args.skiptrace_settle))
 
 
 if __name__ == "__main__":

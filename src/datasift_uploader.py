@@ -411,8 +411,12 @@ async def upload_csv(
 
     # Selecting phones=Yes makes "Where was it skiptraced?" a REQUIRED field. If
     # it's left blank, the wizard silently reverts phones back to "No" — exactly
-    # how the Week-29 phones were dropped despite the Yes read-back. Our phones
-    # come from web people-search, so choose "Other" and type "People Search".
+    # how the Week-29 phones were dropped despite the Yes read-back. Our uploaded
+    # phones come from Tracerfy (scored by Trestle) + court PDFs — NOT web
+    # people-search — so label the source "Tracerfy" so the DataSift tag is
+    # honest (was "People Search", which misread as an inaccurate lookup step and
+    # hid that these are Tracerfy numbers). Court-verified phones also carry the
+    # separate COURT_PHONE_TAG. Per Oren (2026-07-25).
     # Hard-won details (2026-07-18):
     #   - ALL dropdowns render their options in the DOM at once, and there are
     #     TWO options with value="__OTHER__" (purchase-source AND skiptrace), so
@@ -440,10 +444,10 @@ async def upload_csv(
                     # text box — fill it so the field validates.
                     spec = page.locator('input[placeholder="Type new value"]')
                     if await spec.count() > 0:
-                        await spec.first.fill("People Search")
+                        await spec.first.fill("Tracerfy")
                         await spec.first.press("Enter")
                         await page.wait_for_timeout(400)
-                        logger.info("Setup: skiptrace source = Other / People Search")
+                        logger.info("Setup: skiptrace source = Other / Tracerfy")
                     else:
                         logger.warning("Setup: skiptrace 'Type new value' box did not "
                                        "appear — phones=Yes may revert to No.")

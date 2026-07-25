@@ -18,7 +18,13 @@ Per Oren (2026-07-11):
 from __future__ import annotations
 
 import csv
+import json
+import re
 from pathlib import Path
+
+# Manual-archive index of cases Oren has already pulled by hand and uploaded to
+# DataSift himself (built by build_manual_archive_index.py from his FTM workbook).
+MANUAL_INDEX_PATH = Path("output") / ".manual_archive_index.json"
 
 # Empty phone/email slots so Tracerfy / DataSift skip-trace numbers map cleanly.
 _PHONE_SLOTS = [f"Phone {i}" for i in range(1, 10)]   # Phone 1-9
@@ -136,11 +142,80 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
     return out
 
 
+def _name_token_key(name: str) -> str:
+    """Order-independent name key. MUST stay identical to
+    build_manual_archive_index.py:name_token_key and
+    fix_addresses_and_prep.py:_name_token_key so the archive keys line up.
+    """
+    s = (name or "").upper()
+    s = re.sub(r"\bAKA\b.*", "", s)
+    s = re.sub(r"\b(JR|SR|II|III|IV|MR|MRS|MS|DR)\.?\b", "", s)
+    tokens = sorted(t for t in re.findall(r"[A-Z]+", s) if len(t) >= 3)
+    return " ".join(tokens)
+
+
+def _norm_addr(addr: str) -> str:
+    """Collapse an address to letters+digits only, uppercased — so '123 Main St'
+    and '123 MAIN STREET' still won't collide, but '123 Main St' vs '123  Main
+    St.' do. DataSift itself merges only on near-exact address text, so this is a
+    deliberately loose key used ONLY to spot cases already in the manual file."""
+    return re.sub(r"[^A-Z0-9]", "", (addr or "").upper())
+
+
+def load_manual_archive(index_path: str | Path = MANUAL_INDEX_PATH) -> dict | None:
+    """Load the manual-archive index into fast lookup sets. Returns None if the
+    index file is missing/unreadable (caller then skips net-new filtering)."""
+    try:
+        with Path(index_path).open(encoding="utf-8") as f:
+            entries = json.load(f).get("_entries", {})
+    except (OSError, ValueError):
+        return None
+    case_nos: set[str] = set()
+    addrs: set[tuple[str, str]] = set()
+    for e in entries.values():
+        cn = (e.get("case_no") or "").strip().upper()
+        if cn:
+            case_nos.add(cn)
+        pa = _norm_addr(e.get("property_address", ""))
+        if pa:
+            addrs.add((pa, (e.get("property_zip") or "").strip()[:5]))
+    return {"case_nos": case_nos, "name_keys": set(entries.keys()), "addrs": addrs}
+
+
+def in_manual_archive(row: dict, arc: dict) -> bool:
+    """True if this polished FTM row is a case Oren already pulled by hand.
+
+    Matched three ways (any hit = already his), strongest first:
+      1. Case No. exact — the most reliable key.
+      2. County + decedent name-token key — the archive's own key; catches rows
+         whose Case No. is blank/differs.
+      3. Property address + ZIP — catches name-spelling drift between his hand
+         entry and eCourts (e.g. 'Katherine' vs 'Catherine') for the SAME house.
+    """
+    cn = (row.get("Case No.") or "").strip().upper()
+    if cn and cn in arc["case_nos"]:
+        return True
+    county = (row.get("County") or "").strip().upper()
+    dec = row.get("Deceased Owner") or ""
+    if county and dec and f"{county}||{_name_token_key(dec)}" in arc["name_keys"]:
+        return True
+    pa = _norm_addr(row.get("Property Address", ""))
+    if pa and (pa, (row.get("Property Zip") or "").strip()[:5]) in arc["addrs"]:
+        return True
+    return False
+
+
 def write_datasift_upload_csv(rows: list[dict], path: str | Path,
-                              week: int | None = None, year: int = 2026) -> int:
+                              week: int | None = None, year: int = 2026,
+                              write_netnew: bool = True) -> int:
     """Write `rows` (polished FTM dicts) to a DataSift-native upload CSV.
 
     `week`/`year` populate the per-week Tags. Returns rows written.
+
+    When `write_netnew` is set and the manual-archive index exists, ALSO writes a
+    `<name>_NETNEW.csv` sibling containing only the cases Oren has NOT already
+    pulled by hand. Upload the NETNEW file — it can't duplicate records his own
+    manual upload already put in DataSift. The full file stays for reference.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,4 +225,20 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
         w.writeheader()
         for r in rows:
             w.writerow(_row_to_datasift(r, tags))
+
+    if write_netnew:
+        arc = load_manual_archive()
+        netnew_path = path.with_name(f"{path.stem}_NETNEW.csv")
+        if arc is None:
+            # No index -> can't tell what's already his. Mirror the full file so
+            # the NETNEW name still exists, but the caller's log flags it.
+            netnew_rows = list(rows)
+        else:
+            netnew_rows = [r for r in rows if not in_manual_archive(r, arc)]
+        with netnew_path.open("w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
+            w.writeheader()
+            for r in netnew_rows:
+                w.writerow(_row_to_datasift(r, tags))
+
     return len(rows)
