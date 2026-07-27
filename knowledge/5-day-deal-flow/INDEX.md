@@ -14,28 +14,30 @@ This is where the **FTM (first-to-market) strategy** behind the NC probate pipel
 
 ## Status
 
-| Day | Date | Topic | Transcript | Speakers named? | Notes | Video | Chat |
-|-----|------|-------|-----------|---|-------|-------|------|
-| 1 | 2026-07-13 (Mon) | Market research, county list framework / doors per deal, Claude REI skills library | ❌ | — | ❌ | ✅ | ❌ |
-| 2 | 2026-07-14 (Tue) | **Niche sequential marketing** — call cadence, scripts, Trestle, team structure, KPIs | ✅ | ⚠️ numbered only | ✅ | ✅ | ✅ |
-| 3 | 2026-07-15 (Wed) | **Deep prospecting** — obituary/probate heirs, multi-source skip tracing, SiftStack | ✅ | ✅ real names | ✅ | ✅ | ✅ |
-| 4 | 2026-07-16 (Thu) | Sales — lead management, sequences, drips, rehab estimating, comping, AI call scoring | ✅ | ❌ captions only | ❌ | ✅ | ✅ |
-| 5 | 2026-07-17 (Fri) | KPIs, Claude-powered reporting, calling volume | ❌ | — | ❌ | ✅ | ❌ |
+**All five days are transcribed and distilled.**
+
+| Day | Date | Topic | Speakers named? |
+|-----|------|-------|---|
+| [1](notes/day-1-key-teachings.md) | 2026-07-13 (Mon) | **Market research & data strategy** — pendulum theory, doors per deal, the marketing funnel, obituary vs probate, curative title, blueprints | ✅ real names |
+| [2](notes/day-2-key-teachings.md) | 2026-07-14 (Tue) | **Niche sequential marketing** — call cadence, scripts, Trestle, team structure, KPIs, door knocking | ⚠️ numbered only |
+| [3](notes/day-3-key-teachings.md) | 2026-07-15 (Wed) | **Deep prospecting** — obituary heirs, multi-source skip tracing, Deep Prospecting v4, SiftStack | ✅ real names |
+| [4](notes/day-4-key-teachings.md) | 2026-07-16 (Thu) | **Sales** — 4 pillars, STABM, lead cadences, AI call scoring, comping, rehab estimating | ❌ **captions only** |
+| [5](notes/day-5-key-teachings.md) | 2026-07-17 (Fri) | **Scaling & operations** — audit, budgets/runway, KPI engine, hiring workflow, SOPs, D4D model | ✅ real names |
 
 Recordings are in `videos/` as `day-N-YYYY-MM-DD.mp4` (~3.4 GB total, gitignored).
 Zoom chat logs are in `chat/`; the links from them are indexed in [RESOURCES.md](RESOURCES.md).
 
-### Gaps worth closing
+### Transcript quality — read before quoting
 
-1. **Days 1 and 5 have no transcript at all** and can't be quoted.
-2. **Day 4 is closed-captions only — no speaker labels.** You can read what was said but cannot
-   attribute any quote to Ty vs. a student. Treat every Day 4 quote as unattributed.
-3. **Day 2 has numbered speakers** ("Student 1/2/3") from AssemblyAI, not names.
+- **Days 1, 3, 5** — Zoom `.transcript.vtt` with real names (`Ty Garrett:`, `Tyler Austin:`,
+  `Phil Loesch:`). Trustworthy.
+- **Day 2** — AssemblyAI, speakers are `Student 1/2/3` by voice. A long Ty monologue occasionally
+  gets split onto a student label; check surrounding turns before attributing.
+- **Day 4** — closed captions, **no speaker labels at all**. Content is reliable, attribution is not.
+  Never quote a named person from Day 4 without checking the recording.
 
-All three are fixed the same way: download Zoom's **`*.transcript.vtt`** for that recording (Day 3
-proves it exists — it yields real names like `Ty Garrett:` / `Tyler Austin:` / `Phil Loesch:`), then
-re-import with `--force`. Prefer `.transcript.vtt` over `.cc.vtt` and over the AssemblyAI `.docx`
-every time.
+If Zoom ever produces a `.transcript.vtt` for Days 2 or 4, re-import with `--force` — named speakers
+beat both the AssemblyAI file and the captions.
 
 ## Speaker key
 
