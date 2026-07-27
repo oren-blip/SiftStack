@@ -78,6 +78,10 @@ DATASIFT_UPLOAD_COLUMNS = [h for h, _ in _FIELD_MAP]
 # Oren filter court-verified numbers apart from DataSift skip-trace numbers.
 # The signal is the "pdf-phone" marker nc_phone_backfill writes into Match Reason.
 COURT_PHONE_TAG = "court-verified-phone"
+# Same idea for the Enformion PersonSearch fallback (nc_deep_prospect writes
+# "enformion-phone" into Match Reason) — honest phone-source labeling so the
+# CRM never implies these came from Tracerfy or DataSift skip trace.
+ENFORMION_PHONE_TAG = "enformion-phone"
 
 
 def _tags_for_week(week: int | None, year: int) -> str:
@@ -133,12 +137,13 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
         if additions:
             out["Notes"] = "\n".join([note] + additions).strip() if note else "\n".join(additions)
 
-    # Append the court-verified-phone tag when this row's number came from a
-    # court PDF (never overwrites the base per-week tags).
-    if "pdf-phone" in (r.get("Match Reason") or ""):
-        out["Tags"] = f"{tags},{COURT_PHONE_TAG}"
-    else:
-        out["Tags"] = tags
+    # Append phone-source tags when this row's number came from a court PDF
+    # or the Enformion fallback (never overwrites the base per-week tags).
+    mr = r.get("Match Reason") or ""
+    extra = [t for marker, t in (("pdf-phone", COURT_PHONE_TAG),
+                                 ("enformion-phone", ENFORMION_PHONE_TAG))
+             if marker in mr]
+    out["Tags"] = ",".join([tags] + extra)
     return out
 
 

@@ -86,6 +86,7 @@ EST_COST_PHONESCORE_PER_ROW = float(os.getenv("NC_DP_COST_PHONESCORE", "0.05"))
 TRACERFY_PER_RECORD = 0.02        # tracerfy_skip_tracer batch endpoint
 TRESTLE_PER_PHONE = 0.015         # phone_validator.COST_PER_PHONE
 EST_PHONES_PER_RECORD = float(os.getenv("NC_DP_EST_PHONES", "3"))
+ENFORMION_PER_MATCH = 0.35        # enformion_client — billed per MATCH, misses free
 
 DEFAULT_MAX_ROWS = int(os.getenv("NC_DP_MAX_ROWS", "50"))
 
@@ -173,6 +174,93 @@ def trace_target(row: dict) -> tuple[NoticeData | None, str, str]:
     return tn, phone_col, tier_col
 
 
+def _mark_reason(row: dict, code: str) -> None:
+    """Append an audit code to Match Reason (same convention as the polish
+    pipeline's tag_reason: ' | '-joined kebab codes, idempotent)."""
+    existing = (row.get("Match Reason") or "").strip()
+    parts = [p.strip() for p in existing.split("|") if p.strip()]
+    if code not in parts:
+        parts.append(code)
+        row["Match Reason"] = " | ".join(parts)
+
+
+def _enformion_fallback_pr_phones(trace_notices: list, meta: dict,
+                                  src_name: str) -> tuple[int, int]:
+    """Enformion PersonSearch on named PRs that Tracerfy couldn't crack.
+
+    Scope is deliberately the PR branch ONLY (phone_col == "Phone 1"): there
+    the notice's address is the PR's OWN mailing address, which is the anchor
+    Enformion needs ("City, ST ZIP" — name+city alone is rejected, and
+    anchoring a DM to the PROPERTY address would risk matching the wrong
+    same-named person). ~$0.35 per match, misses free, hits disk-cached 14d.
+
+    Fills the notice's phone fields IN PLACE so the existing Trestle scoring
+    and row-apply loop downstream pick the numbers up like any Tracerfy
+    result. Rows getting an Enformion phone are marked "enformion-phone" in
+    Match Reason (flows to a DataSift tag — honest phone-source labeling);
+    a PR Enformion reports as deceased gets flagged for review instead,
+    never called. Returns (rows_filled, deceased_flagged).
+    """
+    candidates = []
+    for tn in trace_notices:
+        row, phone_col, _tier = meta[id(tn)]
+        if phone_col != "Phone 1":
+            continue  # PR branch only — see docstring
+        if tn.primary_phone or tn.mobile_1 or tn.landline_1:
+            continue  # Tracerfy delivered; no fallback needed
+        if not (row.get("Mailing Zip") or "").strip():
+            continue  # no ZIP anchor -> search would be rejected/unsafe
+        candidates.append(tn)
+    if not candidates:
+        return 0, 0
+
+    import enformion_client
+    if not enformion_client.enabled():
+        logger.info("%s: Enformion fallback: %d PR row(s) still phone-less after "
+                    "Tracerfy — skipped (%s)", src_name, len(candidates),
+                    "NC_ENFORMION=0" if enformion_client.credentials_present()
+                    else "ENFORMION_AP_NAME/ENFORMION_AP_PASSWORD not set")
+        return 0, 0
+
+    filled = flagged = 0
+    logger.info("%s: Enformion fallback on %d phone-less PR row(s) "
+                "(~$%.2f worst case)...", src_name, len(candidates),
+                len(candidates) * ENFORMION_PER_MATCH)
+    for tn in candidates:
+        row = meta[id(tn)][0]
+        res = enformion_client.person_search_phones(
+            row.get("First Name", ""), row.get("Last Name", ""),
+            row.get("Mailing City", ""), row.get("Mailing State", "") or "NC",
+            row.get("Mailing Zip", ""))
+        if res is None:
+            continue  # miss — free
+        if res.get("is_deceased"):
+            # PR died during probate — a lead-changing fact, not a call target.
+            _mark_reason(row, "enformion-pr-deceased")
+            notes = (row.get("Notes") or "").strip()
+            note = ("[ENFORMION: PR appears DECEASED in the death index — "
+                    "verify; the estate may need a successor PR]")
+            if note not in notes:
+                row["Notes"] = (notes + "\n" + note).strip()
+            logger.warning("  %s/%s: PR %s reported deceased by Enformion — "
+                           "flagged, not called", row.get("County"),
+                           row.get("Case No."), row.get("Last Name"))
+            flagged += 1
+            continue
+        if not res.get("primary"):
+            continue  # matched (billed) but no usable phone
+        tn.primary_phone = res["primary"]
+        for i, m in enumerate(res.get("mobiles", [])[:5], start=1):
+            setattr(tn, f"mobile_{i}", m)
+        for i, l in enumerate(res.get("landlines", [])[:3], start=1):
+            setattr(tn, f"landline_{i}", l)
+        _mark_reason(row, "enformion-phone")
+        filled += 1
+    logger.info("%s: Enformion filled phones for %d row(s), flagged %d "
+                "deceased PR(s)", src_name, filled, flagged)
+    return filled, flagged
+
+
 def enriched_output_path(src: Path) -> Path:
     """Derive the `*_dm_enriched.csv` sibling for a per-week input file.
 
@@ -244,6 +332,7 @@ def process_file(
     skip_dm_address: bool,
     skip_skip_trace: bool,
     skip_phone_score: bool,
+    skip_enformion: bool = False,
 ) -> dict:
     """Enrich one per-week file. Returns a stats dict.
 
@@ -286,6 +375,26 @@ def process_file(
                         "est ~$%.2f (research ~$%.2f + tracerfy ~$%.2f + trestle ~$%.2f) (DRY RUN)",
                         src.name, len(rows), traceable, len(research_targets),
                         est, research_cost, trace_cost, score_cost)
+            # Enformion fallback ceiling: PR-branch rows with a ZIP anchor and
+            # no phone yet. Only rows Tracerfy ALSO misses get searched, and
+            # only matches bill — so the real spend is well under this.
+            enf_eligible = 0
+            if not (skip_skip_trace or skip_enformion):
+                for r in rows:
+                    tn, phone_col, _t = trace_target(r)
+                    if (tn is not None and phone_col == "Phone 1"
+                            and (r.get("Mailing Zip") or "").strip()):
+                        enf_eligible += 1
+            if enf_eligible:
+                import enformion_client
+                gate = ("ACTIVE" if enformion_client.enabled() else
+                        ("off: NC_ENFORMION=0" if enformion_client.credentials_present()
+                         else "inert: no ENFORMION_AP_NAME/PASSWORD in .env"))
+                logger.info("%s: Enformion fallback [%s]: up to %d PR lookups if "
+                            "Tracerfy misses all -> ceiling ~$%.2f (billed per "
+                            "match; misses free; 14-day cache)",
+                            src.name, gate, enf_eligible,
+                            enf_eligible * ENFORMION_PER_MATCH)
         else:
             est = len(research_targets) * (
                 EST_COST_RESEARCH_PER_ROW
@@ -357,6 +466,12 @@ def process_file(
             if trace_notices:
                 batch_skip_trace(trace_notices, max_signing_traces=5, lookup_heir_addresses=True,
                                  address_lookup_api_key=config.ANTHROPIC_API_KEY)
+                # Enformion fallback for named PRs Tracerfy couldn't crack —
+                # runs BEFORE Trestle so its phones get dial-priority tiers
+                # like any other number. Inert without creds; NC_ENFORMION=0.
+                if not skip_enformion:
+                    stats["enformion_filled"], stats["enformion_deceased"] = (
+                        _enformion_fallback_pr_phones(trace_notices, meta, src.name))
                 scores: dict = {}
                 if not skip_phone_score and config.TRESTLE_API_KEY:
                     logger.info("%s: Trestle phone scoring (dial priority)...", src.name)
@@ -399,8 +514,10 @@ def process_file(
             logger.info("refreshed DataSift upload CSV -> %s", upload_csv.name)
         except Exception as e:  # never let this sink an otherwise-good run
             logger.warning("could not refresh DataSift upload CSV: %s", e)
-    logger.info("%s: DM filled %d | phones traced %d | tier-scored %d -> %s",
-                src.name, stats["dm_filled"], stats["traced"], stats["tiers_scored"], out_csv.name)
+    logger.info("%s: DM filled %d | phones traced %d (%d via Enformion) | "
+                "tier-scored %d -> %s",
+                src.name, stats["dm_filled"], stats["traced"],
+                stats.get("enformion_filled", 0), stats["tiers_scored"], out_csv.name)
     return stats
 
 
@@ -430,6 +547,10 @@ def main() -> None:
                     help="Skip Tracerfy phone stage (no phone cost).")
     ap.add_argument("--skip-phone-score", action="store_true",
                     help="Skip Trestle dial-priority scoring of the DM phone.")
+    ap.add_argument("--skip-enformion", action="store_true",
+                    help="Skip the Enformion PersonSearch fallback for phone-less "
+                         "named PRs (~$0.35/match; also: env NC_ENFORMION=0; "
+                         "inert anyway unless ENFORMION_AP_NAME/PASSWORD are set).")
     args = ap.parse_args()
 
     files = select_target_files(args.all_weeks, args.csv)
@@ -453,6 +574,7 @@ def main() -> None:
             skip_dm_address=args.skip_dm_address,
             skip_skip_trace=args.skip_skip_trace,
             skip_phone_score=args.skip_phone_score,
+            skip_enformion=args.skip_enformion,
         ))
 
     # ── Summary ───────────────────────────────────────────────────────────
@@ -472,8 +594,14 @@ def main() -> None:
         total_filled = sum(s["dm_filled"] for s in all_stats)
         total_traced = sum(s["traced"] for s in all_stats)
         total_scored = sum(s["tiers_scored"] for s in all_stats)
-        logger.info("Deep prospecting complete: %d DM names found, %d phones traced, "
-                    "%d phones tier-scored", total_filled, total_traced, total_scored)
+        total_enf = sum(s.get("enformion_filled", 0) for s in all_stats)
+        total_enf_dec = sum(s.get("enformion_deceased", 0) for s in all_stats)
+        logger.info("Deep prospecting complete: %d DM names found, %d phones traced "
+                    "(%d via Enformion fallback), %d phones tier-scored",
+                    total_filled, total_traced, total_enf, total_scored)
+        if total_enf_dec:
+            logger.warning("  %d PR(s) reported DECEASED by Enformion — see "
+                           "'enformion-pr-deceased' in Match Reason", total_enf_dec)
         if total_capped:
             logger.info("  %d rows deferred by cap — raise --max-rows to cover them next run",
                         total_capped)
