@@ -5989,6 +5989,109 @@ def flag_surviving_spouse_occupied(rows: list[dict]) -> int:
     return n
 
 
+# ── Backup heir contacts + multi-signer flag (Step 4.96) ──────────────────
+# The court hands us the whole beneficiary list, but we only ever marketed to
+# ONE person (the PR). That cost us twice:
+#   1. DM 2 / DM 3 sat empty on every row (Week 28: 0 filled of 61) while 21
+#      rows carried 2+ beneficiaries WITH mailing addresses — backup contacts
+#      we already had and never put in front of the caller.
+#   2. A deceased owner's property passes to the heirs together, so when
+#      several hold undivided shares a single holdout blocks the sale unless
+#      the PR sells through probate with court approval. Nothing on the row
+#      said how many signatures the deal actually needs.
+# Both are fixed from data already in the row — no API call, no per-record cost.
+# Relationship is recorded as "beneficiary" (what the court record actually
+# says), never guessed as son/daughter: a same-surname heir is just as likely a
+# spouse or sibling, and mislabeling one puts the wrong party on the deed.
+# Off-switch: NC_BACKUP_HEIRS=0.
+def _heirs_from_beneficiaries(row: dict) -> list[dict]:
+    """Every individual beneficiary on the row, most-mailable first.
+
+    Falls back to a name-only heir when the line carries no usable address — a
+    bare name is still a lead the caller can work, and the signer count has to
+    include heirs whose address the court never recorded.
+    """
+    raw = (row.get("Beneficiaries") or "").strip()
+    if not raw:
+        return []
+    lines = raw.split("\n") if "\n" in raw else raw.split(" | ")
+    heirs: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.lower() == "beneficiary":
+            continue
+        h = _parse_beneficiary_line(ln)
+        if not h:
+            name_part = ln.split(" - ")[0].strip()
+            # Trusts and corporate beneficiaries aren't people we can call, and
+            # they don't sign as heirs — skip rather than emit a junk contact.
+            if not name_part or not _is_person_name(name_part):
+                continue
+            first, last = _dec_first_last(name_part)
+            if not (first and last):
+                continue
+            h = {"name": name_part, "first": first.title(), "last": last.title(),
+                 "street": "", "city": "", "state": "", "zip": ""}
+        key = (h["first"].lower(), h["last"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        heirs.append(h)
+    # Prefer an heir with a real house-numbered street (mailable), then in-state.
+    heirs.sort(key=lambda h: ((h.get("street") or "")[:1].isdigit(),
+                              (h.get("state") or "").upper() == "NC"),
+               reverse=True)
+    return heirs
+
+
+def fill_backup_heir_contacts(rows: list[dict]) -> tuple[int, int]:
+    """Fill DM 2 / DM 3 from the court beneficiary list + flag multi-signer
+    estates. Returns (rows_given_backups, rows_flagged_multi_signer).
+    """
+    filled = flagged = 0
+    for r in rows:
+        heirs = _heirs_from_beneficiaries(r)
+        if not heirs:
+            continue
+        # Whoever we're mailing is the primary contact, not a backup.
+        primary = ((r.get("First Name") or "").strip().lower(),
+                   (r.get("Last Name") or "").strip().lower())
+        taken = {primary}
+        for col in ("DM Name", "DM 2 Name", "DM 3 Name"):
+            nm = (r.get(col) or "").strip()
+            if nm:
+                taken.add(_dec_first_last(nm))
+        backups = [h for h in heirs
+                   if (h["first"].lower(), h["last"].lower()) not in taken]
+        did = False
+        for slot, h in zip(("DM 2", "DM 3"), backups):
+            if (r.get(f"{slot} Name") or "").strip():
+                continue  # idempotent: never overwrite a contact already found
+            r[f"{slot} Name"] = f"{h['last']}, {h['first']}".strip(", ")
+            r[f"{slot} Relationship"] = "beneficiary"
+            did = True
+        if did:
+            tag_reason(r, "backup-heirs-filled")
+            filled += 1
+        # Signer exposure: every individual heir on file, including the one
+        # we're already mailing (they sign too).
+        signers = {(h["first"].lower(), h["last"].lower()) for h in heirs}
+        if all(primary):
+            signers.add(primary)
+        if len(signers) >= 2 and "Multi-Signer" not in (r.get("Tags") or ""):
+            tags = (r.get("Tags") or "").strip()
+            r["Tags"] = (tags + ", " if tags else "") + f"Multi-Signer ({len(signers)})"
+            tag_reason(r, "multi-signer")
+            _add_note(r, f"[MULTI-SIGNER: {len(signers)} heirs on file — an "
+                         f"heir-owned sale needs every living heir to sign "
+                         f"unless the PR sells through probate with court "
+                         f"approval. Confirm the signer set before spending "
+                         f"on this lead.]")
+            flagged += 1
+    return filled, flagged
+
+
 def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"\n=== {tag.upper()}: {src_path.name} ===")
     with src_path.open(newline="", encoding="utf-8-sig") as f:
@@ -6366,6 +6469,17 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print("Step 4.95: apply durable manual field corrections (manual_corrections.csv)")
     n_corr, n_cases = apply_manual_corrections(kept)
     print(f"  Manual field corrections applied: {n_corr} field(s) across {n_cases} case(s)")
+
+    # Runs LAST so the primary contact is already final (admin reroutes, Step 4
+    # promotions and manual corrections all settled) — otherwise a heir who
+    # later becomes the mail contact would also sit in DM 2 as their own backup.
+    if os.environ.get("NC_BACKUP_HEIRS") == "0":
+        print("Step 4.96: backup heir contacts + multi-signer flag — skipped (NC_BACKUP_HEIRS=0)")
+    else:
+        print("Step 4.96: fill DM 2/DM 3 from the court beneficiary list + flag multi-signer estates")
+        n_backup, n_multi = fill_backup_heir_contacts(kept)
+        print(f"  Rows given backup contacts: {n_backup}  "
+              f"Multi-signer estates flagged: {n_multi}")
 
     # Step 4.7 (populate_zillow_urls) removed 2026-07-11 per Oren — DataSift
     # provides the Zillow/listing link in the property record after upload, so
