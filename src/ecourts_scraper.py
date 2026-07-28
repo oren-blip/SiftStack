@@ -1192,13 +1192,33 @@ def cases_needing_docs(max_age_days: int = 30) -> dict[str, tuple]:
       2. property value       — a bigger deal is worth the quota first.
       3. recency (file mtime) — fresher filings, first-to-market window open.
 
-    The drain sorts by this key descending. Membership still filters the queue
-    to no-PR survivors (two thirds of the queue is cases polish later drops, and
-    most survivors already got a PR from the OData Parties API).
+    The drain sorts by this key descending. Membership: no-PR / no-parcel
+    survivors as before, PLUS (at strictly lower priority) recent rows that
+    have both — their Application PDF can still name an heir the OData
+    Parties API missed, and an unseen heir AT the property means a lead that
+    should have been DQ'd heir-occupied (Smith 26E002281-590 Week 26). These
+    only consume quota after every blocked lead is served.
 
     Reads the most recent polished CSVs (including archived weeks — Oren wants
     a 30-day window regardless of archive state).
     """
+    # Rows with a PR AND a parcel qualify only while freshly FILED — the heir
+    # cross-check matters in the first-to-market window, not for month-old
+    # rows that already survived polish repeatedly. Judged by the row's File
+    # Date (file mtime is useless here: the nightly re-polish rewrites every
+    # non-archived week, so mtime is always "today" for ~5 weeks of rows).
+    crosscheck_age_days = 10
+
+    def _filed_recently(r: dict) -> bool:
+        from datetime import datetime as _dt
+        s = (r.get("File Date") or "").strip()
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                filed = _dt.strptime(s, fmt)
+                return (time.time() - filed.timestamp()) <= crosscheck_age_days * 86400
+            except ValueError:
+                continue
+        return False
     import csv as _csv
     cutoff = time.time() - max_age_days * 86400
     # case_no -> (mtime, has_pr, priority_key). Newest file wins: a case that
@@ -1232,13 +1252,32 @@ def cases_needing_docs(max_age_days: int = 30) -> dict[str, tuple]:
                         has_parcel = bool((r.get("Parcel ID") or "").strip())
                         val = _money(r.get("Property Value"))
                         no_contact = 0 if (r.get("Beneficiaries") or "").strip() else 1
-                        # No-parcel cases sort first (nothing else can find them).
-                        prio = (1 if not has_parcel else 0, no_contact, val, mtime)
-                        latest[case_no] = (mtime, has_pr, has_parcel, prio)
+                        # Leading element: blocked leads (no PR / no parcel)
+                        # always outrank the heir-crosscheck class. Then
+                        # no-parcel cases sort first (nothing else can find
+                        # them).
+                        blocked = 1 if (not has_pr or not has_parcel) else 0
+                        prio = (blocked, 1 if not has_parcel else 0,
+                                no_contact, val, mtime)
+                        fresh = blocked or _filed_recently(r)
+                        latest[case_no] = (mtime, has_pr, has_parcel, prio, fresh)
             except (OSError, UnicodeDecodeError, _csv.Error) as e:
                 logger.debug("cases_needing_docs: skipping %s (%s)", fp, e)
-    return {c: prio for c, (_mtime, has_pr, has_parcel, prio) in latest.items()
-            if not has_pr or not has_parcel}
+    # Never spend quota on manually-excluded cases — they can still appear in
+    # older/superseded polished files inside the 30-day scan window.
+    dropped_cases: set[str] = set()
+    try:
+        with open("manual_drops.txt", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    dropped_cases.add(
+                        line.replace(",", " ", 1).split(None, 1)[0].upper())
+    except OSError:
+        pass
+    return {c: prio
+            for c, (_mtime, has_pr, has_parcel, prio, fresh) in latest.items()
+            if (not has_pr or not has_parcel or fresh) and c not in dropped_cases}
 
 
 def _money(v) -> float:
