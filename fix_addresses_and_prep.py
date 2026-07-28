@@ -777,7 +777,11 @@ _BENEFICIARY_ADDR_RE = re.compile(
     # is name + address + city/state/zip. We just want the street line.
     r"\b(\d{1,6}\s+[A-Z][A-Z\s\-\.]+(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|LN|LANE|"
     r"CT|COURT|PL|PLACE|HWY|HIGHWAY|WAY|BLVD|BOULEVARD|CIR|CIRCLE|TRL|TRAIL|"
-    r"PKWY|TER|TERRACE)\b)",
+    # Keep the trailing quadrant directional — dropping it made the extracted
+    # address one token short of the property's ("514 Wyoming Drive NW" read
+    # as "514 Wyoming Drive") and the heir-occupied DQ never fired (Taggart
+    # 26E000778-120 Week 31).
+    r"PKWY|TER|TERRACE)(?:\s+(?:NW|NE|SW|SE|N|S|E|W))?\b)",
     re.IGNORECASE,
 )
 
@@ -4122,6 +4126,13 @@ def _heir_addr_match(a: str, b: str) -> bool:
         return False
     if a == b:
         return True
+    # Trailing-directional forgiveness: one side carries the quadrant the
+    # other omitted ("514 Wyoming Dr NW" vs "514 Wyoming Dr" — Taggart
+    # 26E000778-120 Week 31). Only the exact normalized string plus a
+    # trailing directional qualifies, so different streets never collapse.
+    for d in ("nw", "ne", "sw", "se", "n", "s", "e", "w"):
+        if a == b + d or b == a + d:
+            return True
     ha, hb = _house_number(a), _house_number(b)
     if not ha or ha != hb:
         return False
