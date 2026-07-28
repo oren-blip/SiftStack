@@ -772,26 +772,50 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
         await _screenshot(page, "filter_tags_block_added")
 
         tag_search = page.locator('input[placeholder*="Search for tags"], input[placeholder*="Search tags"]')
-        if await tag_search.count() > 0:
-            await tag_search.first.fill(tag)
-            await page.wait_for_timeout(2000)
-            await _screenshot(page, "filter_tag_searched")
-            tag_option = page.locator(f'text="{tag}"')
-            if await tag_option.count() > 0:
-                await tag_option.last.click()
-                await page.wait_for_timeout(1000)
-                logger.info("Selected tag filter: %s", tag)
-        else:
+        if await tag_search.count() == 0:
             logger.warning("'Search for tags' input not found")
+            return False
+        await tag_search.first.fill(tag)
+        await page.wait_for_timeout(2000)
+        await _screenshot(page, "filter_tag_searched")
+        # Click the dropdown SUGGESTION for the tag — not the input we just
+        # typed into. `text="{tag}"` also matches the input (its value), and
+        # a Playwright click on the wrong element hangs against the filter
+        # panel's pointer-intercepting sections (Week 31 2026-07-27: 30s
+        # click timeout → unfiltered skip trace). JS click dodges intercepts.
+        picked = await page.evaluate(
+            """(tag) => {
+                const els = [...document.querySelectorAll('*')].filter(e =>
+                    e.children.length === 0 && e.tagName !== 'INPUT' &&
+                    (e.textContent || '').trim() === tag);
+                const el = els[els.length - 1];
+                if (!el) return false;
+                el.click();
+                return true;
+            }""", tag)
+        if not picked:
+            logger.warning("Tag suggestion %r not found in dropdown", tag)
+            await _screenshot(page, "filter_tag_no_suggestion")
+            return False
+        await page.wait_for_timeout(1000)
+        logger.info("Selected tag filter: %s", tag)
         await _screenshot(page, "filter_tag_selected")
 
-        apply_btn = page.locator('text="Apply Filters"')
-        if await apply_btn.count() > 0:
-            await apply_btn.first.click()
-            await page.wait_for_timeout(3000)
-        else:
+        applied = await page.evaluate(
+            """() => {
+                const els = [...document.querySelectorAll('*')].filter(e =>
+                    e.children.length === 0 &&
+                    (e.textContent || '').trim() === 'Apply Filters');
+                const el = els[els.length - 1];
+                if (!el) return false;
+                el.click();
+                return true;
+            }""")
+        if not applied:
+            logger.warning("'Apply Filters' not found — filter NOT applied")
             await page.keyboard.press("Escape")
-            await page.wait_for_timeout(2000)
+            return False
+        await page.wait_for_timeout(3000)
         await _screenshot(page, "filter_tag_applied")
         return True
     except Exception as e:  # noqa: BLE001
@@ -1085,7 +1109,8 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
     UI Flow: Records → Filter by list → Select all → Send To → Skip Trace
     → agree to terms → add tag → click "Skip Trace Records"
 
-    Uses the unlimited skip trace plan ($97/mo) — no per-record cost.
+    Skip trace is PAY-PER-RECORD (~$0.15, against a monthly record limit) —
+    scoping the filter correctly is a cost control, not a nicety.
 
     Args:
         page: Logged-in Playwright page.
@@ -1109,7 +1134,17 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
         else:
             filtered = await _filter_by_list(page, list_name)
         if not filtered:
-            logger.warning("Could not filter for skip trace — continuing anyway")
+            # ABORT, never trace wide: with no filter applied, "Select all"
+            # grabs whatever the Records view currently shows — skip trace is
+            # pay-per-record, so a failed filter must not become a paid trace
+            # of the whole list. (Week 31 2026-07-27: filter timed out,
+            # "continuing anyway" traced 10 records for a 6-row upload.)
+            result["message"] = (
+                f"Filter failed ({'tag ' + filter_tag if filter_tag else 'list ' + list_name})"
+                " — skip trace aborted to avoid tracing unfiltered records. "
+                "Run skip trace manually in DataSift, filtered to the week tag.")
+            logger.error(result["message"])
+            return result
 
         # Select all records
         selected = await _select_all_records(page)
