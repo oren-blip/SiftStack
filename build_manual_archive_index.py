@@ -108,21 +108,27 @@ def _ingest_table(
     """Fold one table (xlsx tab or csv) into the shared index. Returns the
     number of NEW unique (county, decedent) entries added. First occurrence
     across all tables wins (tables are ingested oldest-week-first)."""
-    try:
-        col_county = headers.index("County")
-        col_case = headers.index("Case No.")
-        col_dec = headers.index("Deceased Owner")
-    except ValueError:
+    def maybe(*names: str) -> int | None:
+        # Oren's export template renamed columns over time ("Case No." →
+        # "Case Number" at Week 30, "Parcel ID" → "PIN" → "APN") — accept
+        # every spelling so no week silently drops out of the index.
+        for name in names:
+            if name in headers:
+                return headers.index(name)
+        return None
+
+    col_county = maybe("County")
+    col_case = maybe("Case No.", "Case Number", "Case #")
+    col_dec = maybe("Deceased Owner")
+    if col_county is None or col_case is None or col_dec is None:
         logger.warning("Skipping %s (missing required column)", week_label)
         return 0
 
-    def maybe(name: str) -> int | None:
-        return headers.index(name) if name in headers else None
     optional = {
         "first_name": maybe("First Name"), "last_name": maybe("Last Name"),
         "mailing_address": maybe("Mailing Address"), "mailing_city": maybe("Mailing City"),
         "mailing_state": maybe("Mailing State"), "mailing_zip": maybe("Mailing Zip"),
-        "parcel_id": maybe("Parcel ID"),
+        "parcel_id": maybe("Parcel ID", "PIN", "APN"),
         "property_address": maybe("Property Address"), "property_city": maybe("Property City"),
         "property_zip": maybe("Property Zip"),
     }
