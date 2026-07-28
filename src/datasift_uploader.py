@@ -1109,8 +1109,10 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
     UI Flow: Records → Filter by list → Select all → Send To → Skip Trace
     → agree to terms → add tag → click "Skip Trace Records"
 
-    Skip trace is PAY-PER-RECORD (~$0.15, against a monthly record limit) —
-    scoping the filter correctly is a cost control, not a nicety.
+    Skip trace is PAY-PER-RECORD (~$0.15, drawn from the account credit
+    balance; the 10K/month limit in the sidebar is for record UPLOADS, not
+    skip traces) — scoping the filter correctly is a cost control, not a
+    nicety.
 
     Args:
         page: Logged-in Playwright page.
