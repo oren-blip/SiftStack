@@ -27,3 +27,10 @@ Case No.,Field,Value
 26E000756-790,Mailing Zip,33603
 26E000756-790,DM Name,Joseph Medlin Jr
 26E000756-790,DM Relationship,son (owner)
+# --- Week 31 audit (2026-07-27) ---
+# Prosser: court file has PR/wife Leslie at 3200 Barr Rd (Oren's manual pull);
+# pipeline falls back to property mailing because the DM address isn't preserved.
+26E000777-120,Mailing Address,3200 Barr Rd
+26E000777-120,Mailing City,Concord
+26E000777-120,Mailing State,NC
+26E000777-120,Mailing Zip,28027

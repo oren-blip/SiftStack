@@ -18,3 +18,6 @@
 
 26E000418-540   Compessi, Eileen Ann — condo at Mariners Pointe (Lincoln zoning can't detect)
 26E000452-540   Lynch, Emma G. — house at 3032 Buffalo Shoals titled to son Rex A + Barbara C Lynch (their own residence); decedent not on deed, no estate real property. Obit: husband CB Lynch predeceased, Rex is her SON not spouse.
+26E000778-120   Taggart, Judy Lee — heir-occupied: beneficiary Daniel Blue Taggart Sr. lives at 514 Wyoming Dr NW per case file (Oren verified 2026-07-27, Week 31 audit; beneficiary address missing from our court data feed)
+26E000875-170   Callahan, Michael — heir-occupied: GIS deed shows CALLAHAN MICHAEL FRANCIS JR + wife SANDRA SEAGLE living at 5771 Lauren Ln (Oren verified 2026-07-27, Week 31 audit)
+26E000873-170   Reeves, Charles Earl Jr. — wrong parcel: 60%-confidence match resolved to REEVES CHARLES S, who lives at that property and is likely a DIFFERENT person (Oren verified 2026-07-27, Week 31 audit)

@@ -4172,8 +4172,18 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         use = (r.get("Property use") or "").upper()
         if "VACANT" in use or use == "LAND":
             return (False, "")
+        # A dm-promoted row's mailing was set := property AT promotion (the
+        # enricher's DM address doesn't survive the polish round-trip, so
+        # Step 4 falls back to the property for direct mail). Comparing that
+        # mailing against the property just reads back our own fallback — it
+        # says nothing about where the DM lives. Prosser 26E000777-120 Week
+        # 31: wife Leslie is at 3200 Barr Rd per the court file, yet the row
+        # was dropped "heir-occupied" on the synthetic equality. Skip both
+        # mailing-based checks for these rows; beneficiary / App-heir /
+        # deed-co-owner signals below are real evidence and still apply.
+        mail_synthetic = "dm-promoted-pr" in (r.get("Match Reason") or "")
         mail = norm_addr(r.get("Mailing Address"))
-        if mail and _heir_addr_match(prop_norm, mail):
+        if mail and not mail_synthetic and _heir_addr_match(prop_norm, mail):
             return (True, "dq-executor-at-property")
         ben_block = (r.get("Beneficiaries") or "")
         if ben_block:
@@ -4263,6 +4273,8 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         # 26E000875-350: mailing "2535 Old Highway 27" == property "2535 Old
         # NC 27 Hwy" (son lives in the decedent's house).
         m_addr, p_addr = r.get("Mailing Address"), r.get("Property Address")
+        if mail_synthetic:
+            return (False, "")
         if _same_property_by_number_zip(
             m_addr, r.get("Mailing Zip"), p_addr, r.get("Property Zip"),
         ):
@@ -5416,6 +5428,19 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             if (r.get("Property Zip") or "").strip():
                 r["Mailing Zip"] = r["Property Zip"]
             tag_reason(r, "dm-promoted-pr")
+            # Obituary says the promoted DM is the decedent's spouse — the
+            # widow/widower class Oren under-works but wants kept + labeled
+            # (see Step 3.9 / feedback_surviving_spouse_leads). Deed is
+            # unverified on this path, so use the soft variant of the tag.
+            if dm.get("relationship", "").strip().lower() in {
+                    "wife", "husband", "spouse", "widow", "widower"}:
+                tag_reason(r, "likely-surviving-spouse")
+                tags = (r.get("Tags") or "").strip()
+                if "Surviving Spouse" not in tags:
+                    r["Tags"] = (tags + ", " if tags else "") + "Surviving Spouse?"
+                _add_note(r, f"[SURVIVING SPOUSE? — obituary names {dm['name']} "
+                             f"as the {dm['relationship']}; deed unverified. "
+                             f"Longer follow-up but a strong lead, don't skip]")
             dm_promoted += 1
             continue
 
