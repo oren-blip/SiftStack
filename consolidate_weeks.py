@@ -137,10 +137,23 @@ def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
     from iso_week_archive import get_archived_weeks
     archived = get_archived_weeks()
 
+    # Count rows NET of manual_drops.txt exclusions. A re-polish that removed
+    # freshly-dropped cases shrinks on purpose; comparing raw counts let the
+    # older, fatter dm_enriched win and resurrect the dropped cases (Week 31
+    # 2026-07-27: 17-row stale file beat the corrected 15-row one). Netting
+    # out dropped cases from BOTH sides makes the "newer with more rows"
+    # override compare only rows that are allowed to ship.
+    from fix_addresses_and_prep import _load_manual_drops
+    _drops = _load_manual_drops()
+
     def _row_count(fp: Path) -> int:
         try:
             with open(fp, newline="", encoding="utf-8-sig") as f:
-                return max(0, sum(1 for _ in csv.reader(f)) - 1)  # minus header
+                if not _drops:
+                    return max(0, sum(1 for _ in csv.reader(f)) - 1)  # minus header
+                return sum(
+                    1 for r in csv.DictReader(f)
+                    if (r.get("Case No.") or "").strip().upper() not in _drops)
         except OSError:
             return 0
 
@@ -277,6 +290,19 @@ def main() -> None:
         logger.error("No DataSift CSV files found. Pass paths as args or run "
                      "prepare_for_datasift.py first.")
         sys.exit(1)
+
+    # Safety net: manual_drops.txt cases must never reach the workbook, even
+    # when a stale (pre-drop) enriched file wins the per-week pick. The polish
+    # already drops these at Step -0.97; this catches files polished BEFORE a
+    # drop was added.
+    from fix_addresses_and_prep import drop_manual_exclusions
+    for key, (fp, rows) in list(per_week.items()):
+        kept, n_dropped, removed = drop_manual_exclusions(rows)
+        if n_dropped:
+            per_week[key] = (fp, kept)
+            for line in removed:
+                logger.info("  manual_drops: excluded %s (Week %d %d)",
+                            line, key[1], key[0])
 
     logger.info("Consolidating %d weekly file(s):", len(per_week))
     for (yr, wk), (fp, rows) in sorted(per_week.items()):
