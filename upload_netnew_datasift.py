@@ -64,7 +64,7 @@ async def _wait_for_wizard_close(page, timeout_ms: int = 60000) -> bool:
 
 
 async def _skip_trace_week(page, list_name: str, week: int, year: int,
-                           settle_s: int) -> None:
+                           settle_s: int) -> bool:
     """Fire DataSift's own skip trace on JUST this week's rows, after the upload
     finishes importing. Scoped by the per-week tag ("NC Estates Week N YYYY") so
     it never re-traces the whole PROBATE list (protects the monthly limit). The
@@ -78,15 +78,17 @@ async def _skip_trace_week(page, list_name: str, week: int, year: int,
     res = await skip_trace_records(page, list_name, filter_tag=tag)
     if res.get("success"):
         logger.info("DataSift skip trace started: %s", res.get("message"))
-    else:
-        logger.error("DataSift skip trace did NOT start: %s — run it by hand: "
-                     "Records -> filter tag %r -> Select all -> Send To -> Skip Trace.",
-                     res.get("message"), tag)
+        return True
+    logger.error("DataSift skip trace did NOT start: %s — run it by hand: "
+                 "Records -> filter tag %r -> Select all -> Send To -> Skip Trace.",
+                 res.get("message"), tag)
+    return False
 
 
 async def run(csv_path: Path, list_name: str, week: int | None, year: int,
               review_wait_min: float, auto_finish: bool, headless: bool,
-              skip_trace: bool = True, skiptrace_settle_s: int = 90) -> None:
+              skip_trace: bool = True, skiptrace_settle_s: int = 90,
+              tier_step: bool = True, tier_settle_s: int = 600) -> None:
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
@@ -186,15 +188,44 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                                    "may re-include these rows.", e)
 
             # ── Fire DataSift's own skip trace on just this week's rows ──
+            traced = False
             if committed and skip_trace:
                 if week is None:
                     logger.warning("Skip trace requested but --week not set — can't scope the "
                                    "per-week tag, so SKIPPING it to avoid tracing the whole list. "
                                    "Pass --week N (or --no-skip-trace to silence this).")
                 else:
-                    await _skip_trace_week(page, list_name, week, year, skiptrace_settle_s)
+                    traced = await _skip_trace_week(page, list_name, week, year,
+                                                    skiptrace_settle_s)
         finally:
             await browser.close()
+
+    # ── Trestle tier step: score the phones the skip trace just added and
+    # tag dial priorities on the records. Runs AFTER the upload browser
+    # closes (trestle_tier_step opens its own session) and only when the
+    # skip trace actually started — without it there are no new phones,
+    # and the pipeline already scored its own numbers pre-upload.
+    if traced and tier_step and week is not None:
+        tag = f"NC Estates Week {week} {year}"
+        logger.info("Waiting %d min for the DataSift skip trace to finish, then "
+                    "running the Trestle tier step (tag=%r)...",
+                    tier_settle_s // 60, tag)
+        await asyncio.sleep(tier_settle_s)
+        try:
+            from trestle_tier_step import run as tier_run
+            rc = await tier_run(tag, dry_run=False, headless=headless)
+            if rc == 0:
+                logger.info("Trestle tier step complete — dial-priority tags are live.")
+            else:
+                logger.error("Trestle tier step exited %d — run it by hand: "
+                             "python trestle_tier_step.py --week %d", rc, week)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Trestle tier step failed (%s) — run it by hand: "
+                         "python trestle_tier_step.py --week %d", e, week)
+    elif committed and tier_step and not traced and week is not None:
+        logger.warning("Skip trace didn't start, so the tier step was skipped — after "
+                       "running the skip trace by hand, run: "
+                       "python trestle_tier_step.py --week %d", week)
 
 
 def main():
@@ -218,13 +249,22 @@ def main():
     ap.add_argument("--skiptrace-settle", type=int, default=90,
                     help="Seconds to wait after commit for DataSift to import the rows "
                          "before skip trace, so the tag filter finds them (default 90)")
+    ap.add_argument("--no-tier-step", action="store_true",
+                    help="Don't run the Trestle tier step after the skip trace "
+                         "(default: wait --tier-settle, then score + tag dial priorities)")
+    ap.add_argument("--tier-settle", type=int, default=600,
+                    help="Seconds to wait after the skip trace starts before the "
+                         "Trestle tier step exports (default 600 = 10 min, so "
+                         "DataSift's new phones are on the records)")
     ap.add_argument("--headless", action="store_true", help="Run browser headless")
     args = ap.parse_args()
 
     asyncio.run(run(Path(args.csv), args.list_name, args.week, args.year,
                     args.review_wait, not args.no_auto_finish, args.headless,
                     skip_trace=not args.no_skip_trace,
-                    skiptrace_settle_s=args.skiptrace_settle))
+                    skiptrace_settle_s=args.skiptrace_settle,
+                    tier_step=not args.no_tier_step,
+                    tier_settle_s=args.tier_settle))
 
 
 if __name__ == "__main__":
