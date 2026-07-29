@@ -88,7 +88,8 @@ async def _skip_trace_week(page, list_name: str, week: int, year: int,
 async def run(csv_path: Path, list_name: str, week: int | None, year: int,
               review_wait_min: float, auto_finish: bool, headless: bool,
               skip_trace: bool = True, skiptrace_settle_s: int = 90,
-              tier_step: bool = True, tier_settle_s: int = 600) -> None:
+              tier_step: bool = True, tier_settle_s: int = 600,
+              text_touches: bool = True, touch_sender: str = "Oren") -> None:
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
@@ -216,6 +217,24 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             rc = await tier_run(tag, dry_run=False, headless=headless)
             if rc == 0:
                 logger.info("Trestle tier step complete — dial-priority tags are live.")
+                # Text touches ride on the tier step's success: the week's
+                # records now carry their final phones, so export -> generate
+                # 4 personalized SMS drafts -> upsert into Text Touch 1-4.
+                if text_touches:
+                    try:
+                        from text_touch_step import run as touch_run
+                        trc = await touch_run(tag, sender=touch_sender,
+                                              export_csv=None, list_name=list_name,
+                                              dry_run=False, headless=headless)
+                        if trc == 0:
+                            logger.info("Text touches written — callers copy the "
+                                        "next touch straight off the record.")
+                        else:
+                            logger.error("Text-touch step exited %d — run by hand: "
+                                         "python text_touch_step.py --week %d", trc, week)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("Text-touch step failed (%s) — run by hand: "
+                                     "python text_touch_step.py --week %d", e, week)
             else:
                 logger.error("Trestle tier step exited %d — run it by hand: "
                              "python trestle_tier_step.py --week %d", rc, week)
@@ -256,6 +275,10 @@ def main():
                     help="Seconds to wait after the skip trace starts before the "
                          "Trestle tier step exports (default 600 = 10 min, so "
                          "DataSift's new phones are on the records)")
+    ap.add_argument("--no-text-touches", action="store_true",
+                    help="Don't write Text Touch 1-4 SMS drafts after the tier step")
+    ap.add_argument("--touch-sender", default="Oren",
+                    help="First name signing the text touches (default: Oren)")
     ap.add_argument("--headless", action="store_true", help="Run browser headless")
     args = ap.parse_args()
 
@@ -264,7 +287,9 @@ def main():
                     skip_trace=not args.no_skip_trace,
                     skiptrace_settle_s=args.skiptrace_settle,
                     tier_step=not args.no_tier_step,
-                    tier_settle_s=args.tier_settle))
+                    tier_settle_s=args.tier_settle,
+                    text_touches=not args.no_text_touches,
+                    touch_sender=args.touch_sender))
 
 
 if __name__ == "__main__":
