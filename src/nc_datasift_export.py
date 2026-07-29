@@ -210,6 +210,37 @@ def in_manual_archive(row: dict, arc: dict) -> bool:
     return False
 
 
+UPLOAD_LEDGER_PATH = Path("output") / ".netnew_uploaded.json"
+
+
+def _case_no(row: dict) -> str:
+    return (row.get("Case No.") or "").strip().upper()
+
+
+def load_upload_ledger(path: str | Path = UPLOAD_LEDGER_PATH) -> set[str]:
+    """Case numbers a prior pipeline NETNEW upload already committed to
+    DataSift. Empty set when the ledger doesn't exist yet."""
+    try:
+        with Path(path).open(encoding="utf-8") as f:
+            return {str(c).strip().upper() for c in json.load(f).get("cases", [])}
+    except (OSError, ValueError):
+        return set()
+
+
+def record_uploaded_cases(case_nos: list[str],
+                          path: str | Path = UPLOAD_LEDGER_PATH) -> int:
+    """Append committed-upload case numbers to the ledger (idempotent).
+    Called by upload_netnew_datasift.py AFTER the wizard's Finish commits.
+    Returns the ledger's new total."""
+    existing = load_upload_ledger(path)
+    merged = existing | {c.strip().upper() for c in case_nos if c and c.strip()}
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as f:
+        json.dump({"cases": sorted(merged)}, f, indent=1)
+    return len(merged)
+
+
 def write_datasift_upload_csv(rows: list[dict], path: str | Path,
                               week: int | None = None, year: int = 2026,
                               write_netnew: bool = True) -> int:
@@ -218,9 +249,13 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
     `week`/`year` populate the per-week Tags. Returns rows written.
 
     When `write_netnew` is set and the manual-archive index exists, ALSO writes a
-    `<name>_NETNEW.csv` sibling containing only the cases Oren has NOT already
-    pulled by hand. Upload the NETNEW file — it can't duplicate records his own
-    manual upload already put in DataSift. The full file stays for reference.
+    `<name>_NETNEW.csv` sibling containing only the cases NOT already in
+    DataSift — excluded when EITHER Oren pulled the case by hand (manual-archive
+    index) OR a prior pipeline upload committed it (the upload ledger,
+    output/.netnew_uploaded.json, appended by upload_netnew_datasift.py after
+    each committed upload). Without the ledger, a case uploaded from Monday's
+    NETNEW re-appeared in Tuesday's and got re-skip-traced (pay-per-record).
+    The full file stays for reference.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,17 +268,26 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
 
     if write_netnew:
         arc = load_manual_archive()
+        uploaded = load_upload_ledger()
         netnew_path = path.with_name(f"{path.stem}_NETNEW.csv")
         if arc is None:
             # No index -> can't tell what's already his. Mirror the full file so
             # the NETNEW name still exists, but the caller's log flags it.
             netnew_rows = list(rows)
         else:
-            netnew_rows = [r for r in rows if not in_manual_archive(r, arc)]
+            netnew_rows = [r for r in rows
+                           if not in_manual_archive(r, arc)
+                           and _case_no(r) not in uploaded]
         with netnew_path.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
             w.writeheader()
             for r in netnew_rows:
                 w.writerow(_row_to_datasift(r, tags))
+        # Sidecar manifest: the upload CSV itself has no Case No. column, so
+        # upload_netnew_datasift.py reads THIS to append the committed cases
+        # to the upload ledger.
+        with netnew_path.with_suffix(".cases.json").open("w", encoding="utf-8") as f:
+            json.dump({"cases": sorted({_case_no(r) for r in netnew_rows if _case_no(r)})},
+                      f, indent=1)
 
     return len(rows)

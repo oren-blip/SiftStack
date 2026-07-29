@@ -165,6 +165,26 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                 else:
                     logger.error("Finish button not found — nothing committed. Check the browser.")
 
+            # ── Record committed cases in the upload ledger so tomorrow's
+            # NETNEW excludes them (the CSV has no Case No. column — the
+            # sidecar manifest written next to it carries the case numbers) ──
+            if committed:
+                try:
+                    import json as _json
+                    from nc_datasift_export import record_uploaded_cases
+                    sidecar = csv_path.with_suffix(".cases.json")
+                    if sidecar.exists():
+                        cases = _json.loads(sidecar.read_text(encoding="utf-8")).get("cases", [])
+                        total = record_uploaded_cases(cases)
+                        logger.info("Upload ledger: recorded %d case(s), ledger now %d total.",
+                                    len(cases), total)
+                    else:
+                        logger.warning("No .cases.json sidecar next to %s — ledger not updated; "
+                                       "tomorrow's NETNEW may re-include these rows.", csv_path.name)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Upload ledger update failed (%s) — tomorrow's NETNEW "
+                                   "may re-include these rows.", e)
+
             # ── Fire DataSift's own skip trace on just this week's rows ──
             if committed and skip_trace:
                 if week is None:
