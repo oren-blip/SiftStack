@@ -167,30 +167,49 @@ def _norm_addr(addr: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (addr or "").upper())
 
 
+# Through this ISO week, Oren uploaded his manual pulls to DataSift himself, so
+# archive-matched cases must stay OUT of the pipeline upload (they're already
+# in the CRM under his address text). From the NEXT week on he stops uploading
+# separately (2026-07-29): the pipeline upload carries EVERY workbook row —
+# his hand-pulled cases included — in one combined upload, and only the upload
+# ledger (what WE already committed) excludes.
+MANUAL_SEPARATE_UPLOADS_THROUGH_WEEK = 31
+
+
+def _archive_week(label: str) -> int:
+    m = re.search(r"week\s*0*(\d+)", label or "", re.I)
+    return int(m.group(1)) if m else -1  # unknown week = treat as historical
+
+
 def load_manual_archive(index_path: str | Path = MANUAL_INDEX_PATH) -> dict | None:
-    """Load the manual-archive index into fast lookup sets. Returns None if the
-    index file is missing/unreadable (caller then skips net-new filtering)."""
+    """Load the manual-archive index into fast lookup maps (key -> ISO week of
+    the manual entry). Returns None if the index file is missing/unreadable
+    (caller then skips net-new filtering)."""
     try:
         with Path(index_path).open(encoding="utf-8") as f:
             entries = json.load(f).get("_entries", {})
     except (OSError, ValueError):
         return None
-    case_nos: set[str] = set()
-    addrs: set[tuple[str, str]] = set()
-    for e in entries.values():
+    case_nos: dict[str, int] = {}
+    name_keys: dict[str, int] = {}
+    addrs: dict[tuple[str, str], int] = {}
+    for key, e in entries.items():
+        wk = _archive_week(e.get("week", ""))
         cn = (e.get("case_no") or "").strip().upper()
         if cn:
-            case_nos.add(cn)
+            case_nos[cn] = wk
+        name_keys[key] = wk
         pa = _norm_addr(e.get("property_address", ""))
         if pa:
-            addrs.add((pa, (e.get("property_zip") or "").strip()[:5]))
-    return {"case_nos": case_nos, "name_keys": set(entries.keys()), "addrs": addrs}
+            addrs[(pa, (e.get("property_zip") or "").strip()[:5])] = wk
+    return {"case_nos": case_nos, "name_keys": name_keys, "addrs": addrs}
 
 
-def in_manual_archive(row: dict, arc: dict) -> bool:
-    """True if this polished FTM row is a case Oren already pulled by hand.
+def in_manual_archive(row: dict, arc: dict) -> int | None:
+    """The ISO week of Oren's manual entry for this row, or None if he never
+    pulled it. -1 = archive entry with no parseable week (historical master).
 
-    Matched three ways (any hit = already his), strongest first:
+    Matched three ways (any hit = his), strongest first:
       1. Case No. exact — the most reliable key.
       2. County + decedent name-token key — the archive's own key; catches rows
          whose Case No. is blank/differs.
@@ -199,15 +218,17 @@ def in_manual_archive(row: dict, arc: dict) -> bool:
     """
     cn = (row.get("Case No.") or "").strip().upper()
     if cn and cn in arc["case_nos"]:
-        return True
+        return arc["case_nos"][cn]
     county = (row.get("County") or "").strip().upper()
     dec = row.get("Deceased Owner") or ""
-    if county and dec and f"{county}||{_name_token_key(dec)}" in arc["name_keys"]:
-        return True
+    key = f"{county}||{_name_token_key(dec)}"
+    if county and dec and key in arc["name_keys"]:
+        return arc["name_keys"][key]
     pa = _norm_addr(row.get("Property Address", ""))
-    if pa and (pa, (row.get("Property Zip") or "").strip()[:5]) in arc["addrs"]:
-        return True
-    return False
+    ak = (pa, (row.get("Property Zip") or "").strip()[:5])
+    if pa and ak in arc["addrs"]:
+        return arc["addrs"][ak]
+    return None
 
 
 UPLOAD_LEDGER_PATH = Path("output") / ".netnew_uploaded.json"
@@ -275,9 +296,16 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
             # the NETNEW name still exists, but the caller's log flags it.
             netnew_rows = list(rows)
         else:
-            netnew_rows = [r for r in rows
-                           if not in_manual_archive(r, arc)
-                           and _case_no(r) not in uploaded]
+            def _already_in_datasift(r: dict) -> bool:
+                if _case_no(r) in uploaded:
+                    return True  # a prior pipeline upload committed it
+                wk = in_manual_archive(r, arc)
+                # Archive-matched cases are excluded only for the weeks Oren
+                # still uploaded his manual himself. From Week
+                # MANUAL_SEPARATE_UPLOADS_THROUGH_WEEK+1 on, the combined
+                # upload carries his cases too (his rule, 2026-07-29).
+                return wk is not None and wk <= MANUAL_SEPARATE_UPLOADS_THROUGH_WEEK
+            netnew_rows = [r for r in rows if not _already_in_datasift(r)]
         with netnew_path.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
             w.writeheader()

@@ -176,6 +176,7 @@ async def upload_csv(
     list_name: str | None = None,
     existing_list: bool = False,
     finish: bool = True,
+    pull_date: str | None = None,
 ) -> dict:
     """Upload a CSV file to DataSift via the 7-step upload wizard.
 
@@ -337,35 +338,58 @@ async def upload_csv(
     except Exception as e:
         logger.debug("Popup dismissal failed: %s", e)
 
-    # "WHERE DID YOU PURCHASE THIS LIST?" — select "County" (Oren: county records)
+    # "WHERE DID YOU PURCHASE THIS LIST?" — select "County" (Oren: county
+    # records; explicit requirement 2026-07-29). Same hardened pattern as the
+    # phones dropdown: label -> following SelectContainer -> REAL click on the
+    # option (JS clicks don't update React state), then read the value back.
     try:
-        purchase_dropdown = page.locator('text="WHERE DID YOU PURCHASE THIS LIST?"').locator(
-            '..').locator('text="Select an option"')
-        if await purchase_dropdown.count() > 0:
-            await purchase_dropdown.first.click()
-            await page.wait_for_timeout(600)
-            for label in ('text="County"', 'text="Other"'):
-                opt = page.locator(label)
+        p_label = page.get_by_text("WHERE DID YOU PURCHASE THIS LIST?", exact=False)
+        purchase_ok = False
+        if await p_label.count() > 0:
+            p_container = p_label.first.locator(
+                'xpath=following::*[contains(@class,"SelectContainer")][1]')
+            if await p_container.count() > 0:
+                await p_container.locator('[class*="SelectValue"]').first.click()
+                await page.wait_for_timeout(700)
+                opt = p_container.locator(
+                    '[class*="SelectOptionContainer"]').filter(
+                    has_text=re.compile(r'^\s*County\s*$', re.I))
                 if await opt.count() > 0:
-                    await opt.first.click()
-                    break
-            await page.wait_for_timeout(500)
+                    try:
+                        await opt.first.click(timeout=4000)
+                    except Exception:
+                        await opt.first.click(force=True, timeout=4000)
+                    await page.wait_for_timeout(500)
+                    val = await p_container.locator(
+                        '[class*="SelectValue"]').first.text_content()
+                    purchase_ok = bool(val and "county" in val.strip().lower())
+        if purchase_ok:
+            logger.info("Setup: purchase source = County")
+        else:
+            logger.warning("Setup: could NOT confirm purchase source = County — "
+                           "check the Review screen.")
     except Exception as e:
-        logger.debug("Purchase dropdown: %s", e)
+        logger.warning("Purchase-source dropdown: %s", e)
 
-    # "WHEN?" — the date the list was pulled (defaults to today's date)
+    # "WHEN?" — the date the cases were PULLED from the county (per Oren
+    # 2026-07-29), passed in by the caller from the scrape file's date stamp;
+    # falls back to today only when unknown.
     try:
         from datetime import datetime as _dt
+        when = pull_date or _dt.now().strftime("%m/%d/%Y")
         date_input = page.locator('input[placeholder*="Choose date"], input[placeholder*="date"]')
         if await date_input.count() > 0:
             await date_input.first.click()
             await page.wait_for_timeout(400)
-            await date_input.first.fill(_dt.now().strftime("%m/%d/%Y"))
+            await date_input.first.fill(when)
             await page.wait_for_timeout(400)
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
+            logger.info("Setup: list pull date = %s", when)
+        else:
+            logger.warning("Setup: date field not found — pull date NOT set")
     except Exception as e:
-        logger.debug("Date field: %s", e)
+        logger.warning("Date field: %s", e)
 
     # "Does data contain phone numbers?" — MUST be "Yes" or DataSift DROPS every
     # uploaded phone column on import (verified 2026-07-18: all 18 Week-29 phones

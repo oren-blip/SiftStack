@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -114,11 +115,15 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                 logger.error("Login failed")
                 return
 
-            logger.info("Uploading %s into existing list '%s' (stopping at Review)...",
-                        csv_path.name, list_name)
+            # Setup "When?" = the date the cases were pulled from the county —
+            # the scrape date stamped in the CSV filename (per Oren 2026-07-29).
+            m = re.search(r"(\d{4})-(\d{2})-(\d{2})", csv_path.name)
+            pull_date = f"{m.group(2)}/{m.group(3)}/{m.group(1)}" if m else None
+            logger.info("Uploading %s into existing list '%s' (stopping at Review; "
+                        "pull date %s)...", csv_path.name, list_name, pull_date or "today")
             result = await upload_csv(page, csv_path, mode="add",
                                       list_name=list_name, existing_list=True,
-                                      finish=False)
+                                      finish=False, pull_date=pull_date)
             if not result.get("success"):
                 logger.error("Wizard did not reach Review: %s", result.get("message"))
                 return
