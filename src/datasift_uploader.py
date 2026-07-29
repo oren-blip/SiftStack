@@ -823,10 +823,13 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
             await page.keyboard.press("Escape")
             return False
         await page.wait_for_timeout(3000)
-        # The panel closes when Apply actually fires — still-visible heading
-        # means the filter did NOT apply (e.g. nothing selected, button inert).
-        if await page.locator('text="Filter Records"').first.is_visible():
-            logger.warning("Filter panel still open after Apply — filter NOT applied")
+        # Positive signal only: the Records toolbar shows "Filtering by:" once
+        # a filter is live. (Checking that the "Filter Records" text is GONE
+        # false-negatives — the toolbar button carries the same text as the
+        # panel heading, which is how night 2's correctly-applied filter got
+        # reported as inert.)
+        if not await page.locator('text="Filtering by:"').first.is_visible():
+            logger.warning("No 'Filtering by:' indicator after Apply — filter NOT applied")
             await _screenshot(page, "filter_tag_apply_inert")
             await page.keyboard.press("Escape")
             return False
