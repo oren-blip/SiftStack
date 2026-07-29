@@ -37,3 +37,35 @@ Case No.,Field,Value
 # Lineberger: Oren verified 26E001011-350 on the Register of Actions (2026-07-29);
 # the docket grid scrape carried 26E001012-350 for the same estate. His number is canonical.
 26E001012-350,Case No.,26E001011-350
+# Week 31: court feed still returns zero parties for these 7/28 filings (2 days on),
+# but Oren's manual pull has the court-named PRs. His data is court-verified.
+26E000884-170,Personal Representative,Carla Long
+26E000884-170,First Name,Carla
+26E000884-170,Last Name,Long
+26E000884-170,Mailing Address,773 Henry Rhodes Road
+26E000884-170,Mailing City,Lincolnton
+26E000884-170,Mailing Zip,28092
+26E000879-170,Personal Representative,Derick Estes
+26E000879-170,First Name,Derick
+26E000879-170,Last Name,Estes
+26E000879-170,Mailing Address,4136 Love Rd
+26E000879-170,Mailing City,Claremont
+26E000879-170,Mailing Zip,28610
+26E000883-170,Personal Representative,David Hedrick
+26E000883-170,First Name,David
+26E000883-170,Last Name,Hedrick
+26E000883-170,Mailing Address,4821 Little Mountain Road
+26E000883-170,Mailing City,Sherrills Ford
+26E000883-170,Mailing Zip,28609
+26E000771-790,Personal Representative,James Thompson
+26E000771-790,First Name,James
+26E000771-790,Last Name,Thompson
+26E000771-790,Mailing Address,249 Beech Brook Lane
+26E000771-790,Mailing City,Statesville
+26E000771-790,Mailing Zip,28625
+26E001011-350,Personal Representative,Larry Lineberger
+26E001011-350,First Name,Larry
+26E001011-350,Last Name,Lineberger
+26E001011-350,Mailing Address,423 Ike Lynch Rd
+26E001011-350,Mailing City,Dallas
+26E001011-350,Mailing Zip,28034

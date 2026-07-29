@@ -6410,6 +6410,12 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         print("Step 3.75: re-run centroid geocode for parcels attached at Step 3.7")
         n_centroid2 = fill_property_location_via_centroid(rows)
         print(f"  Filled via centroid geocode: {n_centroid2}")
+        # Same ordering hole for the address text: a 3.7-attached Polaris situs
+        # can carry the jammed "ADDR CITY NC" form, but the Step 3.5 cleaner
+        # already ran. Idempotent — re-run it for the late attachments (Doby
+        # 26E002770-590 / Barnett 26E002801-590 Week 31 shipped jammed).
+        n_c2, n_z2 = clean_bad_city_zip_in_place(rows)
+        print(f"  Re-cleaned after late attach: cities {n_c2}, zips {n_z2}")
 
     # After every parcel-attaching step, so late attachments get noted too.
     print("Step 3.76: record the county's alternate parcel id in Notes (Lincoln PIN)")
