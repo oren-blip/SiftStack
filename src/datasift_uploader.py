@@ -740,6 +740,29 @@ async def _filter_by_list(page: Page, list_name: str) -> bool:
         return False
 
 
+async def _mouse_click_exact_text(page: Page, text: str) -> bool:
+    """Real mouse click centered on the innermost visible element whose whole
+    trimmed text equals `text` (INPUTs excluded — their textContent never
+    includes the typed value). Trusted pointer events, so React handlers that
+    ignore synthetic el.click() still fire. Returns False if no such element."""
+    rect = await page.evaluate(
+        """(txt) => {
+            const els = [...document.querySelectorAll('*')].filter(e =>
+                e.tagName !== 'INPUT' &&
+                (e.textContent || '').trim() === txt);
+            for (let i = els.length - 1; i >= 0; i--) {
+                const r = els[i].getBoundingClientRect();
+                if (r.width > 0 && r.height > 0)
+                    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            }
+            return null;
+        }""", text)
+    if not rect:
+        return False
+    await page.mouse.click(rect["x"], rect["y"])
+    return True
+
+
 async def _filter_by_tag(page: Page, tag: str) -> bool:
     """Filter records by TAG (mirrors _filter_by_list). Used to isolate exactly
     the records from one upload via its unique per-week tag, so a paid skip-trace
@@ -778,22 +801,14 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
         await tag_search.first.fill(tag)
         await page.wait_for_timeout(2000)
         await _screenshot(page, "filter_tag_searched")
-        # Click the dropdown SUGGESTION for the tag — not the input we just
-        # typed into. `text="{tag}"` also matches the input (its value), and
-        # a Playwright click on the wrong element hangs against the filter
-        # panel's pointer-intercepting sections (Week 31 2026-07-27: 30s
-        # click timeout → unfiltered skip trace). JS click dodges intercepts.
-        picked = await page.evaluate(
-            """(tag) => {
-                const els = [...document.querySelectorAll('*')].filter(e =>
-                    e.children.length === 0 && e.tagName !== 'INPUT' &&
-                    (e.textContent || '').trim() === tag);
-                const el = els[els.length - 1];
-                if (!el) return false;
-                el.click();
-                return true;
-            }""", tag)
-        if not picked:
+        # Click the dropdown SUGGESTION for the tag with a REAL mouse click at
+        # its coordinates. Two prior failure modes (Week 31, both nights):
+        # `text="{tag}"` matched the search INPUT and the Playwright click
+        # hung on intercepting panel sections; a synthetic JS el.click() found
+        # the right element but React's listbox ignored the untrusted event
+        # (dropdown stayed open, no chip added). Input textContent never
+        # includes its typed value, so an exact-text match can't hit the input.
+        if not await _mouse_click_exact_text(page, tag):
             logger.warning("Tag suggestion %r not found in dropdown", tag)
             await _screenshot(page, "filter_tag_no_suggestion")
             return False
@@ -801,21 +816,20 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
         logger.info("Selected tag filter: %s", tag)
         await _screenshot(page, "filter_tag_selected")
 
-        applied = await page.evaluate(
-            """() => {
-                const els = [...document.querySelectorAll('*')].filter(e =>
-                    e.children.length === 0 &&
-                    (e.textContent || '').trim() === 'Apply Filters');
-                const el = els[els.length - 1];
-                if (!el) return false;
-                el.click();
-                return true;
-            }""")
-        if not applied:
+        # 'Apply Filters' sits in a bar with an icon child, so no leaf element
+        # carries the text alone — match on whole-element text, mouse-click it.
+        if not await _mouse_click_exact_text(page, "Apply Filters"):
             logger.warning("'Apply Filters' not found — filter NOT applied")
             await page.keyboard.press("Escape")
             return False
         await page.wait_for_timeout(3000)
+        # The panel closes when Apply actually fires — still-visible heading
+        # means the filter did NOT apply (e.g. nothing selected, button inert).
+        if await page.locator('text="Filter Records"').first.is_visible():
+            logger.warning("Filter panel still open after Apply — filter NOT applied")
+            await _screenshot(page, "filter_tag_apply_inert")
+            await page.keyboard.press("Escape")
+            return False
         await _screenshot(page, "filter_tag_applied")
         return True
     except Exception as e:  # noqa: BLE001
