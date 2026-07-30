@@ -90,7 +90,8 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
               review_wait_min: float, auto_finish: bool, headless: bool,
               skip_trace: bool = True, skiptrace_settle_s: int = 90,
               tier_step: bool = True, tier_settle_s: int = 600,
-              text_touches: bool = True, touch_sender: str = "Oren") -> None:
+              text_touches: bool = True, touch_sender: str = "Oren",
+              batch_tag_override: str | None = None) -> None:
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
@@ -125,7 +126,7 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             # re-charge for) the whole week nightly (Oren, 2026-07-29).
             batch_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else \
                 __import__("datetime").datetime.now().strftime("%Y-%m-%d")
-            batch_tag = f"NC Upload {batch_date}"
+            batch_tag = batch_tag_override or f"NC Upload {batch_date}"
             logger.info("Uploading %s into existing list '%s' (stopping at Review; "
                         "pull date %s; batch tag %r)...",
                         csv_path.name, list_name, pull_date or "today", batch_tag)
@@ -330,6 +331,11 @@ def main():
                     help="Don't write Text Touch 1-4 SMS drafts after the tier step")
     ap.add_argument("--touch-sender", default="Oren",
                     help="First name signing the text touches (default: Oren)")
+    ap.add_argument("--batch-tag", default=None,
+                    help="Override the per-upload batch tag (default: 'NC Upload "
+                         "<scrape date>'). Use when running a SECOND upload the "
+                         "same day so the follow-up steps don't re-process the "
+                         "first batch.")
     ap.add_argument("--headless", action="store_true", help="Run browser headless")
     args = ap.parse_args()
 
@@ -340,7 +346,8 @@ def main():
                     tier_step=not args.no_tier_step,
                     tier_settle_s=args.tier_settle,
                     text_touches=not args.no_text_touches,
-                    touch_sender=args.touch_sender))
+                    touch_sender=args.touch_sender,
+                    batch_tag_override=args.batch_tag))
 
 
 if __name__ == "__main__":
