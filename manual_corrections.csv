@@ -69,3 +69,22 @@ Case No.,Field,Value
 26E001011-350,Mailing Address,423 Ike Lynch Rd
 26E001011-350,Mailing City,Dallas
 26E001011-350,Mailing Zip,28034
+# Foster 26E001019-350: pipeline anchored the SON's parcel (5144, deed FOSTER MAURICE J II).
+# Re-anchor to the decedent's sole-owned 5026 Pine Springs; full father/son deed split in Notes.
+26E001019-350,Property Address,5026 Pine Springs Dr
+26E001019-350,Property City,Bessemer City
+26E001019-350,Property Zip,28016
+26E001019-350,Parcel ID,163270
+26E001019-350,Property Value,136040
+26E001019-350,Property Acres,1.18
+26E001019-350,Notes,"ESTATE PARCELS (deed FOSTER MAURICE JAN, no suffix) — 8 parcels ~$1.05M:
+5026 Pine Springs Dr $136K MH (sole — MAIN)
+5124 Pine Springs Dr $183K MH (w/ Frances S Foster & other)
+5044 Pine Springs Dr $136K MH (w/ Frances S Foster & other)
+151 Eaker Rd $85K MH (w/ Frances S Foster & other)
+5045 Pine Springs Dr $131K MH (w/ Paula Ann Foster)
+114 Eaker Rd $132K MH (JOINT w/ son Maurice Jan Foster II — check survivorship)
+147 Eaker Rd $97K MH (JOINT w/ son — check survivorship)
+2417 Tryon Courthouse Rd $147K MH (deed FOSTER MAURICE, verify which Maurice)
+[SON-OWNED, NOT estate (deed II): 5144/5140/5154/5114/5120 Pine Springs]
+[Oren verified 2026-07-29: son Maurice Jan Foster II on several deeds — split confirmed via raw tax layer]"
