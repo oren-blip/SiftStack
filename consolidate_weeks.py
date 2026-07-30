@@ -101,8 +101,14 @@ def week_from_csv(rows: list[dict]) -> tuple[int, int]:
     return (datetime.now().year, datetime.now().isocalendar().week)
 
 
-def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
+def auto_pick_weekly_files(include_archived: bool = False) -> dict[tuple[int, int], Path]:
     """Pick the most recent CSV per (year, week) from output/.
+
+    include_archived: also return ARCHIVED weeks (frozen picks from output/
+    and output/archive_week<N>_done/). The workbook keeps every prior week as
+    a reference tab now that Oren works cases from the pipeline workbook
+    instead of his manual file (2026-07-29). Leave False for callers that
+    PROCESS the picked files (deep prospect etc.) — archived weeks are frozen.
 
     Considers THREE naming patterns (higher priority wins per week):
       *_weekN_datasift.csv                 (Step 4 output)
@@ -160,25 +166,32 @@ def auto_pick_weekly_files() -> dict[tuple[int, int], Path]:
     # Gather every candidate per week as (rows, priority, ts, path).
     # Priority 0 = datasift, 1 = ecourts_backfilled, 2 = dm_enriched.
     cands: dict[tuple[int, int], list[tuple[int, int, str, Path]]] = {}
+    # Archived weeks' files may still sit in output/ (recent archives) or have
+    # been moved into output/archive_week<N>_done/ (older ones) — search both.
+    search_dirs = [Path("output")]
+    if include_archived:
+        search_dirs += sorted(Path("output").glob("archive_week*_done"))
     for pattern, priority in [
         ("nc_estates_ftm_*_week*_datasift.csv", 0),
         ("nc_estates_ftm_*_week*_ecourts_backfilled.csv", 1),
         ("nc_estates_ftm_*_week*_dm_enriched.csv", 2),
     ]:
-        for fp in sorted(Path("output").glob(pattern)):
-            m = re.search(r"_week(\d+)", fp.name)
-            if not m:
-                continue
-            wk = int(m.group(1))
-            if wk in archived:
-                continue  # Archived weeks are excluded from the workbook
-            ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
-            year = int(ym.group(1)) if ym else datetime.now().year
-            # First timestamp in the name is the originating scrape's stamp,
-            # carried through every enrichment stage.
-            ts_m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", fp.name)
-            ts = ts_m.group(1) if ts_m else ""
-            cands.setdefault((year, wk), []).append((_row_count(fp), priority, ts, fp))
+        for d in search_dirs:
+            for fp in sorted(d.glob(pattern)):
+                m = re.search(r"_week(\d+)", fp.name)
+                if not m:
+                    continue
+                wk = int(m.group(1))
+                if wk in archived and not include_archived:
+                    continue  # frozen weeks excluded for processing callers
+                ym = re.search(r"_(\d{4})-\d{2}-\d{2}_", fp.name)
+                year = int(ym.group(1)) if ym else datetime.now().year
+                # First timestamp in the name is the originating scrape's
+                # stamp, carried through every enrichment stage.
+                ts_m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", fp.name)
+                ts = ts_m.group(1) if ts_m else ""
+                cands.setdefault((year, wk), []).append(
+                    (_row_count(fp), priority, ts, fp))
 
     picked: dict[tuple[int, int], Path] = {}
     for key, lst in cands.items():
@@ -281,7 +294,9 @@ def main() -> None:
             yr, wk = week_from_csv(rows)
             per_week[(yr, wk)] = (fp, rows)
     else:
-        auto = auto_pick_weekly_files()
+        # include_archived: every prior week stays in the workbook as a frozen
+        # reference tab — Oren works cases from here now, not his manual file.
+        auto = auto_pick_weekly_files(include_archived=True)
         per_week = {}
         for key, fp in auto.items():
             per_week[key] = (fp, load_csv(fp))
