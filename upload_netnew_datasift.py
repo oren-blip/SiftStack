@@ -75,11 +75,19 @@ async def _skip_trace_week(page, list_name: str, tag: str,
     logger.info("Upload committed. Waiting %ds for DataSift to import the rows "
                 "before skip trace (so the tag filter finds them)...", settle_s)
     await page.wait_for_timeout(settle_s * 1000)
-    logger.info("Skip tracing this week's rows only (tag=%r)...", tag)
-    res = await skip_trace_records(page, list_name, filter_tag=tag)
-    if res.get("success"):
-        logger.info("DataSift skip trace started: %s", res.get("message"))
-        return True
+    # A brand-new batch tag can take a few minutes to appear in the tag-filter
+    # dropdown (indexing lag — Week 31: first attempt at +2 min found nothing,
+    # a retry at +8 min succeeded). Retry before giving up.
+    for attempt in range(3):
+        if attempt:
+            logger.info("Tag %r not filterable yet — waiting 2 min and retrying "
+                        "(%d/2)...", tag, attempt)
+            await page.wait_for_timeout(120000)
+        logger.info("Skip tracing this upload's rows only (tag=%r)...", tag)
+        res = await skip_trace_records(page, list_name, filter_tag=tag)
+        if res.get("success"):
+            logger.info("DataSift skip trace started: %s", res.get("message"))
+            return True
     logger.error("DataSift skip trace did NOT start: %s — run it by hand: "
                  "Records -> filter tag %r -> Select all -> Send To -> Skip Trace.",
                  res.get("message"), tag)

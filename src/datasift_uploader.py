@@ -1937,9 +1937,11 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
         logger.error(result["message"])
         return result
     try:
-        if "/records" not in page.url:
-            await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
+        # ALWAYS reload the records page: when called right after another
+        # wizard closes (the upload chain), leftover overlay state blocks the
+        # Add/Update chooser ("Could not find 'Update Data'" — Week 31 chain).
+        await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
         await _dismiss_popups(page)
 
         upload_link = page.locator('text="Upload File"')
@@ -1952,6 +1954,7 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
 
         update_btn = page.locator('text="Update Data"')
         if await update_btn.count() == 0:
+            await _screenshot(page, "phones_by_addr_no_update_btn")
             result["message"] = "Could not find 'Update Data' button"
             logger.error(result["message"])
             return result
