@@ -1916,6 +1916,103 @@ async def _filter_by_preset(page: Page, preset_name: str) -> bool:
         return False
 
 
+async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
+    """Push phone numbers onto EXISTING records via "Update Data →
+    Upload phone numbers by property address".
+
+    Why this exists (Week 31, 2026-07-29): "Add Data" into an existing list
+    KEEPS the existing record's contact data on an address merge — the phone
+    columns in the uploaded CSV are silently discarded for every record that
+    already existed in the account (old bulk lists). Only newly-created
+    records keep uploaded phones. This wizard path is DataSift's way to add
+    phones to records that already exist, keyed by property address.
+
+    CSV shape: Property Street Address / Property City / Property State /
+    Property ZIP Code + Phone 1..N (same header names as the main upload).
+    """
+    result = {"success": False, "message": ""}
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        result["message"] = f"Phones CSV not found: {csv_path}"
+        logger.error(result["message"])
+        return result
+    try:
+        if "/records" not in page.url:
+            await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+        await _dismiss_popups(page)
+
+        upload_link = page.locator('text="Upload File"')
+        if await upload_link.count() == 0:
+            result["message"] = "Could not find 'Upload File' link"
+            logger.error(result["message"])
+            return result
+        await upload_link.first.click()
+        await page.wait_for_timeout(2000)
+
+        update_btn = page.locator('text="Update Data"')
+        if await update_btn.count() == 0:
+            result["message"] = "Could not find 'Update Data' button"
+            logger.error(result["message"])
+            return result
+        await update_btn.first.click()
+        await page.wait_for_timeout(1500)
+
+        dropdown = page.locator('text="Select one or more options"')
+        if await dropdown.count() > 0:
+            await dropdown.first.click()
+            await page.wait_for_timeout(1500)
+        if not await _mouse_click_exact_text(page, "Upload phone numbers by property address"):
+            await _screenshot(page, "phones_by_addr_no_option")
+            result["message"] = "'Upload phone numbers by property address' option not found"
+            logger.error(result["message"])
+            return result
+        await page.wait_for_timeout(1500)
+        logger.info("Selected 'Upload phone numbers by property address'")
+
+        # Advance until the file input appears — this wizard variant can have
+        # extra setup screens before the upload step.
+        file_input = page.locator('input[type="file"]')
+        for adv in range(4):
+            await _click_next_step(page, timeout=10000)
+            await page.wait_for_timeout(2000)
+            await _screenshot(page, f"phones_by_addr_adv{adv + 1}")
+            if await file_input.count() > 0:
+                break
+        if await file_input.count() == 0:
+            result["message"] = "No file input in phones-by-address wizard"
+            logger.error(result["message"])
+            return result
+        await file_input.first.set_input_files(str(csv_path.resolve()))
+        await page.wait_for_timeout(3000)
+        logger.info("Uploaded phones file: %s", csv_path.name)
+
+        for step_num in range(5):
+            await _screenshot(page, f"phones_by_addr_step{step_num + 1}")
+            finish_btn = page.locator('button:has-text("Finish Upload")')
+            if await finish_btn.count() > 0:
+                await finish_btn.first.click()
+                await page.wait_for_timeout(5000)
+                logger.info("Clicked 'Finish Upload' for phones-by-address")
+                break
+            next_btn = page.locator('button:has-text("Next Step"), button:has-text("Next")')
+            if await next_btn.count() > 0:
+                await next_btn.first.click()
+                await page.wait_for_timeout(3000)
+            else:
+                logger.warning("No Next/Finish at step %d", step_num + 1)
+                break
+        result["success"] = True
+        result["message"] = f"Phones uploaded by address: {csv_path.name}"
+        logger.info(result["message"])
+        return result
+    except Exception as e:  # noqa: BLE001
+        await _screenshot(page, "phones_by_addr_error")
+        result["message"] = f"phones-by-address failed: {e}"
+        logger.error(result["message"])
+        return result
+
+
 async def upload_phone_tags(page: Page, csv_path: str | Path) -> dict:
     """Upload phone tags CSV to DataSift via "Update Data → Tag phones by phone number".
 

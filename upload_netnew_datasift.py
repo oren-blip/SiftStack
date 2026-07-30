@@ -202,6 +202,42 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                     logger.warning("Upload ledger update failed (%s) — tomorrow's NETNEW "
                                    "may re-include these rows.", e)
 
+            # ── Re-push phones by property address ──
+            # "Add Data" KEEPS an existing record's contact data on merge:
+            # phone columns in the CSV are silently discarded for records that
+            # already existed (old bulk lists). Week 31: every merged record
+            # lost its Tracerfy/court number. This dedicated update path adds
+            # them; harmless for newly-created records (numbers already there,
+            # DataSift dedupes identical phones).
+            if committed:
+                try:
+                    import csv as _csv
+                    with csv_path.open(newline="", encoding="utf-8-sig") as _f:
+                        _rows = list(_csv.DictReader(_f))
+                    _cols = ["Property Street Address", "Property City",
+                             "Property State", "Property ZIP Code"] + \
+                            [f"Phone {i}" for i in range(1, 10)]
+                    _phone_rows = [
+                        {c: (r.get(c) or "") for c in _cols} for r in _rows
+                        if any((r.get(f"Phone {i}") or "").strip() for i in range(1, 10))
+                    ]
+                    if _phone_rows:
+                        _pcsv = csv_path.with_name(csv_path.stem + "_phones.csv")
+                        with _pcsv.open("w", newline="", encoding="utf-8-sig") as _f:
+                            _w = _csv.DictWriter(_f, fieldnames=_cols)
+                            _w.writeheader()
+                            _w.writerows(_phone_rows)
+                        logger.info("Re-pushing phones for %d row(s) by property "
+                                    "address (merge-proofing)...", len(_phone_rows))
+                        from datasift_uploader import upload_phones_by_address
+                        pres = await upload_phones_by_address(page, _pcsv)
+                        if not pres.get("success"):
+                            logger.warning("Phones-by-address push failed: %s — "
+                                           "merged records may be missing their "
+                                           "uploaded numbers.", pres.get("message"))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Phones-by-address push failed (%s)", e)
+
             # ── Fire DataSift's own skip trace on just this week's rows ──
             traced = False
             if committed and skip_trace:
