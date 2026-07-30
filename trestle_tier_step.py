@@ -81,7 +81,28 @@ async def run(tag: str, *, dry_run: bool, headless: bool) -> int:
                                "skip trace finish before this ran?")
                 return 1
 
-            results, errors = process_phones(phones, api_key)
+            # Persistent score cache: with a DAILY upload cadence the same
+            # number can surface in multiple batches (shared family phones,
+            # re-exports) — never pay Trestle twice for one number. Cached
+            # results still flow into the tags CSV so the upsert stays whole.
+            import json as _json
+            cache_path = Path("output") / ".trestle_score_cache.json"
+            try:
+                cache = _json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cache = {}
+            unique = list(dict.fromkeys(c for _, c in phones))
+            fresh = [(p, p) for p in unique if p not in cache]
+            cached_results = [cache[p] for p in unique if p in cache]
+            logger.info("Phones: %d unique — %d cached, %d to score",
+                        len(unique), len(cached_results), len(fresh))
+            results, errors = ([], [])
+            if fresh:
+                results, errors = process_phones(fresh, api_key)
+                for res in results:
+                    cache[res["phone_number"]] = res
+                cache_path.write_text(_json.dumps(cache), encoding="utf-8")
+            results = results + cached_results
             logger.info("Scored %d phones (%d errors)", len(results), len(errors))
             tags_csv = write_datasift_tags_csv(results, "output")
             write_detailed_csv(results, "output")

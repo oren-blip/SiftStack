@@ -64,14 +64,14 @@ async def _wait_for_wizard_close(page, timeout_ms: int = 60000) -> bool:
         return False
 
 
-async def _skip_trace_week(page, list_name: str, week: int, year: int,
+async def _skip_trace_week(page, list_name: str, tag: str,
                            settle_s: int) -> bool:
-    """Fire DataSift's own skip trace on JUST this week's rows, after the upload
-    finishes importing. Scoped by the per-week tag ("NC Estates Week N YYYY") so
-    it never re-traces the whole PROBATE list (protects the monthly limit). The
-    uploaded Tracerfy/court phones stay — DataSift's numbers get ADDED alongside.
+    """Fire DataSift's own skip trace on JUST this upload's rows, after the
+    import settles. Scoped by the per-upload BATCH tag (not the week tag —
+    with daily uploads the week tag matches every prior day's already-traced
+    records and skip trace is pay-per-record). The uploaded Tracerfy/court
+    phones stay — DataSift's numbers get ADDED alongside.
     """
-    tag = f"NC Estates Week {week} {year}"
     logger.info("Upload committed. Waiting %ds for DataSift to import the rows "
                 "before skip trace (so the tag filter finds them)...", settle_s)
     await page.wait_for_timeout(settle_s * 1000)
@@ -119,11 +119,20 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             # the scrape date stamped in the CSV filename (per Oren 2026-07-29).
             m = re.search(r"(\d{4})-(\d{2})-(\d{2})", csv_path.name)
             pull_date = f"{m.group(2)}/{m.group(3)}/{m.group(1)}" if m else None
+            # Per-upload BATCH tag: with daily uploads, the week tag covers
+            # every prior day's records too — skip trace / Trestle / touches
+            # must scope to just tonight's rows or they re-process (and
+            # re-charge for) the whole week nightly (Oren, 2026-07-29).
+            batch_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else \
+                __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+            batch_tag = f"NC Upload {batch_date}"
             logger.info("Uploading %s into existing list '%s' (stopping at Review; "
-                        "pull date %s)...", csv_path.name, list_name, pull_date or "today")
+                        "pull date %s; batch tag %r)...",
+                        csv_path.name, list_name, pull_date or "today", batch_tag)
             result = await upload_csv(page, csv_path, mode="add",
                                       list_name=list_name, existing_list=True,
-                                      finish=False, pull_date=pull_date)
+                                      finish=False, pull_date=pull_date,
+                                      extra_tags=[batch_tag])
             if not result.get("success"):
                 logger.error("Wizard did not reach Review: %s", result.get("message"))
                 return
@@ -201,7 +210,7 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                                    "per-week tag, so SKIPPING it to avoid tracing the whole list. "
                                    "Pass --week N (or --no-skip-trace to silence this).")
                 else:
-                    traced = await _skip_trace_week(page, list_name, week, year,
+                    traced = await _skip_trace_week(page, list_name, batch_tag,
                                                     skiptrace_settle_s)
         finally:
             await browser.close()
@@ -212,14 +221,15 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
     # skip trace actually started — without it there are no new phones,
     # and the pipeline already scored its own numbers pre-upload.
     if traced and tier_step and week is not None:
-        tag = f"NC Estates Week {week} {year}"
+        # Batch tag, not week tag: score/touch ONLY tonight's uploaded rows —
+        # daily cadence means the week tag would re-run prior days nightly.
         logger.info("Waiting %d min for the DataSift skip trace to finish, then "
                     "running the Trestle tier step (tag=%r)...",
-                    tier_settle_s // 60, tag)
+                    tier_settle_s // 60, batch_tag)
         await asyncio.sleep(tier_settle_s)
         try:
             from trestle_tier_step import run as tier_run
-            rc = await tier_run(tag, dry_run=False, headless=headless)
+            rc = await tier_run(batch_tag, dry_run=False, headless=headless)
             if rc == 0:
                 logger.info("Trestle tier step complete — dial-priority tags are live.")
                 # Text touches ride on the tier step's success: the week's
@@ -228,7 +238,7 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                 if text_touches:
                     try:
                         from text_touch_step import run as touch_run
-                        trc = await touch_run(tag, sender=touch_sender,
+                        trc = await touch_run(batch_tag, sender=touch_sender,
                                               export_csv=None, list_name=list_name,
                                               dry_run=False, headless=headless)
                         if trc == 0:

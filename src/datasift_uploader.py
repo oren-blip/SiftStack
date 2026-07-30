@@ -177,6 +177,7 @@ async def upload_csv(
     existing_list: bool = False,
     finish: bool = True,
     pull_date: str | None = None,
+    extra_tags: list[str] | None = None,
 ) -> dict:
     """Upload a CSV file to DataSift via the 7-step upload wizard.
 
@@ -551,7 +552,11 @@ async def upload_csv(
     # Add EVERY tag from the CSV's Tags column (e.g. "Courthouse Data" AND
     # "NC Estates Week 28 2026") as list-level tags — the old code hardcoded only
     # "Courthouse Data" so the per-week tag was silently dropped (Oren, 2026-07-12).
+    # extra_tags: caller-supplied additions — used for the per-upload BATCH tag
+    # that scopes the post-upload skip trace / Trestle / text-touch steps to
+    # just this batch (daily uploads must not re-process prior days' records).
     csv_tags = _tags_from_csv(csv_path) or ["Courthouse Data"]
+    csv_tags += [t for t in (extra_tags or []) if t not in csv_tags]
     logger.info("Wizard: Add tags — %s", csv_tags)
     for _t in csv_tags:
         await _add_one_tag(page, _t)
