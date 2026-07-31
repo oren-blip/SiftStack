@@ -2881,7 +2881,41 @@ async def _siftmap_add_page_to_account(
                 await modal_heading.first.click()
                 await page.wait_for_timeout(300)
 
-            logger.info("Applied tag: %s", tag)
+            # VERIFY the tag chip actually registered — the click/Enter can
+            # silently miss (2026-07-31: the plain "Sold" tag reached 1 record
+            # of 5,952 while the month tags mostly applied). Chip = exact-text
+            # element below the tag input.
+            async def _tag_chip_present():
+                t_box = await tag_inp.first.bounding_box()
+                if not t_box:
+                    return False
+                return await page.evaluate(
+                    """([val, top, bottom]) => {
+                        for (const el of document.querySelectorAll('*')) {
+                            if (el.children.length > 0) continue;
+                            if ((el.textContent || '').trim() !== val) continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.top > top && r.top < bottom
+                                && r.width > 10 && r.width < 400) return true;
+                        }
+                        return false;
+                    }""",
+                    [tag, t_box["y"], t_box["y"] + 150],
+                )
+
+            if not await _tag_chip_present():
+                # One retry: retype + Enter, then re-verify
+                await tag_inp.first.click()
+                await tag_inp.first.fill(tag)
+                await page.wait_for_timeout(1000)
+                await tag_inp.first.press("Enter")
+                await page.wait_for_timeout(800)
+                if await _tag_chip_present():
+                    logger.info("Applied tag (retry): %s", tag)
+                else:
+                    logger.error("Tag %r did NOT register in add modal", tag)
+            else:
+                logger.info("Applied tag (chip verified): %s", tag)
         except Exception as tag_err:
             logger.warning("Failed to apply tag '%s': %s", tag, tag_err)
 
