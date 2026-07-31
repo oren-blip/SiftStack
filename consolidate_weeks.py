@@ -329,8 +329,10 @@ def main() -> None:
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
 
-    # Add tabs sorted by (year, week) ascending — oldest left, newest right
-    for (yr, wk), (_fp, rows) in sorted(per_week.items()):
+    # Add tabs newest week FIRST (leftmost) — the current week is the working
+    # tab, prior weeks are reference (per Oren 2026-07-30). Excel also opens
+    # on the first sheet, so the workbook lands on the live week.
+    for (yr, wk), (_fp, rows) in sorted(per_week.items(), reverse=True):
         title = f"Week {wk} {yr}"
         add_tab(wb, title, rows)
         logger.info("Added tab '%s' with %d rows", title, len(rows))
