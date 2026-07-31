@@ -2388,6 +2388,7 @@ async def manage_sold_properties(
     sold_tag_date: str | None = None,
     dry_run: bool = False,
     delete_strangers: bool = True,
+    include_current: bool = False,
 ) -> dict:
     """Pull recently sold properties from SiftMap and tag them in DataSift.
 
@@ -2412,6 +2413,8 @@ async def manage_sold_properties(
         delete_strangers: After the pull, delete the newly-added records that
             were never our leads (Sold tag + Date Added = today). Existing
             leads keep their original Date Added so they can't match.
+        include_current: Also pull the current (partial) month on top of the
+            months_back prior months.
 
     Returns:
         Dict with {success, message, counties_processed, total_records,
@@ -2432,9 +2435,11 @@ async def manage_sold_properties(
     counties = counties or ["Knox", "Blount"]
 
     # Build list of (year, month) tuples to process — oldest first.
-    # months_back=0 means the CURRENT month (partial, sales through today) —
-    # used for end-of-month runs before the quota resets; the scheduled
-    # 1st-of-month run uses months_back=1 for the full prior month.
+    # months_back=0 means the CURRENT month only (partial, sales through
+    # today); months_back=N means the N full prior months; include_current
+    # additionally appends the current month to a months_back=N run (e.g.
+    # June + July-to-date in one pass). The scheduled 1st-of-month run uses
+    # months_back=1 for the full prior month.
     now = datetime.now()
     months_to_process = []
     if months_back == 0:
@@ -2447,6 +2452,8 @@ async def manage_sold_properties(
             m += 12
             y -= 1
         months_to_process.append((y, m))
+    if include_current and months_back != 0:
+        months_to_process.append((now.year, now.month))
 
     logger.info(
         "Managing sold properties: counties=%s, months=%s, min_price=$%d",
@@ -3387,6 +3394,7 @@ async def run_manage_sold_workflow(
     delete_strangers: bool = True,
     delete_only: bool = False,
     delete_expected_max: int = 0,
+    include_current: bool = False,
     email: str | None = None,
     password: str | None = None,
     headless: bool = False,
@@ -3469,6 +3477,7 @@ async def run_manage_sold_workflow(
                     sold_tag_date=sold_tag_date,
                     dry_run=dry_run,
                     delete_strangers=delete_strangers,
+                    include_current=include_current,
                 )
 
             if not headless:

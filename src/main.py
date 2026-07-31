@@ -1038,6 +1038,7 @@ def _run_manage_sold(args) -> None:
         delete_strangers=not getattr(args, "keep_strangers", False),
         delete_only=delete_only,
         delete_expected_max=getattr(args, "expected_max", 0),
+        include_current=getattr(args, "include_current", False),
         headless=getattr(args, "headless", False),
     ))
 
@@ -1443,6 +1444,14 @@ def cli_main() -> None:
         "--keep-strangers",
         action="store_true",
         help="Skip the post-pull stranger delete (manage-sold mode)",
+    )
+    parser.add_argument(
+        "--include-current",
+        action="store_true",
+        help=(
+            "Also pull the current partial month on top of --months-back "
+            "prior months (manage-sold mode)"
+        ),
     )
     parser.add_argument(
         "--delete-strangers-only",
