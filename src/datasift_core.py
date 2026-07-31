@@ -165,9 +165,36 @@ async def login(page, email: str = None, password: str = None) -> bool:
     # Fresh login
     await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
 
-    # Fill credentials
-    await page.get_by_role("textbox", name="Email").fill(email)
-    await page.get_by_role("textbox", name="Password").fill(password)
+    # Fill credentials — VERIFIED. Filling while React is still hydrating the
+    # controlled inputs silently drops the values (watched 2026-07-31: a
+    # 2-char password on one attempt, a blank email on the next). Wait for
+    # the form, fill, then read the fields back and refill until both stick.
+    email_box = page.get_by_role("textbox", name="Email")
+    pw_box = page.get_by_role("textbox", name="Password")
+    await email_box.wait_for(state="visible", timeout=20000)
+    await page.wait_for_timeout(2000)
+
+    filled = False
+    for attempt in range(4):
+        await email_box.click()
+        await email_box.fill(email)
+        await pw_box.click()
+        await pw_box.fill(password)
+        await page.wait_for_timeout(800)
+        ev = await email_box.input_value()
+        pv = await pw_box.input_value()
+        if ev == email and pv == password:
+            filled = True
+            break
+        logger.warning(
+            "Login form dropped input (attempt %d: email len %d/%d, "
+            "password len %d/%d) — refilling",
+            attempt + 1, len(ev), len(email), len(pv), len(password),
+        )
+        await page.wait_for_timeout(1500)
+    if not filled:
+        logger.error("Credentials would not stick in the login form")
+        return False
 
     # Hidden checkboxes — click labels, not inputs
     remember_label = page.locator('label:has-text("Remember me")')
@@ -177,6 +204,14 @@ async def login(page, email: str = None, password: str = None) -> bool:
     terms_label = page.locator('label:has-text("I\'ve read and agree")')
     if await terms_label.count() > 0:
         await terms_label.first.click()
+
+    # Re-verify right before submitting — checkbox clicks can re-render the
+    # form and wipe the inputs too.
+    if await email_box.input_value() != email or await pw_box.input_value() != password:
+        logger.warning("Inputs wiped after checkbox clicks — refilling once more")
+        await email_box.fill(email)
+        await pw_box.fill(password)
+        await page.wait_for_timeout(500)
 
     # Click Sign In
     await page.get_by_role("button", name="Sign In").click()
