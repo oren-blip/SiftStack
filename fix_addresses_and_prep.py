@@ -4139,6 +4139,53 @@ def _heir_addr_match(a: str, b: str) -> bool:
     return _within_one_edit(a, b)
 
 
+def _pr_deed_coowner_state(r: dict) -> str | None:
+    """Is the named PR a co-owner on the matched parcel's deed?
+
+    'marker'  — the decedent's deed segment carries WF/HSB/WIFE/HUSBAND →
+                tenancy by the entirety, auto-transfer to the spouse (DQ).
+    'coowner' — PR is a co-owner with NO marriage marker → ambiguous tenancy;
+                a same-surname co-owner living at the home is the
+                surviving-spouse pattern Oren KEEPS (Kluttz 26E000777-790 /
+                Eckard 26E000887-170, Week 31: the court feed named the
+                spouse-PR a day late and the plain mailing==property DQ
+                dropped both of his flagged keepers).
+    None      — not a co-owner / can't tell.
+    """
+    import re as _re
+    first = (r.get("First Name") or "").strip().upper()
+    last = (r.get("Last Name") or "").strip().upper()
+    pid = (r.get("Parcel ID") or "").strip()
+    dec = (r.get("Deceased Owner") or "").strip()
+    county = (r.get("County") or "").strip()
+    if not (first and last and pid and dec and county) or "IN THE MATTER" in dec.upper():
+        return None
+    try:
+        from nc_gis_lookup import lookup_properties as _lp, split_decedent_name as _split
+        cands = _lp(dec, county, min_score=0.5)
+        match = next((c for c in cands if c.pid == pid), None)
+    except Exception:
+        return None
+    if not match or not match.is_jointly_owned:
+        return None
+    owner_upper = (match.owner_name or "").upper()
+    segments = [s.strip() for s in _re.split(r"\s*\|\s*|\s+&\s+|\s*;\s*", owner_upper)]
+    markers = {"WF", "HSB", "WIFE", "HUSBAND"}
+    _, _, dec_last = _split(dec)
+    dec_last_up = (dec_last or "").upper()
+    dec_marker = False
+    pr_coowner = False
+    for seg in segments:
+        toks = {t.strip(",.") for t in seg.split()}
+        if dec_last_up and dec_last_up in toks and (toks & markers):
+            dec_marker = True
+        if first in toks and last in toks:
+            pr_coowner = True
+    if not pr_coowner:
+        return None
+    return "marker" if dec_marker else "coowner"
+
+
 def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows where the executor's mailing address matches the property
     address — meaning the executor LIVES at the property. They almost
@@ -4195,6 +4242,25 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         mail_synthetic = "dm-promoted-pr" in (r.get("Match Reason") or "")
         mail = norm_addr(r.get("Mailing Address"))
         if mail and not mail_synthetic and _heir_addr_match(prop_norm, mail):
+            # Spouse exception BEFORE the drop: a same-surname PR who
+            # CO-OWNS the home on the deed (no survivorship marker) is the
+            # surviving-spouse class Oren keeps + works via the tag — not an
+            # heir who inherits-and-stays (Kluttz/Eckard Week 31).
+            surname_shared = ((r.get("Last Name") or "").strip().upper()
+                              in (r.get("Deceased Owner") or "").upper())
+            if surname_shared:
+                state = _pr_deed_coowner_state(r)
+                if state == "coowner":
+                    tag_reason(r, "likely-surviving-spouse")
+                    tags = (r.get("Tags") or "").strip()
+                    if "Surviving Spouse" not in tags:
+                        r["Tags"] = (tags + ", " if tags else "") + "Surviving Spouse?"
+                    _add_note(r, "[SURVIVING SPOUSE? — PR co-owns the home on "
+                                 "the deed, no survivorship marker; kept per "
+                                 "the spouse rule, verify before heavy spend]")
+                    return (False, "")
+                if state == "marker":
+                    return (True, "dq-pr-spouse-coowner")
             return (True, "dq-executor-at-property")
         ben_block = (r.get("Beneficiaries") or "")
         if ben_block:

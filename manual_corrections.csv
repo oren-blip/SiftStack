@@ -106,3 +106,8 @@ Case No.,Field,Value
 26E002810-590,Mailing Address,3611 Daisyfield Dr
 26E002810-590,Mailing City,Charlotte
 26E002810-590,Mailing Zip,28269
+# Gibson 26E000786-120: obit named "Peggy Wehunt Gibson" (Peggy = nickname for
+# Carolyn Margaret); court PR is Carolyn Gibson (Oren's pull 2026-07-30). Court wins.
+26E000786-120,Personal Representative,Carolyn Gibson
+26E000786-120,First Name,Carolyn
+26E000786-120,Last Name,Gibson
