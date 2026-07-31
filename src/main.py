@@ -1038,6 +1038,7 @@ def _run_manage_sold(args) -> None:
         delete_strangers=not getattr(args, "keep_strangers", False),
         delete_only=delete_only,
         delete_expected_max=getattr(args, "expected_max", 0),
+        delete_pull_date=getattr(args, "pull_date", None),
         include_current=getattr(args, "include_current", False),
         headless=getattr(args, "headless", False),
     ))
@@ -1467,6 +1468,16 @@ def cli_main() -> None:
         type=int,
         default=0,
         help="Count ceiling for --delete-strangers-only real deletes",
+    )
+    parser.add_argument(
+        "--pull-date",
+        type=str,
+        default=None,
+        help=(
+            "Created Date to target in --delete-strangers-only mode, "
+            "MM/DD/YYYY (default: today). Use when cleaning up a pull from "
+            "a previous day"
+        ),
     )
 
     # Manage presets arguments

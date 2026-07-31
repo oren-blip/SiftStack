@@ -2607,6 +2607,19 @@ async def _siftmap_set_date(page, date_btn_id: str, target_date_str: str, label:
         target_date_str: Date in MM/DD/YYYY format.
         label: Label for logging (e.g., 'start' or 'end').
     """
+    # Click the date button to open the calendar dialog
+    date_btn = page.locator(f'#{date_btn_id}')
+    await date_btn.click()
+    await page.wait_for_timeout(1500)
+    await _pick_calendar_date(page, target_date_str, label)
+
+
+async def _pick_calendar_date(page, target_date_str: str, label: str):
+    """Navigate an ALREADY-OPEN role=dialog calendar to a date and click it.
+
+    Shared by the SiftMap Last Sold Date picker and the Records filter panel's
+    "Created Date" block (same widget). MM/DD/YYYY input.
+    """
     import calendar as _cal
     from datetime import datetime as _dt
 
@@ -2615,11 +2628,6 @@ async def _siftmap_set_date(page, date_btn_id: str, target_date_str: str, label:
     target_month = target.month
     target_day = target.day
     target_month_name = _cal.month_name[target_month]
-
-    # Click the date button to open the calendar dialog
-    date_btn = page.locator(f'#{date_btn_id}')
-    await date_btn.click()
-    await page.wait_for_timeout(1500)
 
     cal_dialog = page.locator('[role="dialog"]')
     if await cal_dialog.count() == 0:
@@ -3076,37 +3084,23 @@ async def _apply_stranger_filter(page: Page, tag: str, date_mmddyyyy: str) -> di
             result["message"] = "Filter block search input not found"
             return result
 
-        # ── Block 1: Tags (AND) with the month's Sold tag ──
-        await filter_search.first.click()
-        await filter_search.first.fill("Tags")
-        await page.wait_for_timeout(1500)
-        for opt in ('text="All Tags (AND)"', 'text="Any Tags (OR)"'):
-            blk = page.locator(opt)
-            if await blk.count() > 0:
-                await blk.first.click()
-                await page.wait_for_timeout(2000)
-                break
-        tag_search = page.locator(
-            'input[placeholder*="Search for tags"], input[placeholder*="Search tags"]')
-        if await tag_search.count() == 0:
-            result["message"] = "'Search for tags' input not found"
-            return result
-        await tag_search.first.fill(tag)
-        await page.wait_for_timeout(2000)
-        if not await _mouse_click_exact_text(page, tag):
-            result["message"] = f"Tag suggestion {tag!r} not found in dropdown"
-            await _screenshot(page, "stranger_tag_no_suggestion")
-            return result
-        await page.wait_for_timeout(1000)
-        logger.info("Stranger filter: tag block set to %r", tag)
+        # BLOCK ORDER MATTERS: the Date Added block goes FIRST while the
+        # panel is clean. The tag block goes LAST because its suggestion
+        # dropdown stays open and intercepts panel clicks — but "Apply
+        # Filters" at the panel bottom stays reachable (same sequence the
+        # weekly export's _filter_by_tag uses). Both 2026-07-31 delete
+        # attempts died trying to add a second block after the tag dropdown.
 
-        # ── Block 2: Date Added = pull day ──
+        # ── Block 1: Date Added = pull day ──
+        # DataSift's block name for record-added-to-account date is
+        # "Created Date" (PROPERTY FILTERS group) — there is NO "Date Added"
+        # block (full catalog probed 2026-07-31). "Upload Date" is the backup.
         await filter_search.first.click()
-        await filter_search.first.fill("Date Added")
+        await filter_search.first.fill("Created Date")
         await page.wait_for_timeout(1500)
         await _screenshot(page, "stranger_date_block_search")
         date_block_added = False
-        for opt_text in ("Date Added", "Date Added Range", "Added Date"):
+        for opt_text in ("Created Date", "Upload Date", "Date Added"):
             blk = page.locator(f'text="{opt_text}"')
             for i in range(await blk.count()):
                 el = blk.nth(i)
@@ -3138,42 +3132,74 @@ async def _apply_stranger_filter(page: Page, tag: str, date_mmddyyyy: str) -> di
             await _screenshot(page, "stranger_no_date_block")
             return result
 
-        # Fill the date range inputs (from = to = pull day). React inputs need
-        # the native-setter + event-dispatch pattern to register.
-        date_inputs = page.locator(
-            'input[type="date"], input[placeholder*="date" i], '
-            'input[placeholder*="/" ]')
-        filled = 0
-        for i in range(await date_inputs.count()):
-            inp = date_inputs.nth(i)
-            box = await inp.bounding_box()
-            if not box or box["x"] <= 450:
-                continue
-            input_type = await inp.get_attribute("type") or "text"
-            if input_type == "date":
-                # type=date wants ISO format
-                from datetime import datetime as _dt2
-                iso = _dt2.strptime(date_mmddyyyy, "%m/%d/%Y").strftime("%Y-%m-%d")
-                await inp.evaluate("""(el, v) => {
-                    const setter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(el, v);
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                }""", iso)
-            else:
-                await inp.click()
-                await inp.fill(date_mmddyyyy)
-                await page.keyboard.press("Escape")
-            filled += 1
-            if filled >= 2:
+        # The Created Date block uses a "Pick a date" CALENDAR button (same
+        # role=dialog widget as SiftMap's Last Sold Date). Click it, navigate
+        # to the pull day, click the day. If a second "Pick a date" appears
+        # (range end), set it to the same day.
+        picked = 0
+        for _ in range(2):
+            pick_btn = page.locator('text="Pick a date"')
+            visible_btn = None
+            for i in range(await pick_btn.count()):
+                box = await pick_btn.nth(i).bounding_box()
+                if box and box["x"] > 450:
+                    visible_btn = pick_btn.nth(i)
+                    break
+            if visible_btn is None:
                 break
-        if filled == 0:
-            result["message"] = "Date Added block added but no date inputs found"
+            await visible_btn.click()
+            await page.wait_for_timeout(1500)
+            await _pick_calendar_date(page, date_mmddyyyy, f"created-{picked}")
+            await page.wait_for_timeout(1000)
+            picked += 1
+        if picked == 0:
+            result["message"] = "Created Date block: no 'Pick a date' button found"
             await _screenshot(page, "stranger_no_date_inputs")
             return result
-        logger.info("Stranger filter: Date Added set to %s (%d inputs)",
-                    date_mmddyyyy, filled)
+        logger.info("Stranger filter: Created Date set to %s (%d picks)",
+                    date_mmddyyyy, picked)
+        await _screenshot(page, "stranger_date_picked")
+
+        # ── Block 2 (LAST): Tags (AND) with the month's Sold tag ──
+        # After this block's chip is selected we go straight to Apply — no
+        # further panel interaction, so the sticky tag dropdown can't block.
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(400)
+        filter_search = page.locator('#RecordsFilters__Filter_Blocks__Search')
+        if await filter_search.count() == 0:
+            filter_search = page.locator('input[placeholder*="filter block"]')
+        if await filter_search.count() == 0:
+            result["message"] = "Block search input not found for Tags block"
+            await _screenshot(page, "stranger_no_block_search2")
+            return result
+        await filter_search.first.click()
+        await filter_search.first.fill("Tags")
+        await page.wait_for_timeout(1500)
+        tags_block_added = False
+        for opt in ('text="All Tags (AND)"', 'text="Any Tags (OR)"'):
+            blk = page.locator(opt)
+            if await blk.count() > 0:
+                await blk.first.click()
+                await page.wait_for_timeout(2000)
+                tags_block_added = True
+                break
+        if not tags_block_added:
+            result["message"] = "Tags block option not found"
+            await _screenshot(page, "stranger_no_tags_block")
+            return result
+        tag_search = page.locator(
+            'input[placeholder*="Search for tags"], input[placeholder*="Search tags"]')
+        if await tag_search.count() == 0:
+            result["message"] = "'Search for tags' input not found"
+            return result
+        await tag_search.first.fill(tag)
+        await page.wait_for_timeout(2000)
+        if not await _mouse_click_exact_text(page, tag):
+            result["message"] = f"Tag suggestion {tag!r} not found in dropdown"
+            await _screenshot(page, "stranger_tag_no_suggestion")
+            return result
+        await page.wait_for_timeout(1000)
+        logger.info("Stranger filter: tag block set to %r", tag)
         await _screenshot(page, "stranger_filter_configured")
 
         # ── Apply + verify ──
@@ -3192,14 +3218,28 @@ async def _apply_stranger_filter(page: Page, tag: str, date_mmddyyyy: str) -> di
         # AND a date. A silently-dropped date block would otherwise make the
         # filter tag-only — which also matches Oren's real sold leads.
         bar_text = await page.evaluate("""() => {
-            const el = [...document.querySelectorAll('*')].find(
-                e => (e.textContent || '').includes('Filtering by:')
-                     && e.children.length < 30);
-            return el ? el.textContent : '';
+            // Smallest element containing the text IS the bar — a naive
+            // .find() matches <html> first (its textContent contains
+            // everything, styles included).
+            const els = [...document.querySelectorAll('*')].filter(
+                e => (e.textContent || '').includes('Filtering by:'));
+            if (!els.length) return '';
+            els.sort((a, b) => a.textContent.length - b.textContent.length);
+            // Smallest match is the bare label; the filter chips are its
+            // SIBLINGS — walk up until the text grows beyond the label.
+            let el = els[0];
+            while (el.parentElement
+                   && el.textContent.trim().length < 'Filtering by:'.length + 10) {
+                el = el.parentElement;
+            }
+            return el.textContent;
         }""")
-        has_tag = tag in (bar_text or "")
-        has_date = any(k in (bar_text or "") for k in
-                       ("Date", date_mmddyyyy,
+        # The bar summarizes the tag chip as "All Tags (AND): Included 1",
+        # not by name — the chip itself was selected via exact-text click.
+        bar = bar_text or ""
+        has_tag = tag in bar or ("Tags" in bar and "Included" in bar)
+        has_date = any(k in bar for k in
+                       ("Created Date", "Upload Date", "Date", date_mmddyyyy,
                         date_mmddyyyy.replace("/", "-")))
         if has_tag and has_date:
             result["verified"] = True
@@ -3261,15 +3301,31 @@ async def delete_sold_strangers(
             logger.error(result["message"])
             return result
 
-        # Read the filtered record count
+        # Switch to the "All" tab FIRST — the default "Clean" tab hides
+        # incomplete records (SiftMap pulls can land as incomplete), which
+        # would under-count and under-delete.
+        try:
+            all_tab = page.locator('text="All"')
+            for i in range(await all_tab.count()):
+                box = await all_tab.nth(i).bounding_box()
+                if box and 100 < box["y"] < 300 and box["x"] < 560:
+                    await all_tab.nth(i).click()
+                    await page.wait_for_timeout(2500)
+                    logger.info("Switched to 'All' records tab for count")
+                    break
+        except Exception as e:  # noqa: BLE001
+            logger.debug("All tab: %s", e)
+
+        # Read the filtered record count — the page shows it as pagination
+        # "1-50 of N", not "N Records".
         await page.wait_for_timeout(2000)
-        count_el = page.locator('text=/[\\d,]+\\s*Records?/i')
         total = None
-        if await count_el.count() > 0:
-            count_text = await count_el.first.text_content()
-            m = _re.search(r'([\d,]+)\s*Records?', count_text or "", _re.IGNORECASE)
-            if m:
-                total = int(m.group(1).replace(",", ""))
+        page_text = await page.evaluate("() => document.body.innerText")
+        m = _re.search(r'of\s+([\d,]+)', page_text or "")
+        if not m:
+            m = _re.search(r'([\d,]+)\s*Records?', page_text or "", _re.IGNORECASE)
+        if m:
+            total = int(m.group(1).replace(",", ""))
         result["filtered_count"] = total
         logger.info("Stranger filter matches: %s records (ceiling %d)",
                     total, expected_max)
@@ -3394,6 +3450,7 @@ async def run_manage_sold_workflow(
     delete_strangers: bool = True,
     delete_only: bool = False,
     delete_expected_max: int = 0,
+    delete_pull_date: str | None = None,
     include_current: bool = False,
     email: str | None = None,
     password: str | None = None,
@@ -3464,7 +3521,8 @@ async def run_manage_sold_workflow(
                 result = await delete_sold_strangers(
                     page,
                     sold_tag=f"Sold {sold_tag_date}",
-                    pull_date_mmddyyyy=_dt.now().strftime("%m/%d/%Y"),
+                    pull_date_mmddyyyy=(delete_pull_date
+                                        or _dt.now().strftime("%m/%d/%Y")),
                     expected_max=delete_expected_max or 10 ** 9,
                     dry_run=dry_run,
                 )
