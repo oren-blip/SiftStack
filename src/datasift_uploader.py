@@ -3460,6 +3460,13 @@ async def run_manage_sold_workflow(
         try:
             logged_in = await login(page, email, password)
             if not logged_in:
+                # Transient login failures observed (2026-07-31): the same
+                # credentials succeed seconds later. One retry before dying
+                # so the unattended monthly run survives a blip.
+                logger.warning("DataSift login failed — retrying once in 20s")
+                await page.wait_for_timeout(20000)
+                logged_in = await login(page, email, password)
+            if not logged_in:
                 return {"success": False, "message": "DataSift login failed"}
 
             if delete_only:
