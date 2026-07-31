@@ -141,6 +141,19 @@ async def login(page, email: str = None, password: str = None) -> bool:
     if not email or not password:
         email, password = get_credentials()
 
+    # Log every POST to reisift endpoints — status of the sign-in request is
+    # the decisive evidence when login fails with a clean form and no error.
+    if not getattr(page, "_ds_net_logged", False):
+        def _log_response(resp):
+            try:
+                if resp.request.method == "POST" and "reisift" in resp.url:
+                    logger.info("NET: POST %s -> %d",
+                                resp.url.split("?")[0], resp.status)
+            except Exception:
+                pass
+        page.on("response", _log_response)
+        page._ds_net_logged = True
+
     # Try cookies first
     has_cookies = await load_cookies(page.context)
     if has_cookies:

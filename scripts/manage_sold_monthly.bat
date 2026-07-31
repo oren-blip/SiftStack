@@ -39,6 +39,11 @@ echo. >> "logs\manage_sold_monthly.log"
 echo ====================================================== >> "logs\manage_sold_monthly.log"
 echo === Sold sweep started %DATE% %TIME% === >> "logs\manage_sold_monthly.log"
 
+REM Record the launch environment — run outcomes have differed by WHO/WHAT
+REM launched the bat (2026-07-31 login debugging), so keep an env trail.
+echo === ENV %DATE% %TIME% === >> "logs\env_sweep_history.txt"
+set >> "logs\env_sweep_history.txt"
+
 cd /d "D:\SiftStack\src"
 "D:\SiftStack\.venv\Scripts\python.exe" main.py manage-sold ^
     --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Mecklenburg,Rowan ^
