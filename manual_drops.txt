@@ -21,3 +21,4 @@
 26E000778-120   Taggart, Judy Lee — heir-occupied: beneficiary Daniel Blue Taggart Sr. lives at 514 Wyoming Dr NW per case file (Oren verified 2026-07-27, Week 31 audit; beneficiary address missing from our court data feed)
 26E000875-170   Callahan, Michael — heir-occupied: GIS deed shows CALLAHAN MICHAEL FRANCIS JR + wife SANDRA SEAGLE living at 5771 Lauren Ln (Oren verified 2026-07-27, Week 31 audit)
 26E000873-170   Reeves, Charles Earl Jr. — wrong parcel: 60%-confidence match resolved to REEVES CHARLES S, who lives at that property and is likely a DIFFERENT person (Oren verified 2026-07-27, Week 31 audit)
+26E000743-480   Burns, Hang — heir-occupied: Administrator Tyler Burns (also beneficiary, w/ Tara Burns) lives at 125 Milroy Ln per case file; parties lagged the feed at scrape time (Oren verified 2026-07-30)
