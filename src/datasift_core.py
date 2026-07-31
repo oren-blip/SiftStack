@@ -238,6 +238,14 @@ async def login(page, email: str = None, password: str = None) -> bool:
             nav_attempt + 1, page.url,
         )
 
+    # Capture what the page actually shows so the failure mode is visible
+    # (server error message, captcha, challenge page, ...).
+    await screenshot(page, "login_failed")
+    try:
+        page_text = await page.evaluate("() => document.body.innerText")
+        logger.error("Login-failed page text (first 500): %r", (page_text or "")[:500])
+    except Exception:
+        pass
     logger.error("DataSift login failed — app shell not authenticated (url=%s)", page.url)
     return False
 
@@ -485,9 +493,11 @@ async def create_browser(headless: bool = False, viewport: dict = None):
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=headless)
+        # No user_agent override — the bundled Chromium's real, current UA is
+        # consistent with its fingerprint. The old hardcoded Chrome/120 string
+        # (2 years stale by mid-2026) is bot-detection bait.
         context = await browser.new_context(
             viewport=vp,
-            user_agent=DEFAULT_USER_AGENT,
         )
         page = await context.new_page()
         try:

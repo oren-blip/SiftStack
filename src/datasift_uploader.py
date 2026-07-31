@@ -1338,11 +1338,6 @@ async def upload_to_datasift(
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 720},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
         )
         page = await context.new_page()
 
@@ -1424,11 +1419,6 @@ async def upload_datasift_split(
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 720},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
         )
         page = await context.new_page()
 
@@ -2300,11 +2290,6 @@ async def run_phone_validation_workflow(
             browser = await p.chromium.launch(headless=headless)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 720},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
             )
             page = await context.new_page()
 
@@ -2360,11 +2345,6 @@ async def run_phone_validation_workflow(
                 browser = await p.chromium.launch(headless=headless)
                 context = await browser.new_context(
                     viewport={"width": 1280, "height": 720},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
                 )
                 page = await context.new_page()
 
@@ -3449,11 +3429,6 @@ async def run_manage_sold_workflow(
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
             viewport={"width": 1440, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
         )
         page = await context.new_page()
 
@@ -5369,11 +5344,6 @@ async def run_manage_presets_workflow(
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
             viewport={"width": 1440, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
         )
         page = await context.new_page()
 
