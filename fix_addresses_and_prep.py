@@ -4139,6 +4139,24 @@ def _heir_addr_match(a: str, b: str) -> bool:
     return _within_one_edit(a, b)
 
 
+def _manual_archive_cases() -> set[str]:
+    """Case numbers present in Oren's manual archive — HUMAN-VERIFIED keepers.
+    A case he pulled by hand must never be dropped by a heuristic DQ; only
+    manual_drops.txt outranks his own file. (Kluttz/Eckard Week 31: the
+    heir-occupied inference dropped two cases he had flagged keep.)"""
+    import json as _json
+    try:
+        with _MANUAL_KEEP_PATH.open(encoding="utf-8") as f:
+            entries = _json.load(f).get("_entries", {})
+        return {(e.get("case_no") or "").strip().upper()
+                for e in entries.values() if e.get("case_no")}
+    except (OSError, ValueError):
+        return set()
+
+
+_MANUAL_KEEP_PATH = Path("output") / ".manual_archive_index.json"
+
+
 def _pr_deed_coowner_state(r: dict) -> str | None:
     """Is the named PR a co-owner on the matched parcel's deed?
 
@@ -4367,6 +4385,7 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
 
     kept = []
     dropped = 0
+    _manual_keep = _manual_archive_cases()
     for r in rows:
         if r.get("First Name") == "Heirs":
             kept.append(r)
@@ -4377,6 +4396,15 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
             continue
         is_dq, _reason = _row_dq_signals(r, prop)
         if is_dq:
+            # Oren's manual pull outranks every heuristic: a case he verified
+            # by hand is kept + flagged, never silently dropped. Only
+            # manual_drops.txt (his explicit drop list) removes these.
+            if (r.get("Case No.") or "").strip().upper() in _manual_keep:
+                tag_reason(r, "manual-keep")
+                _add_note(r, f"[KEPT: in Oren's manual pull — heuristic DQ "
+                             f"({_reason}) overridden; verify occupancy by hand]")
+                kept.append(r)
+                continue
             # A court-address-confirmed parcel is the decedent's OWN home. If it
             # reads occupied, that's usually the surviving spouse (a co-owner who
             # may sell) — a real lead Oren keeps, not an heir who inherits+stays.
