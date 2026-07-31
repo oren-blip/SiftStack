@@ -150,6 +150,13 @@ async def login(page, email: str = None, password: str = None) -> bool:
             logger.info("DataSift session restored from cookies")
             return True
         logger.info("DataSift cookies expired (url=%s), doing fresh login", page.url)
+        # Stale session cookies poison the fresh login — the sign-in request
+        # carries them, the server rejects it, and the UI shows a
+        # wrong-password error even though the credentials are correct
+        # (observed 2026-07-31: cookie-path runs failed login twice while
+        # clean-context diagnostics succeeded every time).
+        await page.context.clear_cookies()
+        logger.info("Cleared stale cookies before fresh login")
 
     # Fresh login
     await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
