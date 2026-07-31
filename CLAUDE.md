@@ -44,9 +44,13 @@ python src/main.py manage-presets --add-sold-exclusion            # add Sold exc
 python src/main.py manage-presets --create-sold-sequence          # create Sold cleanup sequence
 python src/main.py manage-presets --all                           # discovery + update + sequence
 
-# SiftMap sold property tagging
-python src/main.py manage-sold --months-back 12                   # tag sold properties (last 12 months)
-python src/main.py manage-sold --counties Knox --min-sale-price 5000
+# SiftMap sold property tagging (monthly sold sweep — build 1.0.34+)
+python src/main.py manage-sold --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Mecklenburg,Rowan --months-back 1 --headless
+python src/main.py manage-sold --counties Mecklenburg --dry-run --headless   # count-only, adds nothing
+python src/main.py manage-sold --keep-strangers ...               # pull + tag but skip the stranger delete
+python src/main.py manage-sold --delete-strangers-only --sold-tag-date 2026-06 --dry-run   # preview the delete filter
+scripts\manage_sold_monthly.bat --watch                           # supervised run, visible browser
+# Scheduled: Task Scheduler "SiftStack Sold Sweep", 1st of month 12:00 (from Sep 2026)
 
 # Courthouse photo import (build 1.0.28+)
 python src/main.py photo-import --folder ./photos --photo-county Knox --photo-type probate
@@ -306,6 +310,16 @@ DataSift's niche sequential system uses filter presets to guide records through 
 - **"Courthouse Data" tag:** Every record gets this tag — signals first-to-market county data (prioritized over bulk data in filter presets)
 - **Lists column:** Maps `notice_type` → DataSift list name (`foreclosure` → "Foreclosure", `probate` → "Probate", `tax_sale` → "Tax Sale", `tax_delinquent` → "Tax Delinquent", `eviction` → "Eviction", `code_violation` → "Code Violation", `divorce` → "Divorce"). DataSift auto-creates lists from CSV.
 - **Tags:** Courthouse Data, notice_type, county, YYYY-MM date, deceased/living, DM confidence level, has_auction, tax_delinquent, photo_import (for photo-sourced records)
+
+### Sold Property Sweep (build 1.0.34+)
+
+Implements DataSift's "Managing Sold Properties" article for the 7 NC counties. Monthly flow (Task Scheduler "SiftStack Sold Sweep", 1st @ 12:00, first auto-run Sep 2026; `scripts/manage_sold_monthly.bat`):
+
+1. **SiftMap pull per county/month** — county-level URL navigation with Last Sold Date range + min sale price $1,000 (excludes deed transfers). `COUNTY_STATE_FIPS` in `datasift_uploader.py` maps county → (state, FIPS); TN (Knox/Blount) legacy + 7 NC counties. Adds ~4,400 records/month across the 7 counties (June 2026 measurement: Meck 2,092, Catawba/Iredell 485 each, Cabarrus 378, Rowan 369, Gaston 317, Lincoln 247). Tags: "Sold" + "Sold YYYY-MM" (sale month, not run month); "Do not replace owners" toggled OFF so buyer info updates.
+2. **Sequences fire on matched leads** — records that merged onto existing leads get the Sold tag → **Oren's hand-built "Sold -> Reset"** (default folder, created 04/19/26, Active) removes ALL lists + campaign/week tags, deletes tasks, clears assignee, sets status → Default (article's design; the Sold tag stays as the permanent marker). NOTE: the build-1.0.23 "Sold Property Cleanup" sequence and the "00 Niche/01 Bulk" preset folders NO LONGER EXIST — the account was reorganized ~April 2026; don't trust older sections of this file about them. Companion "Sold Status Sync" (default folder) bridges the MANUAL path: status hand-changed to Sold → adds the "Sold" tag → chains into Sold -> Reset.
+3. **Stranger delete** — pulled records that were never our leads are deleted the same run. Filter: month Sold tag AND Date Added = pull day (existing leads keep their original Date Added, so they structurally can't match). Guards: both filter chips must verify in the "Filtering by:" bar, count must be >0 and ≤ records pulled, else ABORT (strangers linger harmlessly; retry with `--delete-strangers-only`). 5-min settle wait after the pull before deleting (SiftMap adds process in background).
+
+Key flags: `--dry-run` (count-only pull, or count-only delete preview with `--delete-strangers-only`), `--keep-strangers`, `--expected-max` (ceiling for standalone real deletes), `--headless`. First live run should be supervised (`manage_sold_monthly.bat --watch`) — the Mecklenburg "Select Max" with ~2K selected and the delete-confirm modal are unverified at volume.
 
 ### Upload Wizard (5 Steps)
 1. **Setup:** Click "Upload File" sidebar → "Add Data" → dropdown "Uploading a new list not in DataSift yet" → enter list name → organization questions

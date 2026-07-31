@@ -1930,10 +1930,31 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
     CSV shape: Property Street Address / Property City / Property State /
     Property ZIP Code + Phone 1..N (same header names as the main upload).
     """
+    return await _run_update_wizard(
+        page, csv_path, "Upload phone numbers by property address")
+
+
+async def upload_owner_update(page: Page, csv_path: str | Path) -> dict:
+    """Replace the CONTACT on existing records (heirs-of → real court PR)
+    via "Update Data → Update property data", keyed by property address.
+
+    Used by the PR-upgrade step: a case uploaded on day one as "Heirs of
+    <decedent>" gets its real executor from the court feed 1-2 days later —
+    this pushes the corrected Owner First/Last, mailing address, and
+    Personal Representative onto the DataSift record.
+    """
+    return await _run_update_wizard(page, csv_path, "Update property data")
+
+
+async def _run_update_wizard(page: Page, csv_path: str | Path,
+                             option_text: str) -> dict:
+    """Shared driver for the Update Data wizard: pick `option_text` from the
+    update-type dropdown, upload the CSV, advance through mapping (native
+    headers auto-map), Finish."""
     result = {"success": False, "message": ""}
     csv_path = Path(csv_path)
     if not csv_path.exists():
-        result["message"] = f"Phones CSV not found: {csv_path}"
+        result["message"] = f"Update CSV not found: {csv_path}"
         logger.error(result["message"])
         return result
     try:
@@ -1965,13 +1986,13 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
         if await dropdown.count() > 0:
             await dropdown.first.click()
             await page.wait_for_timeout(1500)
-        if not await _mouse_click_exact_text(page, "Upload phone numbers by property address"):
-            await _screenshot(page, "phones_by_addr_no_option")
-            result["message"] = "'Upload phone numbers by property address' option not found"
+        if not await _mouse_click_exact_text(page, option_text):
+            await _screenshot(page, "update_wizard_no_option")
+            result["message"] = f"{option_text!r} option not found in Update Data dropdown"
             logger.error(result["message"])
             return result
         await page.wait_for_timeout(1500)
-        logger.info("Selected 'Upload phone numbers by property address'")
+        logger.info("Selected %r", option_text)
 
         # Advance until the file input appears — this wizard variant can have
         # extra setup screens before the upload step.
@@ -1983,12 +2004,12 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
             if await file_input.count() > 0:
                 break
         if await file_input.count() == 0:
-            result["message"] = "No file input in phones-by-address wizard"
+            result["message"] = f"No file input in Update Data wizard ({option_text})"
             logger.error(result["message"])
             return result
         await file_input.first.set_input_files(str(csv_path.resolve()))
         await page.wait_for_timeout(3000)
-        logger.info("Uploaded phones file: %s", csv_path.name)
+        logger.info("Uploaded update file: %s", csv_path.name)
 
         for step_num in range(5):
             await _screenshot(page, f"phones_by_addr_step{step_num + 1}")
@@ -1996,7 +2017,7 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
             if await finish_btn.count() > 0:
                 await finish_btn.first.click()
                 await page.wait_for_timeout(5000)
-                logger.info("Clicked 'Finish Upload' for phones-by-address")
+                logger.info("Clicked 'Finish Upload' (%s)", option_text)
                 break
             next_btn = page.locator('button:has-text("Next Step"), button:has-text("Next")')
             if await next_btn.count() > 0:
@@ -2006,12 +2027,12 @@ async def upload_phones_by_address(page: Page, csv_path: str | Path) -> dict:
                 logger.warning("No Next/Finish at step %d", step_num + 1)
                 break
         result["success"] = True
-        result["message"] = f"Phones uploaded by address: {csv_path.name}"
+        result["message"] = f"Update committed ({option_text}): {csv_path.name}"
         logger.info(result["message"])
         return result
     except Exception as e:  # noqa: BLE001
         await _screenshot(page, "phones_by_addr_error")
-        result["message"] = f"phones-by-address failed: {e}"
+        result["message"] = f"update wizard ({option_text}) failed: {e}"
         logger.error(result["message"])
         return result
 
@@ -2385,6 +2406,8 @@ async def manage_sold_properties(
     months_back: int = 1,
     min_sale_price: int = 1000,
     sold_tag_date: str | None = None,
+    dry_run: bool = False,
+    delete_strangers: bool = True,
 ) -> dict:
     """Pull recently sold properties from SiftMap and tag them in DataSift.
 
@@ -2405,9 +2428,14 @@ async def manage_sold_properties(
         months_back: How many months back to search for sales (default: 1).
         min_sale_price: Minimum sale price filter to exclude deed transfers.
         sold_tag_date: If set, overrides per-month tag (use for single-month runs).
+        dry_run: Count filtered results only — nothing is added to the account.
+        delete_strangers: After the pull, delete the newly-added records that
+            were never our leads (Sold tag + Date Added = today). Existing
+            leads keep their original Date Added so they can't match.
 
     Returns:
-        Dict with {success, message, counties_processed, total_records, month_details}.
+        Dict with {success, message, counties_processed, total_records,
+        total_filtered, month_details}.
     """
     import calendar as _cal
     from datetime import datetime
@@ -2417,6 +2445,7 @@ async def manage_sold_properties(
         "message": "",
         "counties_processed": [],
         "total_records": 0,
+        "total_filtered": 0,
         "month_details": [],
     }
 
@@ -2471,14 +2500,19 @@ async def manage_sold_properties(
                     end_date=end_str,
                     min_sale_price=min_sale_price,
                     sold_tag_date=tag_date,
+                    dry_run=dry_run,
                 )
 
                 records = month_result.get("records_added", 0)
                 county_records += records
+                filtered = month_result.get("filtered_count")
+                if filtered:
+                    result["total_filtered"] += filtered
                 result["month_details"].append({
                     "county": county,
                     "month": f"{year}-{month:02d}",
                     "records": records,
+                    "filtered_count": filtered,
                     "success": month_result.get("success", False),
                     "message": month_result.get("message", ""),
                 })
@@ -2496,7 +2530,11 @@ async def manage_sold_properties(
                     )
 
             result["total_records"] += county_records
-            if county_records > 0:
+            county_ok = county_records > 0 or (dry_run and any(
+                d["success"] for d in result["month_details"]
+                if d["county"] == county
+            ))
+            if county_ok:
                 result["counties_processed"].append(county)
             logger.info(
                 "%s County total: %d records across %d months",
@@ -2505,12 +2543,56 @@ async def manage_sold_properties(
 
         if result["counties_processed"]:
             result["success"] = True
-            result["message"] = (
-                f"Sold properties managed for {', '.join(result['counties_processed'])}. "
-                f"Total records: {result['total_records']}"
-            )
+            if dry_run:
+                result["message"] = (
+                    f"[DRY RUN] {', '.join(result['counties_processed'])}: "
+                    f"{result['total_filtered']} sold properties found "
+                    f"(nothing added to account)"
+                )
+            else:
+                result["message"] = (
+                    f"Sold properties managed for {', '.join(result['counties_processed'])}. "
+                    f"Total records: {result['total_records']}"
+                )
         else:
             result["message"] = "No counties processed successfully"
+
+        # ── Post-pull: delete the strangers (records that were never our
+        # leads). Runs per distinct month tag; every guard failure leaves the
+        # strangers in place (harmless — retry by hand with
+        # --delete-strangers-only).
+        if delete_strangers and not dry_run and result["total_records"] > 0:
+            # SiftMap adds process in the background — give DataSift time to
+            # ingest before filtering, or the delete only catches part of the
+            # batch and the rest lingers forever.
+            settle_min = 5
+            logger.info("Waiting %d min for DataSift to ingest the pulled "
+                        "records before stranger cleanup...", settle_min)
+            await page.wait_for_timeout(settle_min * 60 * 1000)
+            pull_day = now.strftime("%m/%d/%Y")
+            result["delete_details"] = []
+            tag_months = []
+            for d in result["month_details"]:
+                tag_m = sold_tag_date or d["month"]
+                if tag_m not in tag_months:
+                    tag_months.append(tag_m)
+            for tag_m in tag_months:
+                expected = sum(
+                    d["records"] for d in result["month_details"]
+                    if (sold_tag_date or d["month"]) == tag_m
+                )
+                if expected == 0:
+                    continue
+                logger.info("── Deleting strangers for tag 'Sold %s' "
+                            "(ceiling %d) ──", tag_m, expected)
+                del_result = await delete_sold_strangers(
+                    page,
+                    sold_tag=f"Sold {tag_m}",
+                    pull_date_mmddyyyy=pull_day,
+                    expected_max=expected,
+                )
+                result["delete_details"].append(
+                    {"tag": f"Sold {tag_m}", **del_result})
 
     except Exception as e:
         result["message"] = f"Manage sold failed: {e}"
@@ -2833,6 +2915,21 @@ async def _siftmap_add_page_to_account(
     return {"success": True, "records_added": records_added}
 
 
+# County → (state, FIPS) for SiftMap county-level searches.
+# TN pair is the legacy original; the 7 NC counties are the live pipeline.
+COUNTY_STATE_FIPS = {
+    "Knox": ("TN", "47093"),
+    "Blount": ("TN", "47009"),
+    "Cabarrus": ("NC", "37025"),
+    "Catawba": ("NC", "37035"),
+    "Gaston": ("NC", "37071"),
+    "Iredell": ("NC", "37097"),
+    "Lincoln": ("NC", "37109"),
+    "Mecklenburg": ("NC", "37119"),
+    "Rowan": ("NC", "37159"),
+}
+
+
 async def _siftmap_search_sold(
     page: Page,
     *,
@@ -2841,6 +2938,7 @@ async def _siftmap_search_sold(
     end_date: str,
     min_sale_price: int,
     sold_tag_date: str,
+    dry_run: bool = False,
 ) -> dict:
     """Search SiftMap for sold properties in one county/month and add to account.
 
@@ -2853,27 +2951,22 @@ async def _siftmap_search_sold(
         end_date: End date MM/DD/YYYY (last day of month).
         min_sale_price: Minimum sale price filter.
         sold_tag_date: Tag date string YYYY-MM (matches the sale month).
+        dry_run: Read the filtered property count only — never add to account.
 
     Returns:
-        Dict with {success, records_added, message}.
+        Dict with {success, records_added, filtered_count, message}.
     """
     import re
     import json as _json
     from urllib.parse import quote as _quote
 
-    # County FIPS codes for TN counties
-    COUNTY_FIPS = {
-        "Knox": "47093",
-        "Blount": "47009",
-    }
-
-    result = {"success": False, "records_added": 0, "message": ""}
+    result = {"success": False, "records_added": 0, "filtered_count": None, "message": ""}
 
     try:
         # ── Step 1: Navigate directly via URL with all filters ──
         # This is far more reliable than interacting with the calendar UI.
         # URL params: location (county JSON), date range, min sale price.
-        fips = COUNTY_FIPS.get(county, "47093")
+        state, fips = COUNTY_STATE_FIPS.get(county, ("TN", "47093"))
 
         # Convert dates from MM/DD/YYYY to YYYY-MM-DD for URL params
         from datetime import datetime as _dt
@@ -2884,9 +2977,9 @@ async def _siftmap_search_sold(
 
         location = _json.dumps({
             "searchType": "county",
-            "title": f"{county} County, TN",
+            "title": f"{county} County, {state}",
             "county": county,
-            "state": "TN",
+            "state": state,
             "counties": [{"fips": fips, "county_name": county}],
         })
 
@@ -2912,6 +3005,7 @@ async def _siftmap_search_sold(
             num = re.search(r'(\d[\d,]*)', count_text or "")
             if num:
                 total_filtered = int(num.group(1).replace(",", ""))
+                result["filtered_count"] = total_filtered
                 if total_filtered == 0:
                     result["message"] = f"No sold properties in {county} for {sold_tag_date}"
                     result["success"] = True  # not an error, just no data
@@ -2919,6 +3013,18 @@ async def _siftmap_search_sold(
                     return result
                 logger.info("Filtered count: %d properties", total_filtered)
         await _screenshot(page, f"siftmap_count_{county}")
+
+        if dry_run:
+            # Count-only mode: report what WOULD be added, touch nothing.
+            count = result["filtered_count"]
+            result["success"] = count is not None
+            result["message"] = (
+                f"[DRY RUN] {county} {sold_tag_date}: "
+                + (f"{count} sold properties (not added)" if count is not None
+                   else "could not read property count")
+            )
+            logger.info(result["message"])
+            return result
 
         # ── Step 3: Select all and add to account (no pagination needed) ──
         # "Select Max" selects ALL filtered results in one click
@@ -2950,12 +3056,352 @@ async def _siftmap_search_sold(
     return result
 
 
+async def _apply_stranger_filter(page: Page, tag: str, date_mmddyyyy: str) -> dict:
+    """Apply the two-block stranger filter on the Records page:
+    Tags include `tag` AND Date Added = `date_mmddyyyy` (single day).
+
+    Only records ADDED on the pull day can match both — pre-existing leads
+    that merely got the Sold tag merged on keep their original Date Added and
+    are structurally excluded. Returns {applied, verified, message}.
+    """
+    result = {"applied": False, "verified": False, "message": ""}
+    try:
+        await _dismiss_popups(page)
+        filter_link = page.locator('#Records__Filters_Trigger')
+        if await filter_link.count() == 0:
+            filter_link = page.locator('a:has-text("Filter Records")')
+        if await filter_link.count() == 0:
+            result["message"] = "No Filter Records link found"
+            return result
+        await filter_link.first.click()
+        await page.wait_for_timeout(2000)
+        await _dismiss_popups(page)
+
+        filter_search = page.locator('#RecordsFilters__Filter_Blocks__Search')
+        if await filter_search.count() == 0:
+            filter_search = page.locator('input[placeholder*="filter block"]')
+        if await filter_search.count() == 0:
+            result["message"] = "Filter block search input not found"
+            return result
+
+        # ── Block 1: Tags (AND) with the month's Sold tag ──
+        await filter_search.first.click()
+        await filter_search.first.fill("Tags")
+        await page.wait_for_timeout(1500)
+        for opt in ('text="All Tags (AND)"', 'text="Any Tags (OR)"'):
+            blk = page.locator(opt)
+            if await blk.count() > 0:
+                await blk.first.click()
+                await page.wait_for_timeout(2000)
+                break
+        tag_search = page.locator(
+            'input[placeholder*="Search for tags"], input[placeholder*="Search tags"]')
+        if await tag_search.count() == 0:
+            result["message"] = "'Search for tags' input not found"
+            return result
+        await tag_search.first.fill(tag)
+        await page.wait_for_timeout(2000)
+        if not await _mouse_click_exact_text(page, tag):
+            result["message"] = f"Tag suggestion {tag!r} not found in dropdown"
+            await _screenshot(page, "stranger_tag_no_suggestion")
+            return result
+        await page.wait_for_timeout(1000)
+        logger.info("Stranger filter: tag block set to %r", tag)
+
+        # ── Block 2: Date Added = pull day ──
+        await filter_search.first.click()
+        await filter_search.first.fill("Date Added")
+        await page.wait_for_timeout(1500)
+        await _screenshot(page, "stranger_date_block_search")
+        date_block_added = False
+        for opt_text in ("Date Added", "Date Added Range", "Added Date"):
+            blk = page.locator(f'text="{opt_text}"')
+            for i in range(await blk.count()):
+                el = blk.nth(i)
+                box = await el.bounding_box()
+                # Options render inside the panel, below the search input
+                if box and box["x"] > 450:
+                    await el.click()
+                    await page.wait_for_timeout(2000)
+                    date_block_added = True
+                    logger.info("Added filter block: %s", opt_text)
+                    break
+            if date_block_added:
+                break
+        if not date_block_added:
+            # Log what block options ARE offered, for supervised refinement
+            options_dump = await page.evaluate("""() => {
+                const out = [];
+                document.querySelectorAll('*').forEach(el => {
+                    const t = (el.textContent || '').trim();
+                    if (t && t.length < 40 && el.children.length === 0) {
+                        const r = el.getBoundingClientRect();
+                        if (r.x > 450 && r.width > 40) out.push(t);
+                    }
+                });
+                return [...new Set(out)].slice(0, 60);
+            }""")
+            logger.error("Date Added block not found. Panel options: %s", options_dump)
+            result["message"] = "Date Added filter block not found — delete aborted"
+            await _screenshot(page, "stranger_no_date_block")
+            return result
+
+        # Fill the date range inputs (from = to = pull day). React inputs need
+        # the native-setter + event-dispatch pattern to register.
+        date_inputs = page.locator(
+            'input[type="date"], input[placeholder*="date" i], '
+            'input[placeholder*="/" ]')
+        filled = 0
+        for i in range(await date_inputs.count()):
+            inp = date_inputs.nth(i)
+            box = await inp.bounding_box()
+            if not box or box["x"] <= 450:
+                continue
+            input_type = await inp.get_attribute("type") or "text"
+            if input_type == "date":
+                # type=date wants ISO format
+                from datetime import datetime as _dt2
+                iso = _dt2.strptime(date_mmddyyyy, "%m/%d/%Y").strftime("%Y-%m-%d")
+                await inp.evaluate("""(el, v) => {
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(el, v);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }""", iso)
+            else:
+                await inp.click()
+                await inp.fill(date_mmddyyyy)
+                await page.keyboard.press("Escape")
+            filled += 1
+            if filled >= 2:
+                break
+        if filled == 0:
+            result["message"] = "Date Added block added but no date inputs found"
+            await _screenshot(page, "stranger_no_date_inputs")
+            return result
+        logger.info("Stranger filter: Date Added set to %s (%d inputs)",
+                    date_mmddyyyy, filled)
+        await _screenshot(page, "stranger_filter_configured")
+
+        # ── Apply + verify ──
+        if not await _mouse_click_exact_text(page, "Apply Filters"):
+            result["message"] = "'Apply Filters' not found — filter NOT applied"
+            await page.keyboard.press("Escape")
+            return result
+        await page.wait_for_timeout(3000)
+        if not await page.locator('text="Filtering by:"').first.is_visible():
+            result["message"] = "No 'Filtering by:' indicator — filter NOT applied"
+            await _screenshot(page, "stranger_filter_inert")
+            return result
+        result["applied"] = True
+
+        # Verify BOTH blocks are live: the toolbar chips must mention the tag
+        # AND a date. A silently-dropped date block would otherwise make the
+        # filter tag-only — which also matches Oren's real sold leads.
+        bar_text = await page.evaluate("""() => {
+            const el = [...document.querySelectorAll('*')].find(
+                e => (e.textContent || '').includes('Filtering by:')
+                     && e.children.length < 30);
+            return el ? el.textContent : '';
+        }""")
+        has_tag = tag in (bar_text or "")
+        has_date = any(k in (bar_text or "") for k in
+                       ("Date", date_mmddyyyy,
+                        date_mmddyyyy.replace("/", "-")))
+        if has_tag and has_date:
+            result["verified"] = True
+            result["message"] = "Stranger filter applied and verified"
+            logger.info("%s — bar: %s", result["message"], (bar_text or "")[:200])
+        else:
+            result["message"] = (
+                f"Filter bar verification failed (tag={has_tag}, date={has_date}): "
+                f"{(bar_text or '')[:200]}")
+            logger.error(result["message"])
+            await _screenshot(page, "stranger_filter_unverified")
+        return result
+
+    except Exception as e:  # noqa: BLE001
+        result["message"] = f"Stranger filter failed: {e}"
+        logger.error(result["message"])
+        await _screenshot(page, "stranger_filter_error")
+        return result
+
+
+async def delete_sold_strangers(
+    page: Page,
+    *,
+    sold_tag: str,
+    pull_date_mmddyyyy: str,
+    expected_max: int,
+    dry_run: bool = False,
+) -> dict:
+    """Delete SiftMap-pulled sold records that were never our leads.
+
+    Strangers are identified as: has the month's Sold tag AND was added to
+    the account ON the pull day. Existing leads keep their original Date
+    Added when the pull merges tags onto them, so they cannot match.
+
+    Hard guards (any failure → NO delete, strangers stay, harmless):
+      - both filter blocks must verify in the "Filtering by:" bar
+      - filtered count must be > 0 and <= expected_max
+      - dry_run stops after counting
+
+    Args:
+        page: Logged-in Playwright page.
+        sold_tag: e.g. "Sold 2026-06".
+        pull_date_mmddyyyy: The day the pull ran (records' Date Added).
+        expected_max: Total records pulled this run — count ceiling.
+        dry_run: Apply filters + count only; never delete.
+
+    Returns:
+        Dict with {success, deleted, filtered_count, message}.
+    """
+    import re as _re
+
+    result = {"success": False, "deleted": 0, "filtered_count": None, "message": ""}
+    try:
+        await _navigate_to_records(page)
+
+        filt = await _apply_stranger_filter(page, sold_tag, pull_date_mmddyyyy)
+        if not filt.get("verified"):
+            result["message"] = f"Delete aborted: {filt.get('message')}"
+            logger.error(result["message"])
+            return result
+
+        # Read the filtered record count
+        await page.wait_for_timeout(2000)
+        count_el = page.locator('text=/[\\d,]+\\s*Records?/i')
+        total = None
+        if await count_el.count() > 0:
+            count_text = await count_el.first.text_content()
+            m = _re.search(r'([\d,]+)\s*Records?', count_text or "", _re.IGNORECASE)
+            if m:
+                total = int(m.group(1).replace(",", ""))
+        result["filtered_count"] = total
+        logger.info("Stranger filter matches: %s records (ceiling %d)",
+                    total, expected_max)
+        await _screenshot(page, "stranger_count")
+
+        if total is None:
+            result["message"] = "Delete aborted: could not read record count"
+            logger.error(result["message"])
+            return result
+        if total == 0:
+            result["success"] = True
+            result["message"] = "No strangers to delete (0 matches)"
+            logger.info(result["message"])
+            return result
+        if dry_run:
+            result["success"] = True
+            result["message"] = (
+                f"[DRY RUN] {total} strangers match filter — nothing deleted")
+            logger.info(result["message"])
+            return result
+
+        if total > expected_max:
+            result["message"] = (
+                f"Delete aborted: {total} matches exceeds pull total "
+                f"{expected_max} — filter looks wrong")
+            logger.error(result["message"])
+            return result
+
+        # Select ALL filtered records (handles the whole-set banner option)
+        if not await _select_all_records(page):
+            result["message"] = "Delete aborted: could not select records"
+            logger.error(result["message"])
+            return result
+
+        # Manage → Delete (same DropdownNavItem pattern as Export)
+        manage_btn = page.locator('button:has-text("Manage")')
+        if await manage_btn.count() == 0:
+            manage_btn = page.locator('text="Manage"')
+        if await manage_btn.count() == 0:
+            result["message"] = "Delete aborted: Manage button not found"
+            logger.error(result["message"])
+            return result
+        delete_option = page.locator(
+            'a[class*="DropdownNavItem"]:text-matches("^Delete")')
+        opened = False
+        for attempt in range(2):
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+            await manage_btn.first.click()
+            try:
+                await delete_option.first.wait_for(state="visible", timeout=6000)
+                opened = True
+                break
+            except PwTimeout:
+                logger.warning("Delete item not visible (attempt %d)", attempt + 1)
+        if not opened:
+            await _screenshot(page, "stranger_no_delete_option")
+            result["message"] = "Delete aborted: no Delete option in Manage menu"
+            logger.error(result["message"])
+            return result
+        await delete_option.first.click()
+        await page.wait_for_timeout(2000)
+        await _screenshot(page, "stranger_delete_modal")
+
+        # Confirmation modal — may require typing a confirmation word
+        confirm_input = page.locator(
+            '[class*="Modal"] input[type="text"], [class*="modal"] input[type="text"]')
+        if await confirm_input.count() > 0:
+            placeholder = await confirm_input.first.get_attribute("placeholder") or ""
+            word = "DELETE"
+            m = _re.search(r'["“](\w+)["”]', placeholder)
+            if m:
+                word = m.group(1)
+            await confirm_input.first.fill(word)
+            await page.wait_for_timeout(500)
+            logger.info("Filled delete confirmation word: %s", word)
+
+        confirm_btn = page.locator(
+            '[class*="Modal"] button:text-matches("Delete"), '
+            'button:text-matches("^Delete [\\d,]+"), '
+            'button:has-text("Confirm")')
+        if await confirm_btn.count() == 0:
+            await _screenshot(page, "stranger_no_confirm_btn")
+            result["message"] = "Delete aborted: no confirm button in modal"
+            logger.error(result["message"])
+            return result
+        await confirm_btn.first.click(force=True)
+        await page.wait_for_timeout(6000)
+        await _dismiss_popups(page)
+        await _screenshot(page, "stranger_deleted")
+
+        # Verify: with the filter still active, count should collapse
+        remaining = None
+        count_el = page.locator('text=/[\\d,]+\\s*Records?/i')
+        if await count_el.count() > 0:
+            count_text = await count_el.first.text_content()
+            m = _re.search(r'([\d,]+)\s*Records?', count_text or "", _re.IGNORECASE)
+            if m:
+                remaining = int(m.group(1).replace(",", ""))
+        result["deleted"] = total - (remaining or 0)
+        result["success"] = True
+        result["message"] = (
+            f"Deleted {result['deleted']} of {total} strangers "
+            f"(remaining under filter: {remaining})")
+        logger.info(result["message"])
+        return result
+
+    except Exception as e:  # noqa: BLE001
+        result["message"] = f"Delete strangers failed: {e}"
+        logger.error(result["message"])
+        await _screenshot(page, "stranger_delete_error")
+        return result
+
+
 async def run_manage_sold_workflow(
     *,
     counties: list[str] | None = None,
     months_back: int = 1,
     min_sale_price: int = 1000,
     sold_tag_date: str | None = None,
+    dry_run: bool = False,
+    delete_strangers: bool = True,
+    delete_only: bool = False,
+    delete_expected_max: int = 0,
     email: str | None = None,
     password: str | None = None,
     headless: bool = False,
@@ -2969,6 +3415,13 @@ async def run_manage_sold_workflow(
         months_back: Months of sales to pull (default: 1).
         min_sale_price: Min sale price to exclude deed transfers (default: $1,000).
         sold_tag_date: Tag date YYYY-MM (default: current month).
+        dry_run: Count-only mode — read filtered counts, add nothing.
+        delete_strangers: Post-pull, delete pulled records that were never
+            our leads (Sold tag + Date Added = today).
+        delete_only: Skip the pull; run ONLY the stranger delete for
+            sold_tag_date (requires it). With dry_run: count-only preview.
+            An actual delete additionally requires delete_expected_max > 0.
+        delete_expected_max: Count ceiling for delete_only mode.
         email: DataSift login email.
         password: DataSift login password.
         headless: Run browser headless (default False for debugging).
@@ -3004,17 +3457,37 @@ async def run_manage_sold_workflow(
             if not logged_in:
                 return {"success": False, "message": "DataSift login failed"}
 
-            result = await manage_sold_properties(
-                page,
-                counties=counties,
-                months_back=months_back,
-                min_sale_price=min_sale_price,
-                sold_tag_date=sold_tag_date,
-            )
+            if delete_only:
+                from datetime import datetime as _dt
+                if not sold_tag_date:
+                    return {"success": False,
+                            "message": "delete_only requires sold_tag_date"}
+                if not dry_run and delete_expected_max <= 0:
+                    return {"success": False,
+                            "message": "delete_only real delete requires "
+                                       "delete_expected_max > 0"}
+                result = await delete_sold_strangers(
+                    page,
+                    sold_tag=f"Sold {sold_tag_date}",
+                    pull_date_mmddyyyy=_dt.now().strftime("%m/%d/%Y"),
+                    expected_max=delete_expected_max or 10 ** 9,
+                    dry_run=dry_run,
+                )
+            else:
+                result = await manage_sold_properties(
+                    page,
+                    counties=counties,
+                    months_back=months_back,
+                    min_sale_price=min_sale_price,
+                    sold_tag_date=sold_tag_date,
+                    dry_run=dry_run,
+                    delete_strangers=delete_strangers,
+                )
 
-            # Keep browser open for manual inspection
-            logger.info("Browser staying open 30s for inspection...")
-            await page.wait_for_timeout(30000)
+            if not headless:
+                # Keep browser open for manual inspection
+                logger.info("Browser staying open 30s for inspection...")
+                await page.wait_for_timeout(30000)
 
             return result
         finally:
@@ -3287,6 +3760,38 @@ async def discover_presets(page: Page) -> dict:
         logger.info("Found %d sequence folders", len(result["sequences"]))
         for seq in result["sequences"]:
             logger.info("  Sequence folder: %s", seq)
+
+        # Open each folder and list the sequences inside (folder pages list
+        # sequence rows; names like "13. Sold Property Cleanup")
+        result["sequences_by_folder"] = {}
+        for folder_name in result["sequences"]:
+            try:
+                folder_link = page.get_by_text(folder_name, exact=True)
+                if await folder_link.count() == 0:
+                    continue
+                await folder_link.first.click()
+                await page.wait_for_timeout(3000)
+                await _dismiss_popups(page)
+                names = await page.evaluate("""() => {
+                    const out = [];
+                    document.querySelectorAll('a, [class*="Row"], [class*="Card"]')
+                        .forEach(el => {
+                            const t = (el.innerText || '').trim().split('\\n')[0];
+                            if (t && t.length > 3 && t.length < 80
+                                && !/^(Create|Upload|Buy|Talk|Page)/.test(t)) {
+                                out.push(t);
+                            }
+                        });
+                    return [...new Set(out)].slice(0, 60);
+                }""")
+                result["sequences_by_folder"][folder_name] = names
+                logger.info("  %s folder contents: %s", folder_name, names)
+                await page.goto(DATASIFT_SEQUENCES_URL,
+                                wait_until="domcontentloaded")
+                await page.wait_for_timeout(3000)
+                await _dismiss_popups(page)
+            except Exception as fe:  # noqa: BLE001
+                logger.warning("Could not list folder %r: %s", folder_name, fe)
 
         if not result["sequences"]:
             logger.info("No sequence folders found — raw text from page:")
@@ -3935,8 +4440,17 @@ async def update_all_presets_sold_exclusion(
     return result
 
 
-async def create_sold_sequence(page: Page) -> dict:
-    """Create a 'Sold Property Cleanup' sequence in DataSift.
+async def create_sold_sequence(
+    page: Page,
+    *,
+    title: str = "Sold Property Cleanup",
+    folder: str = "Transactions",
+    trigger_search: list[str] | None = None,
+    condition_cfg: dict | None = None,
+    action_sequence: list[dict] | None = None,
+    require_condition: bool = False,
+) -> dict:
+    """Create a cleanup sequence in DataSift (defaults: 'Sold Property Cleanup').
 
     UI flow (from screenshot analysis):
       /sequences → "Create New Sequence" →
@@ -3946,16 +4460,31 @@ async def create_sold_sequence(page: Page) -> dict:
     Triggers are DRAG-AND-DROP from sidebar list to a drop zone.
     After trigger is placed, switch to Conditions tab, then Actions tab.
 
-    Trigger: Property Tags Added → Condition: "Sold" tag
+    Default build: Trigger: Property Tags Added → Condition: "Sold" tag
     Actions: Clear Tasks, Remove Lists, Change Status → Sold, Clear Assignee
 
     Args:
         page: Logged-in Playwright page.
+        title: Sequence title.
+        folder: Folder name to file the sequence under.
+        trigger_search: Trigger card text variants (first match dragged).
+        condition_cfg: {"type": "tags", "value": "Sold"} (default) or
+            {"type": "status", "card": ["Property Status"], "value": "Sold"}.
+        action_sequence: List of {"search": [...], "config": {...}} action specs
+            (same shape as the built-in default list).
+        require_condition: If True, ABORT (Cancel, don't save) when the
+            condition can't be placed/configured. Critical for broad triggers
+            like status-change, where an unconditioned sequence would fire on
+            every record.
 
     Returns:
         Dict with success status.
     """
-    result = {"success": False, "sequence_name": "Sold Property Cleanup"}
+    result = {"success": False, "sequence_name": title}
+    trigger_search = trigger_search or ["Property Tags Added"]
+    if condition_cfg is None:
+        condition_cfg = {"type": "tags", "card": ["Property Tags"], "value": "Sold"}
+    condition_ok = False
 
     try:
         # Navigate to Sequences page
@@ -4002,9 +4531,9 @@ async def create_sold_sequence(page: Page) -> dict:
         )
         if await title_input.count() > 0:
             await title_input.first.click()
-            await title_input.first.fill("Sold Property Cleanup")
+            await title_input.first.fill(title)
             await page.wait_for_timeout(500)
-            logger.info("Set title: Sold Property Cleanup")
+            logger.info("Set title: %s", title)
         else:
             logger.warning("Title input not found")
 
@@ -4018,31 +4547,30 @@ async def create_sold_sequence(page: Page) -> dict:
         if await folder_dropdown.count() > 0:
             await folder_dropdown.first.click()
             await page.wait_for_timeout(1000)
-            # Look for Transactions option
-            transactions = page.get_by_text("Transactions", exact=True)
-            if await transactions.count() > 0:
-                await transactions.first.click()
+            folder_opt = page.get_by_text(folder, exact=True)
+            if await folder_opt.count() > 0:
+                await folder_opt.first.click()
                 await page.wait_for_timeout(500)
-                logger.info("Selected folder: Transactions")
+                logger.info("Selected folder: %s", folder)
             else:
                 # Try selecting via <option> if it's a native <select>
                 try:
                     await page.select_option(
-                        'select', label="Transactions"
+                        'select', label=folder
                     )
-                    logger.info("Selected folder via select_option: Transactions")
+                    logger.info("Selected folder via select_option: %s", folder)
                 except Exception:
-                    logger.warning("Could not select Transactions folder")
+                    logger.warning("Could not select %s folder", folder)
 
         await _screenshot(page, "sequence_title_folder")
 
-        # ── Step 1: Drag "Property Tags Added" trigger to drop zone ──
+        # ── Step 1: Drag the trigger card to the drop zone ──
         # The builder uses React DnD — Playwright's drag_to() doesn't fire
         # the right events.  We need to dispatch HTML5 drag events via JS.
-        logger.info("Dragging 'Property Tags Added' trigger to drop zone...")
+        logger.info("Dragging %r trigger to drop zone...", trigger_search[0])
 
         # First, dump DOM info about the trigger cards to find draggable attrs
-        drag_info = await page.evaluate(r"""() => {
+        drag_info = await page.evaluate(r"""(triggerName) => {
             const info = {cards: [], dropZone: null, draggables: []};
             // Find all elements with draggable attribute
             document.querySelectorAll('[draggable="true"]').forEach(el => {
@@ -4058,7 +4586,7 @@ async def create_sold_sequence(page: Page) -> dict:
             const allEls = document.querySelectorAll('*');
             for (const el of allEls) {
                 const t = (el.innerText || '').trim();
-                if (t.startsWith('Property Tags Added') && el.children.length < 5) {
+                if (t.startsWith(triggerName) && el.children.length < 5) {
                     const rect = el.getBoundingClientRect();
                     if (rect.width > 100 && rect.width < 500) {
                         info.cards.push({
@@ -4088,7 +4616,7 @@ async def create_sold_sequence(page: Page) -> dict:
                 }
             }
             return info;
-        }""")
+        }""", trigger_search[0])
         logger.info("Drag info — draggables: %d, cards: %s, dropZone: %s",
                      len(drag_info.get("draggables", [])),
                      drag_info.get("cards", []),
@@ -4124,7 +4652,18 @@ async def create_sold_sequence(page: Page) -> dict:
             await page.wait_for_timeout(3000)
             return True
 
-        trigger_el = page.get_by_text("Property Tags Added", exact=True).first
+        trigger_el = None
+        for trig_text in trigger_search:
+            cand = page.get_by_text(trig_text, exact=True)
+            if await cand.count() > 0:
+                trigger_el = cand.first
+                logger.info("Found trigger card: %r", trig_text)
+                break
+        if trigger_el is None:
+            await _screenshot(page, "sequence_no_trigger_card")
+            result["message"] = f"Trigger card not found (tried {trigger_search})"
+            logger.error(result["message"])
+            return result
         drop_el = page.get_by_text("Drag and drop a trigger", exact=False).first
         if await trigger_el.count() > 0 and await drop_el.count() > 0:
             if await _mouse_drag(trigger_el, drop_el):
@@ -4150,66 +4689,113 @@ async def create_sold_sequence(page: Page) -> dict:
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_conditions_tab")
 
-        # Drag "Property Tags" condition card ("Property has certain tags")
-        # to the condition drop zone using mouse drag (same technique as trigger)
-        logger.info("Dragging 'Property Tags' condition to drop zone...")
+        # Drag the condition card to the condition drop zone using mouse drag
+        # (same technique as trigger)
+        cond_cards = condition_cfg.get("card") or ["Property Tags"]
+        cond_value = condition_cfg.get("value", "Sold")
+        logger.info("Dragging %r condition to drop zone...", cond_cards[0])
 
-        cond_source = page.get_by_text("Property Tags", exact=True).first
+        cond_source = None
+        for card_text in cond_cards:
+            cand = page.get_by_text(card_text, exact=True)
+            if await cand.count() > 0:
+                cond_source = cand.first
+                break
         cond_drop = page.get_by_text("Drag and drop a condition", exact=False)
 
-        if await cond_source.count() > 0 and await cond_drop.count() > 0:
+        cond_placed = False
+        if cond_source is not None and await cond_drop.count() > 0:
             if await _mouse_drag(cond_source, cond_drop.first):
-                logger.info("Dragged Property Tags condition to drop zone")
+                logger.info("Dragged %r condition to drop zone", cond_cards[0])
+                cond_placed = True
             else:
-                logger.warning("Condition drag failed — skipping (optional)")
+                logger.warning("Condition drag failed")
         else:
-            logger.info("Condition drag targets not found — conditions are optional, skipping")
+            logger.warning("Condition drag targets not found")
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_condition_placed")
 
-        # If condition was placed, configure it with "Sold" tag
-        # The condition card has "Search for tags..." input + "Add" button
-        tag_input = page.locator(
-            'input[placeholder*="tags" i], '
-            'input[placeholder*="Search for" i]'
-        )
-        for i in range(await tag_input.count()):
-            inp = tag_input.nth(i)
-            box = await inp.bounding_box()
-            if box and box["x"] > 230:  # past sidebar
-                await inp.click()
-                await inp.fill("Sold")
-                await page.wait_for_timeout(1500)
-                logger.info("Typed 'Sold' in tag condition input")
+        if cond_placed and condition_cfg["type"] == "tags":
+            # The condition card has "Search for tags..." input + "Add" button
+            tag_input = page.locator(
+                'input[placeholder*="tags" i], '
+                'input[placeholder*="Search for" i]'
+            )
+            for i in range(await tag_input.count()):
+                inp = tag_input.nth(i)
+                box = await inp.bounding_box()
+                if box and box["x"] > 230:  # past sidebar
+                    await inp.click()
+                    await inp.fill(cond_value)
+                    await page.wait_for_timeout(1500)
+                    logger.info("Typed %r in tag condition input", cond_value)
 
-                # Look for "Sold" in autocomplete dropdown
-                sold_opt = page.get_by_text("Sold", exact=True)
-                found_sold = False
-                if await sold_opt.count() > 0:
-                    for j in range(await sold_opt.count()):
-                        opt_box = await sold_opt.nth(j).bounding_box()
-                        # Must be below the input (in dropdown) and in main area
-                        if opt_box and opt_box["y"] > box["y"] + 20 and opt_box["x"] > 230:
-                            await sold_opt.nth(j).click()
+                    # Look for the value in autocomplete dropdown
+                    sold_opt = page.get_by_text(cond_value, exact=True)
+                    found_sold = False
+                    if await sold_opt.count() > 0:
+                        for j in range(await sold_opt.count()):
+                            opt_box = await sold_opt.nth(j).bounding_box()
+                            # Must be below the input (in dropdown) and in main area
+                            if opt_box and opt_box["y"] > box["y"] + 20 and opt_box["x"] > 230:
+                                await sold_opt.nth(j).click()
+                                await page.wait_for_timeout(1000)
+                                logger.info("Selected %r from autocomplete", cond_value)
+                                found_sold = True
+                                break
+
+                    if not found_sold:
+                        # Not in autocomplete — click "Add" button
+                        add_btn = page.get_by_text("Add", exact=True)
+                        if await add_btn.count() > 0:
+                            await add_btn.last.click()
                             await page.wait_for_timeout(1000)
-                            logger.info("Selected 'Sold' from autocomplete")
-                            found_sold = True
-                            break
+                            logger.info("Clicked 'Add' to add %r tag", cond_value)
+                        else:
+                            # Try pressing Enter
+                            await inp.press("Enter")
+                            await page.wait_for_timeout(1000)
+                            logger.info("Pressed Enter to add %r tag", cond_value)
+                    condition_ok = True
+                    break
 
-                if not found_sold:
-                    # "Sold" not in autocomplete — click "Add" button
-                    add_btn = page.get_by_text("Add", exact=True)
-                    if await add_btn.count() > 0:
-                        await add_btn.last.click()
+        elif cond_placed and condition_cfg["type"] == "status":
+            # The placed condition card carries a styled Select — open it and
+            # pick the target status (same Selectstyles pattern as actions).
+            await page.wait_for_timeout(1000)
+            select_container = page.locator(
+                '[class*="Selectstyles__Select"]:not([class*="Option"])'
+            )
+            if await select_container.count() > 0:
+                try:
+                    await select_container.last.click(timeout=3000)
+                except Exception:
+                    await select_container.last.click(force=True)
+                await page.wait_for_timeout(1500)
+                status_opt = page.get_by_text(cond_value, exact=True)
+                for j in range(await status_opt.count()):
+                    el = status_opt.nth(j)
+                    el_classes = await el.evaluate("e => String(e.className || '')")
+                    if "SelectOption" in el_classes or "Option" in el_classes:
+                        await el.click(force=True)
                         await page.wait_for_timeout(1000)
-                        logger.info("Clicked 'Add' to add Sold tag")
-                    else:
-                        # Try pressing Enter
-                        await inp.press("Enter")
-                        await page.wait_for_timeout(1000)
-                        logger.info("Pressed Enter to add Sold tag")
-                break
+                        logger.info("Condition status set to %r", cond_value)
+                        condition_ok = True
+                        break
+                if not condition_ok:
+                    # Positional fallback: option rendered below the select
+                    sel_box = await select_container.last.bounding_box()
+                    for j in range(await status_opt.count()):
+                        el_box = await status_opt.nth(j).bounding_box()
+                        if el_box and sel_box and el_box["y"] > sel_box["y"] + 10:
+                            await status_opt.nth(j).click(force=True)
+                            await page.wait_for_timeout(1000)
+                            logger.info("Condition status set (positional): %r", cond_value)
+                            condition_ok = True
+                            break
+            if not condition_ok:
+                logger.warning("Could not configure status condition to %r", cond_value)
 
         # Dismiss any autocomplete dropdowns
         await page.keyboard.press("Escape")
@@ -4354,32 +4940,33 @@ async def create_sold_sequence(page: Page) -> dict:
             return False
 
         # Add actions one at a time (drag each from sidebar to drop zone)
-        action_sequence = [
-            {
-                "search": ["Change Property Status", "Property Status Change",
-                           "Property Status"],
-                "config": {"type": "select", "value": "Sold"},
-            },
-            {
-                "search": ["Remove Property Lists", "Remove from Lists",
-                           "Remove Lists"],
-                "config": {
-                    "type": "multi_select",
-                    "values": ["Pre-Foreclosure", "Probate",
-                               "Tax Sale", "Tax Delinquent"],
+        if action_sequence is None:
+            action_sequence = [
+                {
+                    "search": ["Change Property Status", "Property Status Change",
+                               "Property Status"],
+                    "config": {"type": "select", "value": "Sold"},
                 },
-            },
-            {
-                "search": ["Clear Property Tasks", "Clear Tasks",
-                           "Remove Tasks"],
-                "config": None,
-            },
-            {
-                "search": ["Assign Property", "Change Property Assignee",
-                           "Property Assignee Change", "Property Assignee"],
-                "config": {"type": "clear_assignee"},
-            },
-        ]
+                {
+                    "search": ["Remove Property Lists", "Remove from Lists",
+                               "Remove Lists"],
+                    "config": {
+                        "type": "multi_select",
+                        "values": ["Pre-Foreclosure", "Probate",
+                                   "Tax Sale", "Tax Delinquent"],
+                    },
+                },
+                {
+                    "search": ["Clear Property Tasks", "Clear Tasks",
+                               "Remove Tasks"],
+                    "config": None,
+                },
+                {
+                    "search": ["Assign Property", "Change Property Assignee",
+                               "Property Assignee Change", "Property Assignee"],
+                    "config": {"type": "clear_assignee"},
+                },
+            ]
 
         for idx, action_cfg in enumerate(action_sequence):
             search_texts = action_cfg["search"]
@@ -4489,39 +5076,70 @@ async def create_sold_sequence(page: Page) -> dict:
                         break
 
                 if target_input:
+                    async def _value_chip_present(val):
+                        """True if a chip with exact text `val` sits just
+                        below the action input (i.e. the value registered)."""
+                        t_box = await target_input.bounding_box()
+                        if not t_box:
+                            return False
+                        return await page.evaluate(
+                            """([val, top, bottom]) => {
+                                for (const el of document.querySelectorAll('*')) {
+                                    if (el.children.length > 0) continue;
+                                    if ((el.textContent || '').trim() !== val) continue;
+                                    const r = el.getBoundingClientRect();
+                                    if (r.top > top && r.top < bottom
+                                        && r.width > 10 && r.width < 400) return true;
+                                }
+                                return false;
+                            }""",
+                            [val, t_box["y"], t_box["y"] + 180],
+                        )
+
                     for val in config["values"]:
                         await target_input.click()
                         await target_input.fill(val)
                         await page.wait_for_timeout(1500)
 
-                        # Try to select from autocomplete
-                        opt = page.get_by_text(val, exact=True)
-                        selected = False
-                        if await opt.count() > 0:
+                        # Deterministic path: click the "Add" button on the
+                        # input's row (attaches the existing tag/list by exact
+                        # name, or creates it). The dropdown-suggestion click
+                        # is unreliable — the exact-text locator can hit a
+                        # same-named element elsewhere (e.g. the condition's
+                        # "Sold" select), which is how the 2026-07-30 run
+                        # reported success while ADD TAGS stayed empty.
+                        t_box = await target_input.bounding_box()
+                        add_btn = page.get_by_text("Add", exact=True)
+                        for j in range(await add_btn.count()):
+                            a_box = await add_btn.nth(j).bounding_box()
+                            if (a_box and t_box
+                                    and abs(a_box["y"] - t_box["y"]) < 40
+                                    and a_box["x"] > t_box["x"]):
+                                await page.mouse.click(
+                                    a_box["x"] + a_box["width"] / 2,
+                                    a_box["y"] + a_box["height"] / 2)
+                                await page.wait_for_timeout(1200)
+                                break
+
+                        if await _value_chip_present(val):
+                            logger.info("  Added value (chip verified): %s", val)
+                        else:
+                            # Fallback: click the autocomplete suggestion
+                            # BELOW the input, then re-verify.
+                            opt = page.get_by_text(val, exact=True)
                             for j in range(await opt.count()):
                                 el_box = await opt.nth(j).bounding_box()
-                                t_box = await target_input.bounding_box()
-                                # Must be below the input (in dropdown)
-                                if el_box and t_box and el_box["y"] > t_box["y"] + 20:
-                                    await opt.nth(j).click(force=True)
-                                    selected = True
-                                    await page.wait_for_timeout(500)
-                                    logger.info("  Selected list: %s", val)
+                                if (el_box and t_box
+                                        and el_box["y"] > t_box["y"] + 10):
+                                    await page.mouse.click(
+                                        el_box["x"] + el_box["width"] / 2,
+                                        el_box["y"] + el_box["height"] / 2)
+                                    await page.wait_for_timeout(1000)
                                     break
-
-                        if not selected:
-                            # Click "Add" button
-                            add_btn = page.get_by_text("Add", exact=True)
-                            if await add_btn.count() > 0:
-                                # Find the Add button near this input
-                                for j in range(await add_btn.count()):
-                                    a_box = await add_btn.nth(j).bounding_box()
-                                    t_box = await target_input.bounding_box()
-                                    if a_box and t_box and abs(a_box["y"] - t_box["y"]) < 30:
-                                        await add_btn.nth(j).click(force=True)
-                                        await page.wait_for_timeout(500)
-                                        logger.info("  Added list: %s", val)
-                                        break
+                            if await _value_chip_present(val):
+                                logger.info("  Added value (fallback): %s", val)
+                            else:
+                                logger.error("  Value %r did NOT register", val)
 
                         # Dismiss autocomplete after each selection
                         await target_input.fill("")
@@ -4550,6 +5168,21 @@ async def create_sold_sequence(page: Page) -> dict:
             await _screenshot(page, f"sequence_action_{idx}_cfg")
 
         # ── Step 4: Save sequence ──
+        if require_condition and not condition_ok:
+            # A broad trigger (e.g. any status change) without its condition
+            # would fire on EVERY record — never save that. Cancel instead.
+            await _screenshot(page, "sequence_condition_missing_abort")
+            result["message"] = (
+                f"ABORTED (not saved): condition could not be configured for "
+                f"{title!r} and require_condition is set"
+            )
+            logger.error(result["message"])
+            cancel_btn = page.get_by_text("Cancel", exact=True)
+            if await cancel_btn.count() > 0:
+                await cancel_btn.first.click(force=True)
+                await page.wait_for_timeout(2000)
+            return result
+
         logger.info("Saving sequence...")
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_pre_save")
@@ -4580,7 +5213,7 @@ async def create_sold_sequence(page: Page) -> dict:
                 )
                 if await title_input.count() > 0:
                     await title_input.first.click()
-                    await title_input.first.fill("Sold Property Cleanup V2")
+                    await title_input.first.fill(f"{title} V2")
                     await page.wait_for_timeout(500)
                     try:
                         await save_btn.first.click(timeout=5000)
@@ -4588,21 +5221,40 @@ async def create_sold_sequence(page: Page) -> dict:
                         logger.debug("Normal click failed, forcing: %s", e)
                         await save_btn.first.click(force=True)
                     await page.wait_for_timeout(3000)
-                    result["sequence_name"] = "Sold Property Cleanup V2"
-                    logger.info("Saved with title: Sold Property Cleanup V2")
+                    result["sequence_name"] = f"{title} V2"
+                    logger.info("Saved with title: %s V2", title)
         else:
             logger.warning("Save Sequence button not found")
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_saved")
 
-        # Check URL — should redirect from /new to a sequence detail page
-        final_url = page.url
-        if "/new" not in final_url or "/sequences/" in final_url:
-            logger.info("Sequence saved — URL: %s", final_url)
+        # Verify the save actually took. A validation failure (e.g. "At
+        # least 1 (one) value is required") keeps the URL on /sequences/new
+        # and shows a red error banner — the 2026-07-30 run reported success
+        # while nothing persisted.
+        # Success signal is a "Sequence Successfully Created!" MODAL — the
+        # URL stays on /sequences/new, so don't use it as a failure signal.
+        success_modal = page.locator('text=/Successfully Created/i')
+        if await success_modal.count() > 0:
+            logger.info("Success modal confirmed")
+        else:
+            error_banner = page.locator('text=/required to be added|is required/i')
+            if await error_banner.count() > 0:
+                banner_text = await error_banner.first.text_content()
+                result["message"] = f"Save REJECTED by validation: {banner_text}"
+                logger.error(result["message"])
+                await _screenshot(page, "sequence_save_rejected")
+                return result
+            result["message"] = (
+                "Save outcome unclear: no success modal, no error banner "
+                f"(url={page.url})")
+            logger.error(result["message"])
+            await _screenshot(page, "sequence_save_unclear")
+            return result
 
         result["success"] = True
-        result["message"] = "Created 'Sold Property Cleanup' sequence"
+        result["message"] = f"Created {result['sequence_name']!r} sequence"
         logger.info(result["message"])
 
     except Exception as e:
@@ -4613,12 +5265,59 @@ async def create_sold_sequence(page: Page) -> dict:
     return result
 
 
+async def create_sold_status_sequence(page: Page) -> dict:
+    """Create the 'Sold Status Sync' companion sequence.
+
+    Covers the MANUAL workflow: Oren marks sales by changing Property Status
+    to Sold while marketing — which never fires his hand-built tag-triggered
+    'Sold -> Reset' sequence (default folder, created 04/19/26, 0 runs as of
+    2026-07-30). This sequence bridges the gap with a single chain action:
+
+    Trigger: Property Status Changed → Condition: status is Sold
+    Action: Add "Sold" tag  →  'Sold -> Reset' then does the full cleanup
+    (remove ALL lists + campaign tags, delete tasks, clear assignee,
+    status → Default per the DataSift article's design).
+
+    Deliberately minimal — duplicating the reset's ~100-chip list/tag
+    selection here would drift out of sync with his sequence. If chaining
+    (sequence-added tag firing another sequence's tag trigger) turns out not
+    to cascade, the Sold tag is still applied, which is the permanent marker.
+
+    Safety: require_condition=True — if the Sold status condition can't be
+    set, the sequence is CANCELLED, never saved, because an unconditioned
+    status-change trigger would fire on every status edit in the account.
+    """
+    return await create_sold_sequence(
+        page,
+        title="Sold Status Sync",
+        folder="default",
+        trigger_search=[
+            "Property Status Changed", "Property Status Change",
+            "Status Changed", "Property Status Updated", "Property Status",
+        ],
+        condition_cfg={
+            "type": "status",
+            "card": ["Property Status", "Property Statuses"],
+            "value": "Sold",
+        },
+        action_sequence=[
+            {
+                "search": ["Add Property Tags", "Add Tags", "Property Tags Add",
+                           "Add Property Tag"],
+                "config": {"type": "multi_select", "values": ["Sold"]},
+            },
+        ],
+        require_condition=True,
+    )
+
+
 async def run_manage_presets_workflow(
     *,
     discover: bool = False,
     add_sold_exclusion: bool = False,
     create_sequence: bool = False,
     preset_folders: list[str] | None = None,
+    create_status_sequence: bool = False,
     email: str | None = None,
     password: str | None = None,
     headless: bool = False,
@@ -4631,6 +5330,8 @@ async def run_manage_presets_workflow(
         discover: Just discover and list presets/sequences.
         add_sold_exclusion: Update presets to exclude Sold records.
         create_sequence: Create the Sold Property Cleanup sequence.
+        create_status_sequence: Create the Sold Status Cleanup sequence
+            (fires on manual status change → Sold).
         preset_folders: Folder names to target (default: all).
         email: DataSift login email.
         password: DataSift login password.
@@ -4685,6 +5386,11 @@ async def run_manage_presets_workflow(
             if create_sequence:
                 logger.info("=== Creating Sold cleanup sequence ===")
                 result["sequence"] = await create_sold_sequence(page)
+
+            # Create Sold Status Cleanup sequence (manual status-change path)
+            if create_status_sequence:
+                logger.info("=== Creating Sold Status Cleanup sequence ===")
+                result["status_sequence"] = await create_sold_status_sequence(page)
 
             result["success"] = True
             result["message"] = "Manage presets workflow complete"

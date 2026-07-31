@@ -978,9 +978,10 @@ def _run_manage_presets(args) -> None:
     discover = getattr(args, "discover", False)
     add_sold = getattr(args, "add_sold_exclusion", False)
     create_seq = getattr(args, "create_sold_sequence", False)
+    create_status_seq = getattr(args, "create_status_sequence", False)
 
     # Default to discover if no flags specified
-    if not (discover or add_sold or create_seq):
+    if not (discover or add_sold or create_seq or create_status_seq):
         discover = True
 
     preset_folders = None
@@ -991,7 +992,9 @@ def _run_manage_presets(args) -> None:
         discover=discover,
         add_sold_exclusion=add_sold,
         create_sequence=create_seq,
+        create_status_sequence=create_status_seq,
         preset_folders=preset_folders,
+        headless=getattr(args, "headless", False),
     ))
 
     if result.get("success"):
@@ -1007,6 +1010,9 @@ def _run_manage_presets(args) -> None:
             logging.info("  Failed: %s", p.get("failed", []))
         if result.get("sequence"):
             logging.info("  Sequence: %s", result["sequence"].get("message"))
+        if result.get("status_sequence"):
+            logging.info("  Status sequence: %s",
+                         result["status_sequence"].get("message"))
     else:
         logging.error("Manage presets failed: %s", result.get("message"))
         sys.exit(1)
@@ -1021,17 +1027,42 @@ def _run_manage_sold(args) -> None:
     if args.counties and args.counties.lower() != "all":
         counties = [c.strip().title() for c in args.counties.split(",")]
 
+    dry_run = getattr(args, "dry_run", False)
+    delete_only = getattr(args, "delete_strangers_only", False)
     result = asyncio.run(run_manage_sold_workflow(
         counties=counties,
         months_back=getattr(args, "months_back", 1),
         min_sale_price=getattr(args, "min_sale_price", 1000),
         sold_tag_date=getattr(args, "sold_tag_date", None),
+        dry_run=dry_run,
+        delete_strangers=not getattr(args, "keep_strangers", False),
+        delete_only=delete_only,
+        delete_expected_max=getattr(args, "expected_max", 0),
+        headless=getattr(args, "headless", False),
     ))
 
     if result.get("success"):
         logging.info("Manage sold: %s", result.get("message", "OK"))
-        logging.info("  Counties: %s", ", ".join(result.get("counties_processed", [])))
-        logging.info("  Total records: %d", result.get("total_records", 0))
+        if delete_only:
+            logging.info("  Filtered count: %s", result.get("filtered_count"))
+            logging.info("  Deleted: %s", result.get("deleted", 0))
+        elif dry_run:
+            logging.info("  Counties: %s",
+                         ", ".join(result.get("counties_processed", [])))
+            for d in result.get("month_details", []):
+                logging.info(
+                    "  %s %s: %s sold properties",
+                    d["county"], d["month"],
+                    d.get("filtered_count", "?"),
+                )
+            logging.info(
+                "  TOTAL (would be added): %d", result.get("total_filtered", 0))
+        else:
+            logging.info("  Counties: %s",
+                         ", ".join(result.get("counties_processed", [])))
+            logging.info("  Total records: %d", result.get("total_records", 0))
+            for d in result.get("delete_details", []):
+                logging.info("  Cleanup %s: %s", d.get("tag"), d.get("message"))
     else:
         logging.error("Manage sold failed: %s", result.get("message"))
         sys.exit(1)
@@ -1400,6 +1431,31 @@ def cli_main() -> None:
         default=None,
         help="Tag date in YYYY-MM format (manage-sold mode, default: current month)",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run browser headless (manage-sold mode)",
+    )
+    parser.add_argument(
+        "--keep-strangers",
+        action="store_true",
+        help="Skip the post-pull stranger delete (manage-sold mode)",
+    )
+    parser.add_argument(
+        "--delete-strangers-only",
+        action="store_true",
+        help=(
+            "Skip the SiftMap pull; only run the stranger delete for "
+            "--sold-tag-date. Combine with --dry-run to count without "
+            "deleting; a real delete requires --expected-max"
+        ),
+    )
+    parser.add_argument(
+        "--expected-max",
+        type=int,
+        default=0,
+        help="Count ceiling for --delete-strangers-only real deletes",
+    )
 
     # Manage presets arguments
     parser.add_argument(
@@ -1416,6 +1472,14 @@ def cli_main() -> None:
         "--create-sold-sequence",
         action="store_true",
         help="Create Sold Property Cleanup sequence (manage-presets mode)",
+    )
+    parser.add_argument(
+        "--create-status-sequence",
+        action="store_true",
+        help=(
+            "Create Sold Status Cleanup sequence — fires when a record's "
+            "status is manually changed to Sold (manage-presets mode)"
+        ),
     )
     parser.add_argument(
         "--preset-folders",
@@ -1485,7 +1549,7 @@ def cli_main() -> None:
                                  "deep-prospecting", "default", "all"],
                         help="Sequence folder to create (setup-sequences mode)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Preview changes without creating (setup-sequences/niche-sequential)")
+                        help="Preview changes without creating (setup-sequences/niche-sequential/manage-sold)")
 
     # Niche sequential
     parser.add_argument("--channel", type=str, default="sms",
