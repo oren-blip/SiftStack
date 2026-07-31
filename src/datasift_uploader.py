@@ -2451,9 +2451,14 @@ async def manage_sold_properties(
 
     counties = counties or ["Knox", "Blount"]
 
-    # Build list of (year, month) tuples to process — oldest first
+    # Build list of (year, month) tuples to process — oldest first.
+    # months_back=0 means the CURRENT month (partial, sales through today) —
+    # used for end-of-month runs before the quota resets; the scheduled
+    # 1st-of-month run uses months_back=1 for the full prior month.
     now = datetime.now()
     months_to_process = []
+    if months_back == 0:
+        months_to_process.append((now.year, now.month))
     for offset in range(months_back, 0, -1):
         # Go back `offset` months from current month
         m = now.month - offset

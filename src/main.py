@@ -1417,7 +1417,10 @@ def cli_main() -> None:
         "--months-back",
         type=int,
         default=1,
-        help="Months of sales to pull from SiftMap (manage-sold mode, default: 1)",
+        help=(
+            "Months of sales to pull from SiftMap (manage-sold mode, "
+            "default: 1 = full prior month; 0 = current month through today)"
+        ),
     )
     parser.add_argument(
         "--min-sale-price",
