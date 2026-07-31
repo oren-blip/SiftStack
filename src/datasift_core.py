@@ -196,14 +196,35 @@ async def login(page, email: str = None, password: str = None) -> bool:
         logger.error("Credentials would not stick in the login form")
         return False
 
-    # Hidden checkboxes — click labels, not inputs
-    remember_label = page.locator('label:has-text("Remember me")')
-    if await remember_label.count() > 0:
-        await remember_label.first.click()
+    # Hidden checkboxes. Click the LEFT EDGE of the label (the checkbox
+    # square) and VERIFY the box toggled — never click the label center:
+    # the terms label contains the "terms of use" LINK, and where the
+    # center lands depends on text wrap at the current window size, which
+    # is how every headed run failed while headless tests passed
+    # (2026-07-31: Sign In stayed DISABLED because terms never got checked).
+    async def _ensure_checked(label_locator, name):
+        if await label_locator.count() == 0:
+            return
+        lab = label_locator.first
+        for _ in range(3):
+            inp = lab.locator('input[type="checkbox"]')
+            try:
+                if await inp.count() > 0 and await inp.first.is_checked():
+                    return
+            except Exception:
+                pass
+            box = await lab.bounding_box()
+            if box:
+                await page.mouse.click(box["x"] + 8, box["y"] + box["height"] / 2)
+            else:
+                await lab.click()
+            await page.wait_for_timeout(600)
+        logger.warning("Could not verify %r checkbox is checked", name)
 
+    remember_label = page.locator('label:has-text("Remember me")')
     terms_label = page.locator('label:has-text("I\'ve read and agree")')
-    if await terms_label.count() > 0:
-        await terms_label.first.click()
+    await _ensure_checked(remember_label, "Remember me")
+    await _ensure_checked(terms_label, "terms of use")
 
     # Re-verify right before submitting — checkbox clicks can re-render the
     # form and wipe the inputs too.
@@ -213,8 +234,24 @@ async def login(page, email: str = None, password: str = None) -> bool:
         await pw_box.fill(password)
         await page.wait_for_timeout(500)
 
-    # Click Sign In
-    await page.get_by_role("button", name="Sign In").click()
+    # Click Sign In — but only once it's actually enabled. A disabled Sign In
+    # means the terms checkbox didn't take; clicking it does nothing and the
+    # run dies later with a clean login form and no error.
+    signin_btn = page.get_by_role("button", name="Sign In")
+    for _ in range(4):
+        try:
+            if await signin_btn.is_enabled():
+                break
+        except Exception:
+            pass
+        logger.warning("Sign In still disabled — re-toggling terms checkbox")
+        await _ensure_checked(terms_label, "terms of use")
+        await page.wait_for_timeout(700)
+    else:
+        await screenshot(page, "login_signin_disabled")
+        logger.error("Sign In button never enabled — aborting login attempt")
+        return False
+    await signin_btn.click()
 
     # DataSift's post-login redirect is unreliable — it now lands on a 404 (or
     # back on /login) even though the auth cookie IS set, so waiting for
