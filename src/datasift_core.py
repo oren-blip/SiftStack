@@ -145,10 +145,14 @@ async def login(page, email: str = None, password: str = None) -> bool:
     has_cookies = await load_cookies(page.context)
     if has_cookies:
         await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(5000)
-        if await _is_authenticated(page):
-            logger.info("DataSift session restored from cookies")
-            return True
+        # Poll — a slow SPA auth bootstrap bounces /records to /?next=...
+        # before the session loads, and a single early check false-negatives
+        # ("cookies expired" on cookies saved minutes earlier, 2026-07-31).
+        for _ in range(4):
+            await page.wait_for_timeout(3000)
+            if await _is_authenticated(page):
+                logger.info("DataSift session restored from cookies")
+                return True
         logger.info("DataSift cookies expired (url=%s), doing fresh login", page.url)
         # Stale session cookies poison the fresh login — the sign-in request
         # carries them, the server rejects it, and the UI shows a
@@ -180,18 +184,27 @@ async def login(page, email: str = None, password: str = None) -> bool:
     # DataSift's post-login redirect is unreliable — it now lands on a 404 (or
     # back on /login) even though the auth cookie IS set, so waiting for
     # /dashboard/general and checking the URL gives a false "login failed"
-    # (observed 2026-07-12). Give the request a moment, then verify by loading
-    # /records and detecting the authenticated app shell, not the URL.
+    # (observed 2026-07-12). Verify by loading /records and POLLING for the
+    # authenticated app shell: on a slow bootstrap the route guard bounces to
+    # /?next=... (renders the login form — reads as "wrong password") before
+    # the session finishes loading. A single 4s check false-negatived three
+    # runs on 2026-07-31; poll up to ~45s across reloads instead.
     await page.wait_for_timeout(6000)
-    await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-    await page.wait_for_timeout(4000)
-    if not await _is_authenticated(page):
-        logger.error("DataSift login failed — app shell not authenticated (url=%s)", page.url)
-        return False
+    for nav_attempt in range(3):
+        await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+        for _ in range(5):
+            await page.wait_for_timeout(3000)
+            if await _is_authenticated(page):
+                await save_cookies(page)
+                logger.info("DataSift login successful")
+                return True
+        logger.info(
+            "App shell not ready (attempt %d, url=%s) — reloading /records",
+            nav_attempt + 1, page.url,
+        )
 
-    await save_cookies(page)
-    logger.info("DataSift login successful")
-    return True
+    logger.error("DataSift login failed — app shell not authenticated (url=%s)", page.url)
+    return False
 
 
 async def _is_authenticated(page) -> bool:
