@@ -881,16 +881,25 @@ async def _select_all_records(page: Page) -> bool:
 
         # Include incomplete rows: the Clean/Incomplete/All tab strip defaults to
         # "Clean", which hides incomplete records. Click "All" so select-all covers
-        # every record in the filtered set.
+        # every record in the filtered set. The strip is a role=tablist now
+        # (2026-08-01) — role selector first, position fallback second.
         try:
-            all_tab = page.locator('text="All"')
-            for i in range(await all_tab.count()):
-                box = await all_tab.nth(i).bounding_box()
-                if box and 200 < box["y"] < 300 and box["x"] < 560:
-                    await all_tab.nth(i).click()
-                    await page.wait_for_timeout(2000)
-                    logger.info("Clicked 'All' records tab")
-                    break
+            all_tab = page.locator('[role="tablist"] >> text="All"')
+            if await all_tab.count() == 0:
+                all_tab = page.get_by_role("tab", name="All")
+            if await all_tab.count() > 0:
+                await all_tab.first.click(force=True)
+                await page.wait_for_timeout(2000)
+                logger.info("Clicked 'All' records tab (role selector)")
+            else:
+                all_tab = page.locator('text="All"')
+                for i in range(await all_tab.count()):
+                    box = await all_tab.nth(i).bounding_box()
+                    if box and 200 < box["y"] < 300 and box["x"] < 560:
+                        await all_tab.nth(i).click()
+                        await page.wait_for_timeout(2000)
+                        logger.info("Clicked 'All' records tab (position)")
+                        break
         except Exception as e:  # noqa: BLE001
             logger.debug("All tab: %s", e)
 
@@ -3336,19 +3345,34 @@ async def delete_sold_strangers(
             return result
 
         # Switch to the "All" tab FIRST — the default "Clean" tab hides
-        # incomplete records (SiftMap pulls can land as incomplete), which
-        # would under-count and under-delete.
+        # incomplete records (most SiftMap pulls land incomplete), which
+        # under-counts and under-deletes MASSIVELY (426 clean vs ~4,400 all,
+        # 2026-08-01). The tab strip is a role=tablist now — use the role
+        # selector; the old position-based click silently missed.
+        switched = False
         try:
-            all_tab = page.locator('text="All"')
-            for i in range(await all_tab.count()):
-                box = await all_tab.nth(i).bounding_box()
-                if box and 100 < box["y"] < 300 and box["x"] < 560:
-                    await all_tab.nth(i).click()
-                    await page.wait_for_timeout(2500)
-                    logger.info("Switched to 'All' records tab for count")
-                    break
+            all_tab = page.locator('[role="tablist"] >> text="All"')
+            if await all_tab.count() == 0:
+                all_tab = page.get_by_role("tab", name="All")
+            if await all_tab.count() > 0:
+                await all_tab.first.click(force=True)
+                await page.wait_for_timeout(2500)
+                switched = True
+                logger.info("Switched to 'All' records tab (role selector)")
         except Exception as e:  # noqa: BLE001
-            logger.debug("All tab: %s", e)
+            logger.debug("All tab role click: %s", e)
+        if not switched:
+            try:
+                all_tab = page.locator('text="All"')
+                for i in range(await all_tab.count()):
+                    box = await all_tab.nth(i).bounding_box()
+                    if box and 100 < box["y"] < 300 and box["x"] < 560:
+                        await all_tab.nth(i).click()
+                        await page.wait_for_timeout(2500)
+                        logger.info("Switched to 'All' tab (position fallback)")
+                        break
+            except Exception as e:  # noqa: BLE001
+                logger.debug("All tab: %s", e)
 
         # Read the filtered record count — the page shows it as pagination
         # "1-50 of N", not "N Records".
