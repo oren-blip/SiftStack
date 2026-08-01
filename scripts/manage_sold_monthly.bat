@@ -45,9 +45,11 @@ echo === ENV %DATE% %TIME% === >> "logs\env_sweep_history.txt"
 set >> "logs\env_sweep_history.txt"
 
 cd /d "D:\SiftStack\src"
+REM Runs on the 28th: prior month's tail (recordings mature ~4 weeks) plus
+REM the current month so far — billed to the quota that expires at month end.
 "D:\SiftStack\.venv\Scripts\python.exe" main.py manage-sold ^
     --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Mecklenburg,Rowan ^
-    --months-back 1 %HEADLESS% %EXTRA% >> "..\logs\manage_sold_monthly.log" 2>&1
+    --months-back 1 --include-current %HEADLESS% %EXTRA% >> "..\logs\manage_sold_monthly.log" 2>&1
 
 if errorlevel 1 (
     echo === Sold sweep FAILED %DATE% %TIME% === >> "..\logs\manage_sold_monthly.log"
