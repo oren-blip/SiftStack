@@ -3498,6 +3498,173 @@ async def delete_sold_strangers(
         return result
 
 
+async def manage_bulk_action(
+    page: Page,
+    *,
+    filter_tag: str,
+    menu_item: str,
+    values: list[str],
+    expected_max: int = 10 ** 9,
+) -> dict:
+    """Apply a Manage-menu bulk action to all records matching a tag filter.
+
+    Flow: Records → filter by `filter_tag` → All tab → select all → Manage →
+    `menu_item` ("Add tags" / "Remove tags" / "Add to lists" /
+    "Remove from lists") → enter each value (chip-verified) → confirm.
+
+    Menu item names verified 2026-08-01. Every value must register as a chip
+    and exactly one plausible confirm button must be found, else ABORT with a
+    screenshot (nothing applied).
+    """
+    result = {"success": False, "message": "", "count": None}
+    try:
+        await _navigate_to_records(page)
+        # Reset page state: close any leftover modal from a prior pass and
+        # clear an active filter (else the new tag block ANDs with the old
+        # one and matches nothing).
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(500)
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(500)
+        await _dismiss_popups(page)
+        clear = page.locator('text="Clear Filters"')
+        if await clear.count() > 0 and await clear.first.is_visible():
+            box = await clear.first.bounding_box()
+            if box:
+                await page.mouse.click(box["x"] + box["width"] / 2,
+                                       box["y"] + box["height"] / 2)
+                await page.wait_for_timeout(2000)
+                logger.info("Cleared pre-existing filters")
+        if not await _filter_by_tag(page, filter_tag):
+            result["message"] = f"Could not filter to tag {filter_tag!r}"
+            return result
+        if not await _select_all_records(page):
+            result["message"] = "Could not select records"
+            return result
+
+        manage_btn = page.locator('button:has-text("Manage")')
+        if await manage_btn.count() == 0:
+            manage_btn = page.locator('text="Manage"')
+        item = page.locator(f'a[class*="DropdownNavItem"]:text-is("{menu_item}")')
+        opened = False
+        for _ in range(2):
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+            await manage_btn.first.click()
+            try:
+                await item.first.wait_for(state="visible", timeout=6000)
+                opened = True
+                break
+            except PwTimeout:
+                logger.warning("%r not visible in Manage menu — retrying", menu_item)
+        if not opened:
+            await _screenshot(page, "bulk_no_menu_item")
+            result["message"] = f"{menu_item!r} not found in Manage menu"
+            return result
+        await item.first.click()
+        await page.wait_for_timeout(2000)
+        await _screenshot(page, "bulk_modal")
+
+        # The action modal: search-or-add input + per-value chips.
+        modal_input = page.locator(
+            '[class*="Modal"] input[type="text"], '
+            '[class*="modal"] input[type="text"]')
+        if await modal_input.count() == 0:
+            result["message"] = "No input in bulk-action modal"
+            await _screenshot(page, "bulk_no_input")
+            return result
+        inp = modal_input.first
+
+        async def _chip_present(val):
+            box = await inp.bounding_box()
+            if not box:
+                return False
+            return await page.evaluate(
+                """([val, top, bottom]) => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.children.length > 0) continue;
+                        if ((el.textContent || '').trim() !== val) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.top > top && r.top < bottom
+                            && r.width > 10 && r.width < 400) return true;
+                    }
+                    return false;
+                }""",
+                [val, box["y"], box["y"] + 180],
+            )
+
+        for val in values:
+            await inp.click()
+            await inp.fill(val)
+            await page.wait_for_timeout(1500)
+            # Prefer the exact suggestion; fall back to the row Add / Enter
+            if not await _mouse_click_exact_text(page, val):
+                add_btn = page.get_by_text("Add", exact=True)
+                t_box = await inp.bounding_box()
+                clicked = False
+                for j in range(await add_btn.count()):
+                    a_box = await add_btn.nth(j).bounding_box()
+                    if (a_box and t_box and abs(a_box["y"] - t_box["y"]) < 40
+                            and a_box["x"] > t_box["x"]):
+                        await page.mouse.click(
+                            a_box["x"] + a_box["width"] / 2,
+                            a_box["y"] + a_box["height"] / 2)
+                        clicked = True
+                        break
+                if not clicked:
+                    await inp.press("Enter")
+            await page.wait_for_timeout(1000)
+            if not await _chip_present(val):
+                result["message"] = f"Value {val!r} did not register — aborted"
+                await _screenshot(page, "bulk_chip_missing")
+                return result
+            logger.info("Bulk %s: value %r registered", menu_item, val)
+
+        # Confirm: exactly one plausible enabled confirm button in the modal.
+        confirm = page.locator(
+            '[class*="Modal"] button, [class*="modal"] button')
+        candidates = []
+        import re as _re2
+        for j in range(await confirm.count()):
+            b = confirm.nth(j)
+            try:
+                txt = (await b.text_content() or "").strip()
+                if (_re2.search(r"add|apply|confirm|save|remove|update",
+                                txt, _re2.IGNORECASE)
+                        and "cancel" not in txt.lower()
+                        and await b.is_enabled()):
+                    candidates.append((j, txt))
+            except Exception:
+                continue
+        if len(candidates) != 1:
+            result["message"] = (
+                f"Ambiguous confirm buttons {candidates!r} — aborted")
+            await _screenshot(page, "bulk_confirm_ambiguous")
+            return result
+        j, txt = candidates[0]
+        await _screenshot(page, "bulk_pre_confirm")
+        # Coordinate mouse click — the modal's sticky suggestion dropdown
+        # intercepts element clicks (2026-08-01 June pass).
+        c_box = await confirm.nth(j).bounding_box()
+        if c_box:
+            await page.mouse.click(c_box["x"] + c_box["width"] / 2,
+                                   c_box["y"] + c_box["height"] / 2)
+        else:
+            await confirm.nth(j).click(force=True)
+        await page.wait_for_timeout(4000)
+        await _dismiss_popups(page)
+        await _screenshot(page, "bulk_confirmed")
+        result["success"] = True
+        result["message"] = f"{menu_item} {values!r} confirmed via {txt!r}"
+        logger.info(result["message"])
+        return result
+    except Exception as e:  # noqa: BLE001
+        result["message"] = f"Bulk action failed: {e}"
+        logger.error(result["message"])
+        await _screenshot(page, "bulk_error")
+        return result
+
+
 async def run_manage_sold_workflow(
     *,
     counties: list[str] | None = None,
