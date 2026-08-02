@@ -58,8 +58,12 @@ def load_rows() -> list[dict]:
                         header["parcel"] = c_i
                     elif lv.startswith("property address"):
                         header["address"] = c_i
-                    elif "decedent" in lv:
+                    elif "deceased" in lv or lv == "decedent":
                         header["decedent"] = c_i
+                    elif lv.startswith("personal representative"):
+                        header["pr"] = c_i
+                    elif lv == "file date":
+                        header["filed"] = c_i
                 if header and "parcel" not in header:
                     header = {}
                 continue
@@ -75,11 +79,70 @@ def load_rows() -> list[dict]:
                 "county": county,
                 "case": g("case"),
                 "decedent": g("decedent"),
+                "pr": g("pr"),
+                "filed": g("filed"),
                 "address": g("address"),
                 "parcel": parcel,
             })
     print(f"Rows with parcels: {len(rows)}")
     return rows
+
+
+_ENTITY_MARKERS = (
+    "LLC", "L L C", "INC", "CORP", "PROPERTIES", "HOLDINGS", "HOMES",
+    "INVESTMENTS", "CAPITAL", "VENTURES", "REALTY", "REI", "GROUP",
+    "PARTNERS", "ENTERPRISES", "SOLUTIONS", "TRUST CO",
+)
+
+
+def _surnames(name: str) -> set[str]:
+    return {t.strip(",.").upper() for t in name.replace(",", " ").split()
+            if len(t.strip(",.")) > 2}
+
+
+def classify(row: dict) -> str:
+    """HEIR TRANSFER / INVESTOR PURCHASE / MARKET SALE / UNCLEAR TRANSFER."""
+    owner = (row.get("owner") or "").upper()
+    fam = _surnames(row.get("decedent", "")) | _surnames(row.get("pr", ""))
+    if fam & _surnames(owner):
+        return "HEIR TRANSFER"
+    if any(m in owner for m in _ENTITY_MARKERS):
+        return "INVESTOR PURCHASE"
+    price = row.get("sale_price")
+    try:
+        pricef = float(price) if price not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        pricef = 0.0
+    if pricef >= 5000:
+        return "MARKET SALE"
+    return "UNCLEAR TRANSFER"
+
+
+def update_competitor_log(flagged: list[dict]) -> None:
+    """Append investor/market sales to a durable competitor log (dedup by case)."""
+    path = "output/competitor_log.csv"
+    existing: set[str] = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8-sig") as f:
+            existing = {r["case"] for r in csv.DictReader(f)}
+    new = [r for r in flagged
+           if r["class"] in ("INVESTOR PURCHASE", "MARKET SALE")
+           and r["case"] not in existing]
+    if not new:
+        print("Competitor log: no new entries")
+        return
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "found", "case", "county", "decedent", "filed", "address",
+            "sale_date", "sale_price", "buyer", "class", "week"],
+            extrasaction="ignore")
+        if write_header:
+            w.writeheader()
+        for r in new:
+            w.writerow({**r, "found": date.today().isoformat(),
+                        "buyer": r.get("owner", "")})
+    print(f"Competitor log: +{len(new)} entries -> {path}")
 
 
 def norm_pid(pid: str) -> str:
@@ -188,12 +251,22 @@ def q_meck(pid: str) -> dict | None:
                 sd = f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
         owners = rec.get("owner")
         if isinstance(owners, list):
-            o = (owners[0] or {}) if owners else {}
-            owner = (" ".join(str(o.get(k) or "") for k in
-                              ("firstName", "lastName")).strip()
-                     or str(o)[:60]) if o else ""
+            parts = []
+            for o in owners[:3]:
+                if isinstance(o, dict):
+                    nm = (o.get("fullname")
+                          or " ".join(str(o.get(k) or "") for k in
+                                      ("firstname", "firstName",
+                                       "lastname", "lastName")).strip())
+                    if nm:
+                        parts.append(str(nm))
+                elif o:
+                    parts.append(str(o))
+            owner = " / ".join(parts)[:80]
+        elif isinstance(owners, dict):
+            owner = str(owners.get("fullname") or owners)[:80]
         else:
-            owner = str(owners or "")[:60]
+            owner = str(owners or "")[:80]
         price = rec.get("sale_price")
         try:
             price = float(price) if price not in (None, "") else None
@@ -256,11 +329,27 @@ def main() -> None:
     for county, (q, f_, fl) in sorted(stats.items()):
         print(f"  {county:12s} {q:4d} / {f_:4d} / {fl}")
     flagged = [r for r in results if r["flag"]]
-    print(f"\n=== FLAGGED: {len(flagged)} probate properties sold since {args.since} ===")
+    for r in flagged:
+        r["class"] = classify(r)
+    print(f"\n=== FLAGGED: {len(flagged)} probate properties transferred since {args.since} ===")
     for r in flagged:
         print(f"  {r['case'] or 'NO CASE#'} | {r['county'].title():12s} | "
-              f"{r['decedent'][:30]:30s} | {r['address'][:35]:35s} | "
-              f"sold {r.get('sale_date')} for {r.get('sale_price')}")
+              f"{r['decedent'][:26]:26s} | {r['address'][:32]:32s} | "
+              f"{r.get('sale_date')} | {str(r.get('sale_price') or ''):>9s} | {r['class']}")
+
+    update_competitor_log(flagged)
+
+    # Heir-transfer retarget CSV — new owner already holds clear title.
+    heirs = [r for r in flagged if r["class"] == "HEIR TRANSFER"]
+    if heirs:
+        hpath = f"output/heir_transfers_{date.today().isoformat()}.csv"
+        with open(hpath, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "case", "county", "decedent", "pr", "filed", "address",
+                "sale_date", "owner", "week"], extrasaction="ignore")
+            w.writeheader()
+            w.writerows(heirs)
+        print(f"Heir-transfer retarget list: {len(heirs)} -> {hpath}")
 
 
 if __name__ == "__main__":
