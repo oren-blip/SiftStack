@@ -3505,6 +3505,7 @@ async def manage_bulk_action(
     menu_item: str,
     values: list[str],
     expected_max: int = 10 ** 9,
+    pre_filtered: bool = False,
 ) -> dict:
     """Apply a Manage-menu bulk action to all records matching a tag filter.
 
@@ -3518,26 +3519,27 @@ async def manage_bulk_action(
     """
     result = {"success": False, "message": "", "count": None}
     try:
-        await _navigate_to_records(page)
-        # Reset page state: close any leftover modal from a prior pass and
-        # clear an active filter (else the new tag block ANDs with the old
-        # one and matches nothing).
-        await page.keyboard.press("Escape")
-        await page.wait_for_timeout(500)
-        await page.keyboard.press("Escape")
-        await page.wait_for_timeout(500)
-        await _dismiss_popups(page)
-        clear = page.locator('text="Clear Filters"')
-        if await clear.count() > 0 and await clear.first.is_visible():
-            box = await clear.first.bounding_box()
-            if box:
-                await page.mouse.click(box["x"] + box["width"] / 2,
-                                       box["y"] + box["height"] / 2)
-                await page.wait_for_timeout(2000)
-                logger.info("Cleared pre-existing filters")
-        if not await _filter_by_tag(page, filter_tag):
-            result["message"] = f"Could not filter to tag {filter_tag!r}"
-            return result
+        if not pre_filtered:
+            await _navigate_to_records(page)
+            # Reset page state: close any leftover modal from a prior pass and
+            # clear an active filter (else the new tag block ANDs with the old
+            # one and matches nothing).
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(500)
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(500)
+            await _dismiss_popups(page)
+            clear = page.locator('text="Clear Filters"')
+            if await clear.count() > 0 and await clear.first.is_visible():
+                box = await clear.first.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + box["width"] / 2,
+                                           box["y"] + box["height"] / 2)
+                    await page.wait_for_timeout(2000)
+                    logger.info("Cleared pre-existing filters")
+            if not await _filter_by_tag(page, filter_tag):
+                result["message"] = f"Could not filter to tag {filter_tag!r}"
+                return result
         if not await _select_all_records(page):
             result["message"] = "Could not select records"
             return result
