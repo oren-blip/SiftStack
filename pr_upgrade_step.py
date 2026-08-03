@@ -170,6 +170,15 @@ async def _edit_owner(page, up: dict) -> bool:
                        "address.state": up["mail_state"],
                        "address.postal_code": up["mail_zip"]})
     for name, val in fields.items():
+        # NEVER write a blank over an existing value. The workbook often has no
+        # Mailing Zip (it fills mailing from the property address, which carries
+        # no ZIP), and filling "" wiped DataSift's populated postal code — the
+        # save was then rejected by address validation with no visible error, so
+        # _edit_owner reported success on a write that never happened. Isenhour
+        # 26E002823-590 failed this way three runs in a row while Waldroup /
+        # Kachmarik / Barnett, which all had a ZIP, saved fine.
+        if not (val or "").strip():
+            continue
         inp = page.locator(f'input[name="{name}"]')
         if await inp.count() == 0:
             logger.warning("  %s: form input %r missing", up["case"], name)
