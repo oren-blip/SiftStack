@@ -46,6 +46,7 @@ from nc_pdf_phone_extractor import (  # noqa: E402
     extract_contacts,
     extract_pr_address,
 )
+from llm_client import vision_json  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("nc_phone_backfill")
@@ -123,6 +124,7 @@ def main() -> None:
     fetched = 0
     found = 0
     found_addr = 0
+    vision_heirs = 0
     for r in todo:
         if fetched >= args.limit:
             logger.info("Hit --limit %d doc fetches; stopping (rerun to continue).", args.limit)
@@ -165,6 +167,27 @@ def main() -> None:
             fetched += 1
             txt = extract_text_with_ocr(pdf)
             c = extract_contacts(txt, r.get("First Name", ""), r.get("Last Name", ""))
+            if not c["phone_digits"]:
+                # OCR found nothing — the answers are probably HANDWRITTEN.
+                # Tesseract can't read those; Claude vision can. Only pay for
+                # this when the text path came up empty.
+                v = _vision_contacts(pdf, r.get("First Name", ""), r.get("Last Name", ""))
+                if v:
+                    if v["phone_digits"]:
+                        logger.info("  VISION %s (%s): read %s off the handwriting [%s]",
+                                    case, name, v["phone"], v["context"])
+                        c = v
+                    if v.get("heirs"):
+                        names = "; ".join(
+                            f"{h.get('name','')} - {h.get('address','')}".strip(" -")
+                            for h in v["heirs"])
+                        logger.info("  VISION %s: children on form -> %s", case, names)
+                        if not args.dry_run and names:
+                            note = (r.get("Notes") or "").strip()
+                            blk = f"[court form children: {names}]"
+                            if blk not in note:
+                                r["Notes"] = f"{note}\n{blk}".strip() if note else blk
+                        vision_heirs += 1
             if c["phone_digits"] and c["score"] >= MIN_SCORE and (best is None or c["score"] > best["score"]):
                 best = {**c, "doc": key}
             # Same OCR'd text, no extra (throttled) fetch: the PR's own mailing
@@ -222,6 +245,88 @@ def main() -> None:
             found_addr += _apply_pr_address(r, best_addr, case, name, args.dry_run)
 
     _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr)
+
+
+_VISION_SCORE = 8   # a hand-filled court form beats any skip-trace number
+
+
+def _render_pdf_pages(pdf: bytes, max_pages: int = 2, scale: float = 2.0) -> list[bytes]:
+    """Render the first `max_pages` PDF pages to PNG bytes for a vision call."""
+    import io
+    try:
+        import pypdfium2 as pdfium
+    except Exception as e:  # noqa: BLE001
+        logger.info("  vision: pypdfium2 unavailable (%s)", e)
+        return []
+    out: list[bytes] = []
+    try:
+        doc = pdfium.PdfDocument(pdf)
+        for i in range(min(len(doc), max_pages)):
+            buf = io.BytesIO()
+            doc[i].render(scale=scale).to_pil().save(buf, format="PNG")
+            out.append(buf.getvalue())
+    except Exception as e:  # noqa: BLE001
+        logger.info("  vision: render failed (%s)", e)
+        return []
+    return out
+
+
+_VISION_PROMPT = """This is a North Carolina court estate filing (Family History
+Affidavit, Estates Action Cover Sheet, or similar). The form is PRINTED but the
+answers are HANDWRITTEN. Read the handwriting carefully.
+
+Return ONLY JSON:
+{
+  "applicant_name": "the affiant/applicant/personal representative's full name, or ''",
+  "phone": "their telephone number as written, or ''",
+  "email": "their email address, or ''",
+  "mailing_address": {"street": "", "city": "", "state": "", "zip": ""},
+  "children": [{"name": "", "address": "", "age": ""}],
+  "confidence": "high|medium|low"
+}
+
+Rules:
+- Transcribe ONLY what is actually written. Never invent or complete a value.
+- Use '' for any field that is blank, illegible, or not on the form.
+- The phone belongs to the person FILING (the affiant), not the clerk, the
+  attorney, the funeral home, or a fax number — skip those.
+- "children" is the table of the decedent's children if the form has one."""
+
+
+def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
+    """Read a hand-filled court form with Claude vision.
+
+    WHY: Tesseract cannot read handwriting. These forms are printed templates
+    filled in by hand, so OCR returns the field LABELS and drops every answer —
+    which looks downstream like "this doc has no phone number". Walsh
+    26E002826-590 (2026-08-02): OCR found 0 phones; the form clearly shows
+    "(704) 564-0605", an email, and three children with addresses and ages.
+
+    Returns an extract_contacts-shaped dict (plus "heirs"), or None.
+    """
+    images = _render_pdf_pages(pdf)
+    if not images:
+        return None
+    data = vision_json(_VISION_PROMPT, images, max_tokens=2048)
+    if not data:
+        return None
+    phone = (data.get("phone") or "").strip()
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        digits, phone = "", ""
+    heirs = [h for h in (data.get("children") or []) if isinstance(h, dict) and h.get("name")]
+    if not phone and not (data.get("email") or "").strip() and not heirs:
+        return None
+    return {
+        "phone": phone, "phone_digits": digits,
+        "email": (data.get("email") or "").strip(),
+        "score": _VISION_SCORE if phone else 0,
+        "context": f"vision/{data.get('confidence', '?')}",
+        "heirs": heirs,
+        "applicant": (data.get("applicant_name") or "").strip(),
+    }
 
 
 def _norm_addr(s: str) -> str:

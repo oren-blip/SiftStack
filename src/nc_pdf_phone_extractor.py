@@ -56,6 +56,9 @@ _SKIP_CONTEXT = re.compile(
     re.I,
 )
 _TOLLFREE = re.compile(r"^(?:800|833|844|855|866|877|888)")
+# Email domains that belong to the estate's ATTORNEY, never to the PR.
+_FIRM_DOMAIN = re.compile(
+    r"@[\w.-]*(law|attorney|legal|esq|firm)[\w.-]*\.", re.I)
 
 # Context words that raise confidence a number is the filer's personal contact.
 _GOOD_CONTEXT = re.compile(
@@ -226,14 +229,25 @@ def extract_contacts(text: str, pr_first: str = "", pr_last: str = "") -> dict:
             if best is None or cand[0] > best[0]:
                 best = cand
 
-    # Email: prefer one on a line whose context isn't an attorney/firm line.
+    # Email: prefer one whose context isn't an attorney/firm line.
+    # The context window is ±1 LINE, not the single line the address sits on:
+    # OCR frequently isolates an email onto its own line, which strands it from
+    # the "Attorney Email Address" / "NC Attorney Bar No." label right above it.
+    # Russell 26E001013-350 cover sheet: OCR emitted "\ndawn@parkswilsonlaw.com\r"
+    # alone, so the single-line check passed and the ATTORNEY's address was
+    # about to be written into the row as the PR's own email.
     email = ""
     for m in _EMAIL_RE.finditer(text):
         e = m.group(0)
         i = text.rfind("\n", 0, m.start())
+        prev = text.rfind("\n", 0, max(0, i))
         j = text.find("\n", m.end())
-        ctx = text[max(0, i): j if j != -1 else len(text)]
+        nxt = text.find("\n", j + 1) if j != -1 else -1
+        ctx = text[max(0, prev): nxt if nxt != -1 else len(text)]
         if _SKIP_CONTEXT.search(ctx):
+            continue
+        # A law-firm domain is a firm address no matter what the label says.
+        if _FIRM_DOMAIN.search(e):
             continue
         email = e
         if last and last in e.lower():

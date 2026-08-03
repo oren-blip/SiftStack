@@ -63,6 +63,71 @@ def chat_json_async(
 # ── Anthropic backend ────────────────────────────────────────────────
 
 
+def vision_json(
+    prompt: str,
+    images: list[bytes],
+    system: str = "",
+    max_tokens: int = 2048,
+    api_key: str | None = None,
+    model: str | None = None,
+) -> dict | None:
+    """Send page images + prompt to Claude and get parsed JSON back.
+
+    Exists because Tesseract cannot read HANDWRITING. NC court estate forms
+    (Family History Affidavit, Estates Action Cover Sheet) are printed forms
+    filled in BY HAND — the applicant's phone, email, and the children/heirs
+    table are all handwritten. OCR returns the printed field labels and drops
+    every answer, which reads downstream as "the form has no phone number".
+    Walsh 26E002826-590 (2026-08-02): Tesseract found zero phones; the form
+    plainly shows "(704) 564-0605", an email, and three children with
+    addresses and ages.
+
+    Anthropic backend only (ollama/openrouter vision is not wired). Returns
+    None when unavailable so callers can fall back to the OCR text path.
+    """
+    import base64
+
+    backend = getattr(cfg, "LLM_BACKEND", "anthropic")
+    if backend != "anthropic":
+        logger.info("vision_json: backend %r has no vision path — skipping", backend)
+        return None
+    key = api_key or cfg.ANTHROPIC_API_KEY
+    if not key:
+        logger.warning("No Anthropic API key — skipping vision call")
+        return None
+    if not images:
+        return None
+    # Default to a strong model: handwriting is the hardest read in the
+    # pipeline and a mis-read phone number is worse than no phone number.
+    model = model or getattr(cfg, "LLM_VISION_MODEL", "claude-sonnet-5")
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        content: list[dict] = []
+        for img in images:
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png",
+                           "data": base64.standard_b64encode(img).decode()},
+            })
+        content.append({"type": "text", "text": prompt})
+        response = client.messages.create(
+            model=model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": content}],
+        )
+        # Thinking-capable models put a ThinkingBlock at content[0], so index 0
+        # is not reliably the answer — take the first actual text block.
+        text = next((b.text for b in response.content
+                     if getattr(b, "type", None) == "text"), "")
+        if not text:
+            logger.warning("Vision call returned no text block (model=%s)", model)
+            return None
+        return _parse_json(text.strip())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Vision call failed (model=%s): %s", model, e)
+        return None
+
+
 def _chat_anthropic(
     prompt: str, system: str, max_tokens: int, api_key: str | None,
     model: str | None = None,

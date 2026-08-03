@@ -283,6 +283,12 @@ class CaseDetailClient:
         self.waf_token = waf_token
         self.user_agent = user_agent
         self._session = requests.Session()
+        # True when the last fetch_parties call gave up on repeated HTTP 202.
+        # The Parties endpoint shares DisplayDoc's IP-keyed throttle (~6 quick
+        # calls, then ~1 per 50s) — a 202 give-up means "throttled", NOT
+        # "case has no parties". Callers that loop over many cases should
+        # check this and wait ~55s before retrying the same case.
+        self.last_throttled = False
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -304,6 +310,7 @@ class CaseDetailClient:
         """
         if not case_id:
             return []
+        self.last_throttled = False
         url = f"{BASE}/Parties('{case_id}')?mode=portalembed&$top=50&$skip=0"
         for attempt in range(retries + 1):
             try:
@@ -322,12 +329,14 @@ class CaseDetailClient:
                     return []
                 return [CaseParty.from_json(p) for p in (data.get("Parties") or [])]
             if r.status_code == 202:
-                # Queued — wait for the data to be ready
+                # Queued — wait for the data to be ready. Repeated 202s are
+                # usually the IP-keyed throttle, not a slow render.
                 wait = 5 + attempt * 5
                 logger.info("eCourts API: HTTP 202 on Parties (attempt %d) — waiting %ds", attempt + 1, wait)
                 if attempt < retries:
                     time.sleep(wait)
                     continue
+                self.last_throttled = True
                 return []
             if r.status_code in (401, 403):
                 logger.error(
@@ -340,6 +349,6 @@ class CaseDetailClient:
                 time.sleep(2 + attempt * 2)
         return []
 
-    def fetch_detail(self, case_id: str) -> CaseDetail:
-        parties = self.fetch_parties(case_id)
+    def fetch_detail(self, case_id: str, *, retries: int = 2) -> CaseDetail:
+        parties = self.fetch_parties(case_id, retries=retries)
         return CaseDetail(case_id=case_id, parties=parties)

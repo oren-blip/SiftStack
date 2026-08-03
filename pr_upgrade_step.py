@@ -125,16 +125,29 @@ async def _open_owner_page(page, address: str) -> bool:
     await page.keyboard.press("Enter")
     await page.wait_for_timeout(4000)
     link = page.locator('[class*="TableRow"] a')
-    if await link.count() == 0:
-        return False
-    await link.first.click()
+    if await link.count() > 0:
+        await link.first.click()
+    else:
+        # UI drift (2026-08-02): result rows are no longer <a> links. Click
+        # the row container → property details page → follow the owner link.
+        row = page.locator('[class*="TableRowContainer"]')
+        if await row.count() == 0:
+            return False
+        await row.first.click()
+        await page.wait_for_timeout(4000)
+        owner = page.locator('a[href*="/records/owners/"]')
+        if await owner.count() == 0:
+            return False
+        await owner.first.click()
     await page.wait_for_timeout(5000)
     return "/records/owners/" in page.url
 
 
 async def _edit_owner(page, up: dict) -> bool:
     """On an owner page: pencil -> set first/last + mailing -> Save."""
-    heading = await page.evaluate("() => document.body.innerText.slice(0, 400)")
+    # 1500 chars, not 400: the nav bar + usage banner push the owner name
+    # deep into body text (varies per page — 400 skipped 5 of 7 real upgrades).
+    heading = await page.evaluate("() => document.body.innerText.slice(0, 1500)")
     if "Heirs" not in heading and up["old"] not in heading:
         logger.warning("  %s: owner page shows neither 'Heirs' nor %r — "
                        "skipping for safety", up["case"], up["old"])
@@ -163,11 +176,40 @@ async def _edit_owner(page, up: dict) -> bool:
             return False
         await inp.first.click()
         await inp.first.fill(val)
-    save = page.locator('button:has-text("Save"), button[type="submit"]')
-    if await save.count() == 0:
+    # The DOM carries several zero-size hidden type=submit buttons ("Buy
+    # Credits" sidebar clones) that match a naive selector's .first and
+    # time out on click. Click the visible button whose text starts with
+    # "Save" (the form's real button is "Save Changes").
+    clicked = await page.evaluate("""() => {
+        const b = [...document.querySelectorAll('button')].find(b => {
+            const r = b.getBoundingClientRect();
+            return (b.textContent || '').trim().startsWith('Save') && r.width > 0;
+        });
+        if (b) { b.click(); return true; }
+        return false;
+    }""")
+    if not clicked:
+        logger.warning("  %s: visible Save button not found", up["case"])
         return False
-    await save.first.click()
     await page.wait_for_timeout(4000)
+
+    # VERIFY THE WRITE. Clicking Save is not proof it saved: Isenhour
+    # 26E002823-590 was reported "contact updated to Emily Mcbryde" on three
+    # separate runs (2026-08-02 x2, 2026-08-03) while DataSift still held
+    # "Heirs Isenhour" — the export had no Mcbryde anywhere. A false success
+    # is worse than a failure here: it hides the problem AND re-fires a paid
+    # Skip Trace Owner on a record that never changed. Re-read the page and
+    # require the new surname to be present.
+    await page.reload(wait_until="domcontentloaded")
+    await page.wait_for_timeout(4000)
+    body = await page.evaluate("() => document.body.innerText.slice(0, 3000)")
+    want_last = (up.get("last") or "").strip()
+    want_first = (up.get("first") or "").strip()
+    if want_last and want_last.lower() not in body.lower():
+        logger.error("  %s: SAVE DID NOT STICK — page still lacks %r after reload "
+                     "(was %r). Not counting as upgraded; skipping skip trace.",
+                     up["case"], f"{want_first} {want_last}".strip(), up["old"])
+        return False
     return True
 
 
@@ -239,11 +281,15 @@ async def run(week: int, *, dry_run: bool, trace: bool, headless: bool,
                 return 0
             done = 0
             for u in ups:
-                if not await _open_owner_page(page, u["address"]):
-                    logger.warning("  %s: record not found by address %r",
-                                   u["case"], u["address"])
-                    continue
-                if not await _edit_owner(page, u):
+                try:
+                    if not await _open_owner_page(page, u["address"]):
+                        logger.warning("  %s: record not found by address %r",
+                                       u["case"], u["address"])
+                        continue
+                    if not await _edit_owner(page, u):
+                        continue
+                except Exception as e:  # noqa: BLE001 — one bad record must not kill the run
+                    logger.warning("  %s: upgrade failed (%s)", u["case"], e)
                     continue
                 logger.info("  %s: contact updated to %s", u["case"], u["pr"])
                 if trace:

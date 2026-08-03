@@ -3405,19 +3405,71 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
     stale blank. The nightly merge rebuilds from those raw scrapes and skips
     re-scraping seen cases, so a blank PR never self-heals on its own. This
     re-fetches Parties for blank-PR rows every run, so such fixes take effect on
-    already-scraped cases without a full re-scrape. Cheap: only blank-PR rows,
-    OData Parties endpoint (not the rate-limited DisplayDoc). No-ops without a
-    cached WAF cookie.
+    already-scraped cases without a full re-scrape. Only blank-PR rows are
+    queried. No-ops without a cached WAF cookie.
+
+    RATE LIMIT (found 2026-08-01): the Parties endpoint shares DisplayDoc's
+    IP-keyed throttle — ~6 quick calls succeed, then every call returns
+    HTTP 202 until ~50s has passed. Before this was handled, only the first
+    ~5 blank-PR rows healed per night (silently: a 202 give-up looks like
+    "no parties"), which is why Fri-filed cases kept "Heirs of" through the
+    Mon+Tue catch-up polishes. Now a throttled call waits 55s and retries
+    the same case, so one polish pass heals every reachable row.
     """
     import json as _json
     from pathlib import Path as _Path
 
     def _blank_pr(r: dict) -> bool:
+        """Rows the court should be re-asked about.
+
+        Blank / "Heirs of" obviously qualify. So does a PR the PIPELINE
+        INVENTED — a deed co-owner promoted by `dm-promoted-pr`. That name is
+        a guess standing in until the court names someone, but it isn't blank,
+        so before this it permanently BLOCKED the authoritative court PR from
+        ever landing. Walsh 26E002826-590: the filing-day scrape got no parties
+        (court indexes ~1 day late), polish promoted deed co-owner Susan Walsh,
+        and every later night skipped the row — while eCourts had listed
+        "Applicant: Walsh, Elizabeth" since the next morning. Court data must
+        be able to overwrite a guess. Rows already confirmed from Parties
+        (`pr-backfill-parties`) are left alone.
+        """
         pr = (r.get("Personal Representative") or "").strip().lower()
-        return (not pr) or pr.startswith("heirs of")
+        if (not pr) or pr.startswith("heirs of"):
+            return True
+        reason = r.get("Match Reason") or ""
+        if "dm-promoted-pr" in reason and "pr-backfill-parties" not in reason:
+            return True
+        # Parties is ALSO the only source of the Beneficiaries column, so a row
+        # with a known PR but no beneficiaries has never actually been asked.
+        # Oren, 2026-08-03: "why isn't the Beneficiaries column populated in
+        # this and many other cases?" — because a PR from the Application PDF
+        # (pr-from-app-over-obit) or the scrape satisfied the old blank-PR gate,
+        # so Parties was never fetched and the heir list stayed empty. Measured
+        # on Week 31: 40/70 rows blank, 35 of them with a named PR.
+        return not (r.get("Beneficiaries") or "").strip()
 
     targets = [r for r in rows
                if _blank_pr(r) and (r.get("Case ID (hex)") or "").strip()]
+
+    # Order + cap. Widening the gate to beneficiaries-missing rows took Week 31
+    # from ~18 to 40 targets, and a throttled Parties call costs ~55s (see
+    # project_parties_api_throttle_heirs_of), so an uncapped run could add
+    # ~35 min to the nightly. Missing-PR rows go first (a nameless lead is
+    # worse than a lead with no heir list); the rest drain over the following
+    # nights, since anything filled drops out of the target set for good.
+    def _pr_missing(r: dict) -> bool:
+        pr = (r.get("Personal Representative") or "").strip().lower()
+        return (not pr) or pr.startswith("heirs of")
+
+    targets.sort(key=lambda r: (not _pr_missing(r), (r.get("Case No.") or "")))
+    try:
+        cap = int(os.environ.get("NC_PARTIES_MAX", "25"))
+    except ValueError:
+        cap = 25
+    if cap > 0 and len(targets) > cap:
+        print(f"  (parties backfill: {len(targets)} rows need the court; "
+              f"doing {cap} this run, rest next night — NC_PARTIES_MAX to change)")
+        targets = targets[:cap]
     if not targets:
         return 0
 
@@ -3435,20 +3487,92 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
         print(f"  (PR backfill unavailable: {e})")
         return 0
 
+    import time as _time
+
     filled = 0
+    benef_filled = 0
+    throttled_rows: list[dict] = []
     for r in targets:
-        try:
-            detail = client.fetch_detail((r.get("Case ID (hex)") or "").strip())
-        except Exception as e:  # noqa: BLE001
-            print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
+        case_hex = (r.get("Case ID (hex)") or "").strip()
+        detail = None
+        for attempt in range(3):
+            try:
+                # After the first attempt, probe with a SINGLE request:
+                # fetch_parties's internal 202 retries (3 quick requests)
+                # re-trip the rate limiter and keep the window from resetting.
+                detail = client.fetch_detail(case_hex, retries=2 if attempt == 0 else 0)
+            except Exception as e:  # noqa: BLE001
+                print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
+                detail = None
+                break
+            if detail.parties or not getattr(client, "last_throttled", False):
+                break
+            print(f"  PR backfill: throttled (HTTP 202) on {r.get('Case No.')} — "
+                  f"waiting 55s (attempt {attempt + 1}/3)")
+            _time.sleep(55)
+        if detail is None:
+            continue
+        if not detail.parties and getattr(client, "last_throttled", False):
+            # Gave up while throttled — result is UNKNOWN, not "no parties".
+            # Observed 2026-08-01: failures alternate with successes (a case
+            # that fails 5 probes is often fetchable right after a different
+            # case succeeds), so a second pass at the end recovers most.
+            throttled_rows.append(r)
             continue
         fill = detail_to_fill_dict(detail)   # None for guardianships, {} if no PR
-        if fill and fill.get("Personal Representative"):
+        if fill:
+            had_benef = bool((r.get("Beneficiaries") or "").strip())
             apply_fill_to_row(r, fill)
-            tag_reason(r, "pr-backfill-parties")
-            filled += 1
-            print(f"  PR backfill {r.get('Case No.')} {r.get('Deceased Owner')}: "
-                  f"-> {fill['Personal Representative']}")
+            if fill.get("Personal Representative"):
+                tag_reason(r, "pr-backfill-parties")
+                filled += 1
+                print(f"  PR backfill {r.get('Case No.')} {r.get('Deceased Owner')}: "
+                      f"-> {fill['Personal Representative']}")
+            # A case can list beneficiaries with no formal PR yet — apply those
+            # too rather than discarding the whole fill for want of a PR.
+            if fill.get("Beneficiaries") and not had_benef:
+                benef_filled += 1
+                n = len(fill["Beneficiaries"].splitlines())
+                print(f"  BENEFICIARIES {r.get('Case No.')} {r.get('Deceased Owner')}: "
+                      f"{n} from court parties")
+        # Gentle pacing so a long blank-PR list doesn't slam straight into
+        # the ~6-call burst limit on every run.
+        _time.sleep(3)
+
+    if throttled_rows:
+        print(f"  PR backfill: second pass on {len(throttled_rows)} throttled case(s)...")
+        _time.sleep(60)
+        for r in throttled_rows:
+            case_hex = (r.get("Case ID (hex)") or "").strip()
+            detail = None
+            for attempt in range(3):
+                try:
+                    detail = client.fetch_detail(case_hex, retries=0)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
+                    detail = None
+                    break
+                if detail.parties or not getattr(client, "last_throttled", False):
+                    break
+                _time.sleep(60)
+            if detail is None or not detail.parties:
+                continue
+            fill = detail_to_fill_dict(detail)
+            if fill:
+                had_benef = bool((r.get("Beneficiaries") or "").strip())
+                apply_fill_to_row(r, fill)
+                if fill.get("Personal Representative"):
+                    tag_reason(r, "pr-backfill-parties")
+                    filled += 1
+                    print(f"  PR backfill (2nd pass) {r.get('Case No.')} {r.get('Deceased Owner')}: "
+                          f"-> {fill['Personal Representative']}")
+                if fill.get("Beneficiaries") and not had_benef:
+                    benef_filled += 1
+                    print(f"  BENEFICIARIES (2nd pass) {r.get('Case No.')} "
+                          f"{r.get('Deceased Owner')}: from court parties")
+            _time.sleep(3)
+    if benef_filled:
+        print(f"  Beneficiaries filled from court parties: {benef_filled} row(s)")
     return filled
 
 
@@ -3797,6 +3921,25 @@ def promote_deed_coowner_to_dm(
         dec = (r.get("Deceased Owner") or "").strip()
         county = (r.get("County") or "").strip()
         if not pid or not dec or not county or "IN THE MATTER" in dec.upper():
+            continue
+        # Don't name a co-owner when the parcel is BOTH name-ambiguous AND was
+        # swapped in by the over-cap rule. Either alone is usually fine (the
+        # co-owner is the decedent's real spouse), but together they mean we
+        # picked a second parcel off a same-name match we already doubted —
+        # so the "co-owner" is a stranger's spouse, and dm-promoted-pr then
+        # ships that whole household as the lead. Walsh 26E002826-590 (Week
+        # 31): decedent James Burnham Walsh matched two OTHER James Walshes'
+        # homes; the swap made 3910 Aster Dr main and named its co-owner
+        # Susan Walsh as PR. Real PR: Elizabeth I Walsh; neither parcel his.
+        # Measured over the last 8 week-files: this compound test catches the
+        # Walsh row and no others, while a bare ambiguity test would have
+        # discarded 5 genuine spouse contacts.
+        reason = (r.get("Match Reason") or "")
+        ambiguous = ("verify-name-ambiguous" in reason
+                     or "verify-name-nomiddle" in reason)
+        if ambiguous and "swap-on-over-cap" in reason:
+            print(f"  CO-OWNER DM skipped {r.get('Case No.')} {dec}: swapped parcel on a "
+                  f"name-ambiguous match — co-owner likely a different family")
             continue
         try:
             cands = lookup_properties(dec, county, min_score=0.3)

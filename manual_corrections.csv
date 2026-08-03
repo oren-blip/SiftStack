@@ -111,3 +111,50 @@ Case No.,Field,Value
 26E000786-120,Personal Representative,Carolyn Gibson
 26E000786-120,First Name,Carolyn
 26E000786-120,Last Name,Gibson
+# DP skill run 2026-08-02 (Week 31 no-PR queue) — see output/reports/DP_Week31_*.md
+# Pendleton 26E001008-350: obit (McLean FD) — sons Jimmy + Scott are the intestate heirs.
+26E001008-350,First Name,Jimmy
+26E001008-350,Last Name,Pendleton
+26E001008-350,DM Name,Jimmy Pendleton
+26E001008-350,DM Relationship,son
+26E001008-350,DM 2 Name,Scott Pendleton
+26E001008-350,DM 2 Relationship,son
+# Yow 26E000776-790: obit (Lyerly FH) — son Jeff Yow (Kannapolis) + daughter Tonya Furr (Concord).
+# Contact NOT retargeted yet: deed reads "YOW ROBERT E JR & WF BARBARA B" and obit has no
+# Barbara — verify the 1300 Sides Ave vesting before mailing (see DP pack).
+26E000776-790,DM Name,Jeff Yow
+26E000776-790,DM Relationship,son
+26E000776-790,DM 2 Name,Tonya Furr
+26E000776-790,DM 2 Relationship,daughter
+# Hill 26E000740-480: obit (Troutman FH / Iredell Free News) — 4 living children.
+# Parcel is a 60% match (Statesville decedent, Harmony parcels) — verify before retargeting mail.
+26E000740-480,DM Name,Raymond Stephen Hill
+26E000740-480,DM Relationship,son
+26E000740-480,DM 2 Name,Kathy Hill Dagenhart
+26E000740-480,DM 2 Relationship,daughter
+26E000740-480,DM 3 Name,Lori Hill Bennett
+26E000740-480,DM 3 Relationship,daughter
+# Dixon 26E002835-590: ward of the state, no known family; former guardian is the info contact.
+26E002835-590,DM Name,Amanda Woodard
+26E002835-590,DM Relationship,former state-appointed guardian (info contact - not an heir)
+26E002835-590,DM Phone,(704) 249-7516
+# Russell 26E001013-350 (Oren 2026-08-03). Verified against the Estates Action
+# Cover Sheet (AOC-E-650, filed 7/28/26) + eCourts Parties. Two CO-EXECUTORS
+# must both sign. Mailing moves off the decedent's house to Gilbert's own
+# address, per the Application. Phones are court-filed, not skip-traced.
+26E001013-350,Mailing Address,2713 Rawhide Dr
+26E001013-350,Mailing City,Belmont
+26E001013-350,Mailing State,NC
+26E001013-350,Mailing Zip,28012
+26E001013-350,Phone 1,704-685-0631
+26E001013-350,DM Name,Gilbert Winfred Russell Jr
+26E001013-350,DM Relationship,co-executor (beneficiary)
+26E001013-350,DM Phone,704-685-0631
+26E001013-350,DM 2 Name,Darrell Dean Russell
+26E001013-350,DM 2 Relationship,co-executor (beneficiary)
+26E001013-350,DM 3 Name,Wanda Marie Russell McCormick
+26E001013-350,DM 3 Relationship,beneficiary
+26E001013-350,Beneficiaries,"Wanda Marie Russell McCormick - 325 Gaither Road, Belmont, NC 28012
+Gilbert Winfred Russell Jr. - 2713 Rawhide Drive, Belmont, NC 28012
+Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
+26E001013-350,Notes,"MULTI-SIGNER: co-executors Gilbert Winfred Russell Jr (704-685-0631) and Darrell Dean Russell (704-460-1962) must BOTH sign. Phones from Estates Action Cover Sheet filed 7/28/26. Atty Parks H. Wilson Jr, Belmont 704-825-1079. DOD 07/16/2026."

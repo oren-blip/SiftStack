@@ -380,13 +380,34 @@ async def upload_csv(
         when = pull_date or _dt.now().strftime("%m/%d/%Y")
         date_input = page.locator('input[placeholder*="Choose date"], input[placeholder*="date"]')
         if await date_input.count() > 0:
-            await date_input.first.click()
-            await page.wait_for_timeout(400)
-            await date_input.first.fill(when)
-            await page.wait_for_timeout(400)
+            # This is a flatpickr input rendered with readonly="readonly", so
+            # Locator.fill() can NEVER succeed — it waited the full 30s and
+            # threw on every single upload ("Date field: Locator.fill: Timeout
+            # 30000ms exceeded"), leaving the pull date blank. Drive the
+            # flatpickr instance instead, falling back to a native-setter write.
+            ok = await page.evaluate("""(val) => {
+                const el = document.querySelector('input.flatpickr-input')
+                    || document.querySelector('input[placeholder*="Choose date"]');
+                if (!el) return false;
+                if (el._flatpickr) {
+                    el._flatpickr.setDate(val, true);
+                    return true;
+                }
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, val);
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            }""", when)
+            await page.wait_for_timeout(500)
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
-            logger.info("Setup: list pull date = %s", when)
+            got = (await date_input.first.input_value()) or ""
+            if got.strip():
+                logger.info("Setup: list pull date = %s", got.strip())
+            else:
+                logger.warning("Setup: pull date did not take (wanted %s, ok=%s)", when, ok)
         else:
             logger.warning("Setup: date field not found — pull date NOT set")
     except Exception as e:
