@@ -125,6 +125,7 @@ def main() -> None:
     found = 0
     found_addr = 0
     vision_heirs = 0
+    benef_found = 0
     for r in todo:
         if fetched >= args.limit:
             logger.info("Hit --limit %d doc fetches; stopping (rerun to continue).", args.limit)
@@ -159,7 +160,7 @@ def main() -> None:
                 )
             except DocRateLimited:
                 logger.info("  THROTTLED at %s — stopping; rerun later.", case)
-                _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr)
+                _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr, benef_found)
                 return
             except Exception as e:
                 logger.info("  fetch fail %s/%s: %s", case, key, str(e)[:80])
@@ -167,12 +168,42 @@ def main() -> None:
             fetched += 1
             txt = extract_text_with_ocr(pdf)
             c = extract_contacts(txt, r.get("First Name", ""), r.get("Last Name", ""))
-            if not c["phone_digits"]:
-                # OCR found nothing — the answers are probably HANDWRITTEN.
-                # Tesseract can't read those; Claude vision can. Only pay for
-                # this when the text path came up empty.
+            # Call vision when the text path can't answer what this row still
+            # needs: no phone (answers are probably handwritten — Tesseract
+            # can't read those), OR no Beneficiaries and this is the cover
+            # sheet, which carries the "entitled to share" list the OData
+            # Parties feed often lacks. Skipped entirely when the row already
+            # has both, so we never pay for a call with nothing to gain.
+            needs_benef = (key == "cover_sheet"
+                           and not (r.get("Beneficiaries") or "").strip())
+            if not c["phone_digits"] or needs_benef:
                 v = _vision_contacts(pdf, r.get("First Name", ""), r.get("Last Name", ""))
                 if v:
+                    # Beneficiaries: the cover sheet's numbered list is the
+                    # court's own statement of who may share in the estate.
+                    if needs_benef and v.get("entitled"):
+                        blob = _format_beneficiaries(v["entitled"])
+                        if blob:
+                            logger.info("  BENEFICIARIES %s (%s): %d from cover sheet",
+                                        case, name, len(v["entitled"]))
+                            if not args.dry_run:
+                                r["Beneficiaries"] = blob
+                                r["Match Reason"] = ((r.get("Match Reason") or "")
+                                                     + " | cover-sheet-beneficiaries").strip(" |")
+                            benef_found += 1
+                    # A second fiduciary is a CO-EXECUTOR: they must also sign,
+                    # and their phone is on the same sheet. No DM 2 Phone
+                    # column exists, so it goes in Notes where the caller sees it.
+                    extra = [f for f in (v.get("fiduciaries") or [])[1:]
+                             if (f.get("phone") or "").strip()]
+                    if extra and not args.dry_run:
+                        who = "; ".join(f"{f['name']} {f['phone']}".strip()
+                                        for f in extra)
+                        note = (r.get("Notes") or "").strip()
+                        blk = f"[co-fiduciary from cover sheet: {who}]"
+                        if blk not in note:
+                            r["Notes"] = f"{note}\n{blk}".strip() if note else blk
+                            logger.info("  CO-FIDUCIARY %s: %s", case, who)
                     if v["phone_digits"]:
                         logger.info("  VISION %s (%s): read %s off the handwriting [%s]",
                                     case, name, v["phone"], v["context"])
@@ -244,7 +275,7 @@ def main() -> None:
         if best_addr:
             found_addr += _apply_pr_address(r, best_addr, case, name, args.dry_run)
 
-    _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr)
+    _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr, benef_found)
 
 
 _VISION_SCORE = 8   # a hand-filled court form beats any skip-trace number
@@ -271,16 +302,18 @@ def _render_pdf_pages(pdf: bytes, max_pages: int = 2, scale: float = 2.0) -> lis
     return out
 
 
-_VISION_PROMPT = """This is a North Carolina court estate filing (Family History
-Affidavit, Estates Action Cover Sheet, or similar). The form is PRINTED but the
-answers are HANDWRITTEN. Read the handwriting carefully.
+_VISION_PROMPT = """This is a North Carolina court estate filing (Estates Action
+Cover Sheet AOC-E-650, Family History Affidavit, funeral bill, or similar).
+Parts may be PRINTED and parts HANDWRITTEN — read the handwriting carefully.
 
 Return ONLY JSON:
 {
-  "applicant_name": "the affiant/applicant/personal representative's full name, or ''",
-  "phone": "their telephone number as written, or ''",
-  "email": "their email address, or ''",
+  "applicant_name": "the primary fiduciary/petitioner/applicant/affiant, or ''",
+  "phone": "that person's telephone number as written, or ''",
+  "email": "that person's email address, or ''",
   "mailing_address": {"street": "", "city": "", "state": "", "zip": ""},
+  "fiduciaries": [{"name": "", "phone": "", "email": ""}],
+  "entitled_to_share": [{"name": "", "address": ""}],
   "children": [{"name": "", "address": "", "age": ""}],
   "confidence": "high|medium|low"
 }
@@ -288,9 +321,16 @@ Return ONLY JSON:
 Rules:
 - Transcribe ONLY what is actually written. Never invent or complete a value.
 - Use '' for any field that is blank, illegible, or not on the form.
-- The phone belongs to the person FILING (the affiant), not the clerk, the
-  attorney, the funeral home, or a fax number — skip those.
-- "children" is the table of the decedent's children if the form has one."""
+- "fiduciaries" = EVERY person in a "Name Of Fiduciary/Petitioner/Applicant"
+  box, each with the telephone printed in that same box. A cover sheet often
+  has TWO (co-executors) — return both, in order.
+- "entitled_to_share" = the numbered list under wording like "All persons
+  listed below may be entitled to share in the decedent's estate". Include an
+  address only if one is written next to the name. Skip blank numbered rows.
+- "children" = the decedent's children table, if the form has one.
+- NEVER return the attorney, law firm, clerk, funeral home, fax or toll-free
+  number as a person's phone. The attorney block is separate and is not a
+  fiduciary — exclude it everywhere."""
 
 
 def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
@@ -316,8 +356,14 @@ def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
         digits = digits[1:]
     if len(digits) != 10:
         digits, phone = "", ""
-    heirs = [h for h in (data.get("children") or []) if isinstance(h, dict) and h.get("name")]
-    if not phone and not (data.get("email") or "").strip() and not heirs:
+    def _people(key):
+        return [h for h in (data.get(key) or [])
+                if isinstance(h, dict) and (h.get("name") or "").strip()]
+
+    heirs = _people("children")
+    entitled = _people("entitled_to_share")
+    fiduciaries = _people("fiduciaries")
+    if not phone and not (data.get("email") or "").strip() and not (heirs or entitled):
         return None
     return {
         "phone": phone, "phone_digits": digits,
@@ -325,8 +371,23 @@ def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
         "score": _VISION_SCORE if phone else 0,
         "context": f"vision/{data.get('confidence', '?')}",
         "heirs": heirs,
+        "entitled": entitled,
+        "fiduciaries": fiduciaries,
         "applicant": (data.get("applicant_name") or "").strip(),
     }
+
+
+def _format_beneficiaries(entitled: list[dict]) -> str:
+    """Render the cover sheet's 'entitled to share' list into the workbook's
+    Beneficiaries format: one person per line, 'Name - address' when known."""
+    lines = []
+    for p in entitled:
+        name = (p.get("name") or "").strip()
+        addr = (p.get("address") or "").strip()
+        if not name:
+            continue
+        lines.append(f"{name} - {addr}" if addr else name)
+    return "\n".join(lines)
 
 
 def _norm_addr(s: str) -> str:
@@ -393,20 +454,23 @@ def _apply_pr_address(r: dict, addr: dict, case: str, name: str, dry_run: bool) 
     return 1
 
 
-def _write(csv_path, rows, fieldnames, dry_run, found, found_addr=0) -> None:
+def _write(csv_path, rows, fieldnames, dry_run, found, found_addr=0, found_benef=0) -> None:
+    # found_benef must be part of the "is there anything to save" test: a run
+    # that filled ONLY Beneficiaries (cover sheet) but no phone would otherwise
+    # hit the early return and silently throw the heir list away.
     if dry_run:
-        logger.info("DRY RUN — found %d phone(s) and %d address(es), nothing written.",
-                    found, found_addr)
+        logger.info("DRY RUN — found %d phone(s), %d address(es), %d beneficiary "
+                    "list(s); nothing written.", found, found_addr, found_benef)
         return
-    if not found and not found_addr:
-        logger.info("No phones or addresses found; %s unchanged.", csv_path)
+    if not found and not found_addr and not found_benef:
+        logger.info("No phones, addresses or beneficiaries found; %s unchanged.", csv_path)
         return
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(fieldnames))
         w.writeheader()
         w.writerows(rows)
-    logger.info("Wrote %d PR phone(s) and %d PR address(es) into %s",
-                found, found_addr, csv_path)
+    logger.info("Wrote %d PR phone(s), %d PR address(es) and %d beneficiary list(s) into %s",
+                found, found_addr, found_benef, csv_path)
     _refresh_datasift_upload(csv_path, rows)
 
 
