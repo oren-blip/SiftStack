@@ -49,6 +49,10 @@ DEFAULT_TIERS = {
 # Cost per API call (Trestle phone_intel pricing)
 COST_PER_PHONE = 0.015
 
+# Tag applied to litigator-risk phones INSTEAD of a dial tier — keeps them out
+# of every dial list so they are suppressed from marketing.
+LITIGATOR_TAG = "Litigator - DNC"
+
 # Trestle API config
 TRESTLE_ENDPOINT = "https://api.trestleiq.com/3.0/phone_intel"
 MAX_RETRIES = 3
@@ -265,6 +269,9 @@ def print_estimate(est: dict):
     print(f"  ─────────────────────────────────")
     print(f"  ESTIMATED COST:      ${est['estimated_cost']:.2f}")
     print("=" * 50)
+    print("  Note: the litigator check (ON by default) is a Trestle")
+    print("  add-on and may bill extra per query depending on your")
+    print("  Trestle plan. Use --skip-litigator to exclude it.")
     print()
 
 
@@ -274,7 +281,8 @@ def process_phones(
     phones: list,
     api_key: str,
     tiers: dict,
-    add_litigator: bool = False,
+    add_litigator: bool = True,
+    litigator_tag: str = LITIGATOR_TAG,
     batch_size: int = 10,
     delay: float = 0.1,
     dry_run: bool = False,
@@ -347,6 +355,11 @@ def process_phones(
                         "phone.is_litigator_risk", None
                     )
 
+                # Litigator suppression: a litigator-risk phone gets the DNC tag
+                # INSTEAD of a dial tier, so it never lands in a dial list.
+                if litigator_risk:
+                    tag = litigator_tag
+
                 results.append({
                     "phone_number": phone,
                     "activity_score": score,
@@ -399,6 +412,24 @@ def write_detailed_csv(results: list, output_dir: str) -> str:
     return filepath
 
 
+def write_litigators_csv(results: list, output_dir: str) -> str:
+    """
+    Write litigator-risk phones to their own CSV for suppression review.
+    Same two-column format as the main tag file, so it can also be uploaded
+    standalone (e.g. to re-apply the DNC tag after a tag cleanup).
+    """
+    litigators = [r for r in results if r.get("is_litigator_risk")]
+    if not litigators:
+        return ""
+    filepath = os.path.join(output_dir, "litigators_dnc.csv")
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Phone Number", "Phone Tag"])
+        for r in litigators:
+            writer.writerow([r["phone_number"], r["assigned_tag"]])
+    return filepath
+
+
 def write_errors_csv(errors: list, output_dir: str) -> str:
     """Write errors to CSV for review."""
     if not errors:
@@ -423,6 +454,7 @@ def write_summary(results: list, errors: list, tiers: dict, output_dir: str) -> 
     # Compute stats
     total = len(results)
     scores = [r["activity_score"] for r in results if r["activity_score"] is not None]
+    litigator_count = sum(1 for r in results if r.get("is_litigator_risk"))
     tag_counts = Counter(r["assigned_tag"] for r in results)
     line_type_counts = Counter(r["line_type"] for r in results if r["line_type"])
     avg_score = sum(scores) / len(scores) if scores else 0
@@ -433,7 +465,7 @@ def write_summary(results: list, errors: list, tiers: dict, output_dir: str) -> 
         bucket = (s // 10) * 10
         buckets[bucket] += 1
 
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         f.write("=" * 60 + "\n")
         f.write("PHONE VALIDATION SUMMARY\n")
         f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -465,6 +497,15 @@ def write_summary(results: list, errors: list, tiers: dict, output_dir: str) -> 
             count = buckets[bucket]
             bar = "█" * (count // max(1, total // 40))
             f.write(f"  {bucket:3d}-{min(bucket+9, 100):3d}  {count:5d}  {bar}\n")
+
+        if litigator_count:
+            f.write(f"\n─── LITIGATOR SUPPRESSION ───\n\n")
+            f.write(f"  Litigator-risk phones: {litigator_count}\n")
+            f.write(f"  These were tagged '{LITIGATOR_TAG}' INSTEAD of a dial tier,\n")
+            f.write("  so they will not appear in any Dial First/Second/Third/Fourth\n")
+            f.write("  list. They are also listed in litigators_dnc.csv.\n")
+            f.write("  For hard suppression, additionally set their Phone Status to\n")
+            f.write("  DNC in DataSift so texting/dialing tools skip them entirely.\n")
 
         f.write(f"\n─── DATASIFT UPLOAD INSTRUCTIONS ───\n\n")
         f.write("1. Open your DataSift/REISift account\n")
@@ -507,7 +548,13 @@ def parse_args():
     parser.add_argument("--phone-column", type=str, default=None,
                         help="Override phone column name")
     parser.add_argument("--add-litigator", action="store_true",
-                        help="Include litigator risk check")
+                        help="(Deprecated — litigator check is now ON by default; "
+                             "kept for backward compatibility)")
+    parser.add_argument("--skip-litigator", action="store_true",
+                        help="Skip the litigator risk check (litigators will NOT be "
+                             "suppressed and will receive normal dial-tier tags)")
+    parser.add_argument("--litigator-tag", type=str, default=LITIGATOR_TAG,
+                        help=f"Tag applied to litigator-risk phones (default: '{LITIGATOR_TAG}')")
     parser.add_argument("--full-report", action="store_true",
                         help="Generate XLSX report (requires openpyxl)")
     parser.add_argument("--dry-run", action="store_true",
@@ -573,12 +620,14 @@ def main():
     print(f"Found {total_entries} phone entries ({unique_count} unique)")
     print(f"Estimated cost: ${unique_count * COST_PER_PHONE:.2f} ({unique_count} x ${COST_PER_PHONE})")
 
-    # Process
+    # Process (litigator check runs by default so litigators get suppressed)
+    add_litigator = not args.skip_litigator
     results, errors = process_phones(
         phones=phones,
         api_key=args.api_key,
         tiers=tiers,
-        add_litigator=args.add_litigator,
+        add_litigator=add_litigator,
+        litigator_tag=args.litigator_tag,
         batch_size=args.batch_size,
         delay=args.delay,
         dry_run=args.dry_run,
@@ -591,6 +640,10 @@ def main():
 
     detail_file = write_detailed_csv(results, args.output)
     print(f"  ✓ Detailed results:    {detail_file}")
+
+    litigator_file = write_litigators_csv(results, args.output)
+    if litigator_file:
+        print(f"  ✓ Litigators (DNC):    {litigator_file}")
 
     if errors:
         err_file = write_errors_csv(errors, args.output)
@@ -620,6 +673,14 @@ def main():
         if tag_name not in tiers:
             print(f"  {tag_name:20s}  {tag_counts[tag_name]:5d}")
     print(f"{'─' * 40}")
+
+    litigator_count = sum(1 for r in results if r.get("is_litigator_risk"))
+    if litigator_count:
+        print(f"\n⚠ {litigator_count} litigator-risk phone(s) tagged '{args.litigator_tag}' "
+              f"instead of a dial tier — they are suppressed from all dial lists.")
+        print("  For hard suppression, also set their Phone Status to DNC in DataSift")
+        print("  (Upload → Update Data → update phone status, using litigators_dnc.csv).")
+
     print(f"\nUpload '{os.path.basename(tag_file)}' to DataSift → Update Data → Tag phones by phone number")
     print("Done!")
 

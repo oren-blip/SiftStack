@@ -1,7 +1,7 @@
 ---
 name: phone-validator
 description: >
-  Score and validate phone numbers via Trestle's phone_intel API, then generate DataSift/REISift-ready CSVs with phone tags for upload. Use whenever someone wants to: validate phones, score activity, check if connected, generate phone tags for DataSift, prepare dial lists, prioritize a call list, identify dead numbers, check line types, or create tiered dial lists. Trigger for "phone validation", "validate phones", "activity score", "phone tags", "tag phones", "dial first", "Trestle", "phone_intel", "dead phones", "line type", "prioritize phones", "DataSift phone upload", "REISift phone tags", "score these phones", or "which numbers should I call first" — use this skill.
+  Score and validate phone numbers via Trestle's phone_intel API, then generate DataSift/REISift-ready CSVs with phone tags for upload. Litigator suppression is built in and ON by default: TCPA litigator-risk phones are tagged "Litigator - DNC" instead of a dial tier so they are excluded from all marketing. Use whenever someone wants to: validate phones, score activity, check if connected, generate phone tags for DataSift, prepare dial lists, prioritize a call list, identify dead numbers, check line types, create tiered dial lists, or suppress litigators from marketing. Trigger for "phone validation", "validate phones", "activity score", "phone tags", "tag phones", "dial first", "Trestle", "phone_intel", "dead phones", "line type", "prioritize phones", "DataSift phone upload", "REISift phone tags", "score these phones", "which numbers should I call first", "litigator", "litigator risk", "TCPA", or "DNC litigators" — use this skill.
 ---
 
 # Phone Validator & Tagger
@@ -13,10 +13,15 @@ CSVs with phone tags for prioritized dialing.
 
 This skill takes a CSV of phone numbers — typically a DataSift "Phone Enrichment" export
 with Phone 1 through Phone 30 columns — runs each unique number through Trestle's Phone
-Validation API to get an activity score and line type, then assigns a phone tag tier based
-on configurable score thresholds. The output is a two-column CSV (`Phone Number`, `Phone Tag`)
-formatted for direct upload to DataSift/REISift using their "Update Data → Tag phones by
-phone number" workflow.
+Validation API to get an activity score, line type, and **litigator risk check**, then
+assigns a phone tag tier based on configurable score thresholds. The output is a
+two-column CSV (`Phone Number`, `Phone Tag`) formatted for direct upload to
+DataSift/REISift using their "Update Data → Tag phones by phone number" workflow.
+
+**Litigator suppression is ON by default.** Any phone Trestle flags as a litigator risk
+gets the tag `Litigator - DNC` INSTEAD of a dial tier, so it never appears in any
+Dial First/Second/Third/Fourth list and is suppressed from marketing. See
+"Litigator Suppression" below.
 
 ## The Pipeline
 
@@ -25,10 +30,11 @@ Input CSV (DataSift Phone Enrichment export or any CSV with phone columns)
   → Parse all phone columns (Phone 1 through Phone 30)
     → Deduplicate across all columns and rows (saves API cost)
       → ESTIMATE COST & GET USER CONFIRMATION
-        → Trestle phone_intel API (activity_score + line_type)
+        → Trestle phone_intel API (activity_score + line_type + litigator check)
           → Score-based tier assignment (Dial First, Dial Second, Dial Third, Dial Fourth, Drop)
-            → DataSift-ready CSV (Phone Number | Phone Tag)
-              → Upload to DataSift via "Update Data → Tag phones by phone number"
+            → Litigator-risk phones get "Litigator - DNC" INSTEAD of a dial tier
+              → DataSift-ready CSV (Phone Number | Phone Tag) + litigators_dnc.csv
+                → Upload to DataSift via "Update Data → Tag phones by phone number"
 ```
 
 ## How to Execute: Use the Bundled Script
@@ -112,7 +118,9 @@ Replace `SKILL_DIR` with the actual path to this skill's directory.
 | `--batch-size` | `10` | Concurrent API requests (respect Trestle's rate limits) |
 | `--delay` | `0.1` | Seconds between batches |
 | `--phone-column` | auto-detect | Override phone column name |
-| `--add-litigator` | `false` | Include litigator risk check (uses Trestle add-on) |
+| `--skip-litigator` | `false` | Skip the litigator check — litigators will NOT be suppressed |
+| `--litigator-tag` | `Litigator - DNC` | Tag applied to litigator-risk phones |
+| `--add-litigator` | — | Deprecated (litigator check is now ON by default) |
 | `--full-report` | `false` | Generate a detailed XLSX report alongside the tag CSV |
 
 ### Step 5: Understand the Output
@@ -121,11 +129,12 @@ The script produces these files in the output directory:
 
 1. **`phone_tags_for_datasift.csv`** — The primary output. Two columns:
    - `Phone Number` — cleaned 10-digit phone number
-   - `Phone Tag` — the assigned tier tag
+   - `Phone Tag` — the assigned tier tag, or `Litigator - DNC` for litigator-risk phones
 
    This is the file users upload to DataSift. They go to Upload → Update Data →
    "Tag phones by phone number", map the two columns, and the tags propagate across
-   all records sharing that phone number.
+   all records sharing that phone number. One upload both tiers the good numbers
+   AND suppresses the litigators.
 
 2. **`validation_results.csv`** — Detailed results with all API data:
    - `phone_number` — the queried number
@@ -134,14 +143,43 @@ The script produces these files in the output directory:
    - `carrier` — carrier name
    - `is_valid` — whether the number is a valid format
    - `is_prepaid` — prepaid indicator
-   - `assigned_tag` — the tier tag assigned
-   - `is_litigator_risk` — (if --add-litigator was used)
+   - `assigned_tag` — the tier tag assigned (or the litigator tag)
+   - `is_litigator_risk` — litigator flag (blank if --skip-litigator was used)
 
-3. **`summary.txt`** — Human-readable summary with counts per tier, score distribution,
-   and line type breakdown.
+3. **`litigators_dnc.csv`** — Only the litigator-risk phones (same two-column
+   Phone Number | Phone Tag format). Written only when litigators were found. Use it
+   to review who got suppressed, or for a follow-up "update phone status → DNC"
+   upload (see Litigator Suppression below).
 
-4. **`validation_report.xlsx`** — (if --full-report) Excel workbook with formatted tables,
+4. **`summary.txt`** — Human-readable summary with counts per tier, score distribution,
+   line type breakdown, and a litigator suppression section.
+
+5. **`validation_report.xlsx`** — (if --full-report) Excel workbook with formatted tables,
    charts for score distribution, and tier breakdowns.
+
+## Litigator Suppression (ON by Default)
+
+Litigators (and their proxies) bait marketing calls/texts to build TCPA lawsuits.
+Trestle's `litigator_checks` add-on flags phone numbers associated with known TCPA
+litigators. This skill suppresses them from marketing automatically:
+
+1. **Every validation run includes the litigator check** unless `--skip-litigator`
+   is passed. Note: the add-on may bill extra per query on your Trestle plan.
+2. **Flagged phones get `Litigator - DNC` INSTEAD of a dial tier.** Because dialer
+   sends and exports filter by the Dial First/Second/Third/Fourth tags, a phone
+   without a tier tag is never included in a call or text batch — suppressed.
+3. **Flagged phones are still listed in `phone_tags_for_datasift.csv`**, so the
+   normal single upload applies the `Litigator - DNC` tag across every record
+   sharing that number. They're also isolated in `litigators_dnc.csv` for review.
+4. **Recommended hard-stop (do this too):** in DataSift, filter phones by the
+   `Litigator - DNC` phone tag and set their **Phone Status to `DNC`**. Phone tags
+   only suppress marketing that filters by tag; Phone Status DNC is honored more
+   broadly by dialer/SMS workflows. This is a one-time step per upload batch.
+5. **Never call or text a `Litigator - DNC` number**, even manually from the record
+   page — one dial to a litigator can cost more than an entire month of marketing.
+
+If a custom tag name is needed (e.g. to match an existing DNC tag in the account),
+pass `--litigator-tag "Your Tag Name"`.
 
 ## Input Format: DataSift Phone Enrichment Export
 
