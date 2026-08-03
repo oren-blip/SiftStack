@@ -158,3 +158,22 @@ Case No.,Field,Value
 Gilbert Winfred Russell Jr. - 2713 Rawhide Drive, Belmont, NC 28012
 Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E001013-350,Notes,"MULTI-SIGNER: co-executors Gilbert Winfred Russell Jr (704-685-0631) and Darrell Dean Russell (704-460-1962) must BOTH sign. Phones from Estates Action Cover Sheet filed 7/28/26. Atty Parks H. Wilson Jr, Belmont 704-825-1079. DOD 07/16/2026."
+# Lineberger 26E001011-350 (deed pulled by Oren 2026-08-03). Gaston Bk 4632
+# Pg 2236, NC NON-WARRANTY DEED made 09/11/2012, excise $0 (family transfer):
+# Timothy Mark Lineberger + Mary Lynn Lineberger --> LARRY DEAN LINEBERGER,
+# covering PIDs 165513/165589/165896/218606. Tax roll still shows "BETTY FAYE
+# LIFE EST" on three of them citing that deed, so Larry took the REMAINDER
+# subject to her life estate. She died 06/13/2026 -> her life estate ended and
+# Larry owns them outright. NOT an estate asset: the court file has no PR and
+# no beneficiaries. One owner, one signature. He lives next door at 436 Ike
+# Lynch Rd (PID 165513, his own since Bk 4491 Pg 1733).
+26E001011-350,Personal Representative,Larry Dean Lineberger
+26E001011-350,First Name,Larry
+26E001011-350,Last Name,Lineberger
+26E001011-350,Mailing Address,436 Ike Lynch Rd
+26E001011-350,Mailing City,Dallas
+26E001011-350,Mailing State,NC
+26E001011-350,Mailing Zip,28034
+26E001011-350,DM Name,Larry Dean Lineberger
+26E001011-350,DM Relationship,remainderman (owns it outright since her life estate ended)
+26E001011-350,Notes,"LIFE ESTATE ENDED - NO PROBATE NEEDED. Larry Dean Lineberger owns 423 + 430 + vacant Ike Lynch Rd outright (Gaston deed Bk 4632 Pg 2236, 2012). 75.4 ac total across the 3 parcels; the 52.64 ac tract is taxed at $39K but land market value is $260K = farm/forestry use-value deferment, so expect rollback taxes on a sale or subdivide. 1920 farmhouse on the 21.24 ac. Grantors Timothy Mark + Mary Lynn Lineberger gave up their interests in 2012 and should NOT need to sign. Decedent Betty Faye Lineberger DOD 06/13/2026 age 97."
