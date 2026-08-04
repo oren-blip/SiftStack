@@ -607,7 +607,10 @@ def _serper_web_search(query: str, num: int = 8) -> list[dict] | None:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        logger.debug("Serper web search failed for '%s': %s", query, e)
+        # WARNING, not debug: every silent Serper outage so far (6/30 zero-results,
+        # 8/2 out-of-credits, 8/3 overload) was invisible in the logs while the
+        # enricher quietly degraded to rate-limited DDG and starved the heir-finder.
+        logger.warning("Serper web search failed for '%s': %s — falling back to DDG", query, e)
         return None
     return [
         {"url": item.get("link", ""), "title": item.get("title", ""),
