@@ -43,6 +43,19 @@ if "%SINCE%"=="" (
     for /f %%i in ('powershell -NoProfile -Command "(Get-Date).AddDays(-2).ToString('yyyy-MM-dd')"') do set SINCE=%%i
 )
 
+REM Global time budget (build 2026-08-04). A typical night finishes in ~2.5h;
+REM the 8/3 run was still going at 5.5h when it died mid-step, losing the
+REM whole back half (workbook + report). Any heavy step still running at the
+REM deadline is killed by scripts\step_timeout.py and the run MOVES ON, so
+REM consolidate + report always land. Default 270 min (6PM start -> done by
+REM 10:30PM). Override:  set NC_RUN_MAX_MINS=N   (0 = no budget).
+if "%NC_RUN_MAX_MINS%"=="" set NC_RUN_MAX_MINS=270
+set NC_RUN_DEADLINE_EPOCH=
+if not "%NC_RUN_MAX_MINS%"=="0" (
+    for /f %%i in ('D:\SiftStack\.venv\Scripts\python.exe -c "import time,os;print(int(time.time())+int(os.environ.get('NC_RUN_MAX_MINS','270'))*60)"') do set NC_RUN_DEADLINE_EPOCH=%%i
+)
+set STEPT="D:\SiftStack\.venv\Scripts\python.exe" scripts\step_timeout.py --
+
 echo. >> "logs\nc_daily_run.log"
 echo ====================================================== >> "logs\nc_daily_run.log"
 echo === Daily run started %DATE% %TIME% (since %SINCE%) === >> "logs\nc_daily_run.log"
@@ -67,7 +80,7 @@ if errorlevel 1 (
 )
 
 echo [1/6] Fresh NC scrape (since %SINCE%)...
-call scripts\nc_weekly_scrape.bat %SINCE% >> "logs\nc_daily_run.log" 2>&1
+%STEPT% cmd /c scripts\nc_weekly_scrape.bat %SINCE% >> "logs\nc_daily_run.log" 2>&1
 
 echo [2/6] Merging raw scrapes by ISO week...
 "D:\SiftStack\.venv\Scripts\python.exe" prepare_weekly_input.py >> "logs\nc_daily_run.log" 2>&1
@@ -76,10 +89,10 @@ echo [3/6] Refreshing manual archive index...
 "D:\SiftStack\.venv\Scripts\python.exe" build_manual_archive_index.py >> "logs\nc_daily_run.log" 2>&1
 
 echo [4/6] Polish pipeline (audit, repair, filters, beneficiary promotion)...
-"D:\SiftStack\.venv\Scripts\python.exe" fix_addresses_and_prep.py >> "logs\nc_daily_run.log" 2>&1
+%STEPT% "D:\SiftStack\.venv\Scripts\python.exe" fix_addresses_and_prep.py >> "logs\nc_daily_run.log" 2>&1
 
 echo [5/6] eCourts name-search backfill for remaining blank Case No....
-"D:\SiftStack\.venv\Scripts\python.exe" backfill_case_numbers_from_ecourts.py >> "logs\nc_daily_run.log" 2>&1
+%STEPT% "D:\SiftStack\.venv\Scripts\python.exe" backfill_case_numbers_from_ecourts.py >> "logs\nc_daily_run.log" 2>&1
 
 REM Deep prospecting -- ON by default. --all-cases: Tracerfy + Trestle EVERY
 REM row's contact (PR or discovered heir) so the whole sheet has phones +
@@ -90,7 +103,7 @@ echo [5.5/6] Deep prospecting + all-cases skip trace/score...
 if "%NC_DEEP_PROSPECT%"=="0" (
     echo   skipped -- NC_DEEP_PROSPECT=0 >> "logs\nc_daily_run.log"
 ) else (
-    "D:\SiftStack\.venv\Scripts\python.exe" nc_deep_prospect.py --all-cases >> "logs\nc_daily_run.log" 2>&1
+    %STEPT% "D:\SiftStack\.venv\Scripts\python.exe" nc_deep_prospect.py --all-cases >> "logs\nc_daily_run.log" 2>&1
 )
 
 REM Backfill PR phone (+ email) from case-attached PDFs (Estates Action Cover
@@ -101,7 +114,7 @@ echo [5.7/6] PDF phone backfill (cover sheet / family history / funeral bill)...
 if "%NC_PDF_PHONES%"=="0" (
     echo   skipped -- NC_PDF_PHONES=0 >> "logs\nc_daily_run.log"
 ) else (
-    "D:\SiftStack\.venv\Scripts\python.exe" nc_phone_backfill.py --limit 25 >> "logs\nc_daily_run.log" 2>&1
+    %STEPT% "D:\SiftStack\.venv\Scripts\python.exe" nc_phone_backfill.py --limit 25 >> "logs\nc_daily_run.log" 2>&1
 )
 
 echo [6/6] Consolidating multi-week workbook...
