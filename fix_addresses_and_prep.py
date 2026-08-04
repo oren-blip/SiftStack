@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+import time
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -1277,15 +1278,77 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int, i
 _CASE_DETAIL_CACHE: dict = {}
 
 
-def _fetch_case_detail_cached(client, case_hex: str):
-    """client.fetch_detail(case_hex), memoized by hex. Caches failures as None
-    so a dead case isn't retried by the second step."""
-    if case_hex in _CASE_DETAIL_CACHE:
-        return _CASE_DETAIL_CACHE[case_hex]
+# ── Shared eCourts Parties budget ─────────────────────────────────────
+# The Parties endpoint is rate limited PER IP (~6 quick calls, then HTTP 202
+# until ~50s passes — see project_parties_api_throttle_heirs_of). Polish has
+# THREE callers: the decedent-address fallback (Step 0.64), the beneficiary
+# address fallback, and _fill_pr_from_parties. Each used to assume it owned
+# the quota. On 2026-08-03 that collided: widening the PR/beneficiary gate
+# doubled demand, the quota emptied, and the un-governed callers then spun for
+# 95 minutes making 365 refused calls at ~30s each while achieving nothing.
+#
+# One governor for all of them: pace the calls, and once the API has clearly
+# stopped answering, STOP for the rest of the run instead of grinding. The
+# work is not lost — every filled row drops out of the target set, so the
+# next night resumes where this one left off.
+_PARTIES_MAX_CALLS = int(os.environ.get("NC_PARTIES_MAX_CALLS", "120") or 120)
+_PARTIES_MIN_GAP = float(os.environ.get("NC_PARTIES_MIN_GAP", "2") or 2)
+_PARTIES_GIVE_UP_AFTER = int(os.environ.get("NC_PARTIES_GIVE_UP_AFTER", "8") or 8)
+_parties_state = {"calls": 0, "consec_throttled": 0, "last_call": 0.0, "dead": False}
+
+
+def parties_budget_available() -> bool:
+    """False once the run's Parties budget is spent or the API stopped answering."""
+    if _parties_state["dead"]:
+        return False
+    if _parties_state["calls"] >= _PARTIES_MAX_CALLS:
+        if not _parties_state["dead"]:
+            _parties_state["dead"] = True
+            print(f"  (Parties: hit the {_PARTIES_MAX_CALLS}-call budget for this run; "
+                  f"remaining rows resume next run)")
+        return False
+    return True
+
+
+def _parties_call(client, case_hex: str, *, retries: int = 2):
+    """Every Parties fetch in polish goes through here: paced, counted, and
+    circuit-broken. Returns a CaseDetail, or None when unavailable."""
+    if not case_hex or not parties_budget_available():
+        return None
+    gap = time.time() - _parties_state["last_call"]
+    if gap < _PARTIES_MIN_GAP:
+        time.sleep(_PARTIES_MIN_GAP - gap)
     try:
-        detail = client.fetch_detail(case_hex)
+        detail = client.fetch_detail(case_hex, retries=retries)
     except Exception:
         detail = None
+    _parties_state["calls"] += 1
+    _parties_state["last_call"] = time.time()
+    throttled = bool(getattr(client, "last_throttled", False))
+    if detail is not None and getattr(detail, "parties", None):
+        _parties_state["consec_throttled"] = 0
+    elif throttled:
+        _parties_state["consec_throttled"] += 1
+        if _parties_state["consec_throttled"] >= _PARTIES_GIVE_UP_AFTER:
+            _parties_state["dead"] = True
+            print(f"  (Parties: {_PARTIES_GIVE_UP_AFTER} refusals in a row — the court "
+                  f"has cut us off; skipping the rest this run, resumes next run)")
+    return detail
+
+
+def _fetch_case_detail_cached(client, case_hex: str):
+    """client.fetch_detail(case_hex), memoized by hex. Caches failures as None
+    so a dead case isn't retried by the second step.
+
+    Goes through the shared budget: this used to call the API directly with the
+    default retry burst and no pacing, which is what spun for 95 minutes on
+    2026-08-03 once the quota was gone.
+    """
+    if case_hex in _CASE_DETAIL_CACHE:
+        return _CASE_DETAIL_CACHE[case_hex]
+    if not parties_budget_available():
+        return None          # not cached: a later run should still try this case
+    detail = _parties_call(client, case_hex)
     _CASE_DETAIL_CACHE[case_hex] = detail
     return detail
 
@@ -3494,18 +3557,20 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
     throttled_rows: list[dict] = []
     for r in targets:
         case_hex = (r.get("Case ID (hex)") or "").strip()
+        if not parties_budget_available():
+            print("  PR backfill: Parties budget spent — remaining rows resume next run")
+            break
         detail = None
         for attempt in range(3):
-            try:
-                # After the first attempt, probe with a SINGLE request:
-                # fetch_parties's internal 202 retries (3 quick requests)
-                # re-trip the rate limiter and keep the window from resetting.
-                detail = client.fetch_detail(case_hex, retries=2 if attempt == 0 else 0)
-            except Exception as e:  # noqa: BLE001
-                print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
-                detail = None
-                break
+            # After the first attempt, probe with a SINGLE request:
+            # fetch_parties's internal 202 retries (3 quick requests) re-trip
+            # the rate limiter and keep the window from resetting.
+            detail = _parties_call(client, case_hex, retries=2 if attempt == 0 else 0)
+            if detail is None:
+                break                       # budget spent / circuit open
             if detail.parties or not getattr(client, "last_throttled", False):
+                break
+            if not parties_budget_available():
                 break
             print(f"  PR backfill: throttled (HTTP 202) on {r.get('Case No.')} — "
                   f"waiting 55s (attempt {attempt + 1}/3)")
@@ -3539,20 +3604,22 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
         # the ~6-call burst limit on every run.
         _time.sleep(3)
 
-    if throttled_rows:
+    if throttled_rows and parties_budget_available():
         print(f"  PR backfill: second pass on {len(throttled_rows)} throttled case(s)...")
         _time.sleep(60)
         for r in throttled_rows:
+            if not parties_budget_available():
+                print("  PR backfill: budget spent — rest of the second pass resumes next run")
+                break
             case_hex = (r.get("Case ID (hex)") or "").strip()
             detail = None
             for attempt in range(3):
-                try:
-                    detail = client.fetch_detail(case_hex, retries=0)
-                except Exception as e:  # noqa: BLE001
-                    print(f"  PR backfill: Parties fetch failed for {r.get('Case No.')}: {e}")
-                    detail = None
+                detail = _parties_call(client, case_hex, retries=0)
+                if detail is None:
                     break
                 if detail.parties or not getattr(client, "last_throttled", False):
+                    break
+                if not parties_budget_available():
                     break
                 _time.sleep(60)
             if detail is None or not detail.parties:
