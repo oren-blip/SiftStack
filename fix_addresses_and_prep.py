@@ -3690,6 +3690,70 @@ def drop_manual_exclusions(rows: list[dict]) -> tuple[list[dict], int, list[str]
     return kept, len(removed), removed
 
 
+_MANUAL_PARCEL_REJECTS_PATH = Path("manual_parcel_rejects.txt")
+
+
+def _load_parcel_rejects(
+    path: Path = _MANUAL_PARCEL_REJECTS_PATH,
+) -> dict[str, set[str]]:
+    """Load the user-maintained 'wrong parcel, but HOLD the case' list.
+
+    Plain text, one entry per line: Case No., then Parcel ID, then an
+    optional reason. `#` starts a comment. Returns {CASE_NO_UPPER: {PID_UPPER}}.
+
+    Unlike manual_drops.txt (which kills a case forever), a reject here only
+    forbids attaching THAT parcel to THAT case. The row stays in the merged
+    input as a no-parcel row — excluded from the workbook and uploads by the
+    Step 4 has-parcel filter — while the nightly build keeps hunting: once
+    the court scans the Application PDF, the decedent-address fallback
+    (Step 0.64) can attach the RIGHT parcel and the case promotes back in.
+    """
+    rejects: dict[str, set[str]] = {}
+    if not path.exists():
+        return rejects
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.replace(",", " ").split()
+        if len(parts) < 2:
+            continue
+        case_no, pid = parts[0].strip().upper(), parts[1].strip().upper()
+        if case_no and pid:
+            rejects.setdefault(case_no, set()).add(pid)
+    return rejects
+
+
+def apply_manual_parcel_rejects(rows: list[dict]) -> tuple[int, set[tuple[str, str]]]:
+    """Blank manually-rejected (case, parcel) pairs but KEEP the rows.
+
+    Returns (n_blanked, reject_pairs) where reject_pairs is the same
+    (county_lower, pid) blacklist shape as validate_existing_matches'
+    rejected set — merge it into audit_rejected_pids so the re-search
+    (Step 0.5) and low-confidence attach (Step 3.7) can't re-pick the
+    refuted parcel later in the same run.
+    """
+    rejects = _load_parcel_rejects()
+    pairs: set[tuple[str, str]] = set()
+    n = 0
+    if not rejects:
+        return 0, pairs
+    for r in rows:
+        cn = (r.get("Case No.") or "").strip().upper()
+        if cn not in rejects:
+            continue
+        county = (r.get("County") or "").strip().lower()
+        for pid in rejects[cn]:
+            pairs.add((county, pid))
+        pid_now = (r.get("Parcel ID") or "").strip().upper()
+        if pid_now and pid_now in rejects[cn]:
+            for col in _PARCEL_PROPERTY_FIELDS:
+                r[col] = ""
+            tag_reason(r, "parcel-reject-hold")
+            n += 1
+    return n, pairs
+
+
 def drop_archive_duplicates(rows: list[dict]) -> tuple[list[dict], int]:
     """Drop rows that were backfilled from the manual archive.
     These represent cases already in the user's prior-week pipeline —
@@ -6462,6 +6526,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     for s in manual_samples[:10]:
         print(f"    - {s}")
 
+    print("Step -0.96: reject known-wrong parcels but HOLD the case (manual_parcel_rejects.txt)")
+    n_parcel_reject, manual_reject_pairs = apply_manual_parcel_rejects(rows)
+    print(f"  Parcels rejected, case held for late court docs: {n_parcel_reject}")
+
     print("Step -0.95: backfill blank Case Status from Tyler OData (CaseSummariesSlim)")
     n_status = backfill_case_status_from_odata(rows)
     print(f"  Case Status backfilled: {n_status}")
@@ -6489,8 +6557,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
 
     print("Step 0: validate existing parcel matches against new middle-name-aware matcher")
     n_blanked, audit_rejected_pids = validate_existing_matches(rows)
+    audit_rejected_pids |= manual_reject_pairs
     print(f"  Blanked false-positive matches: {n_blanked}  "
-          f"(rejected PIDs blacklisted from re-search: {len(audit_rejected_pids)})")
+          f"(rejected PIDs blacklisted from re-search: {len(audit_rejected_pids)}, "
+          f"incl. {len(manual_reject_pairs)} manual)")
 
     print("Step 0.5: re-search for correct parcel where audit blanked a wrong match")
     n_refound = research_blank_parcels(rows, audit_rejected_pids=audit_rejected_pids)
@@ -6739,6 +6809,13 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         print("Step 3.9: flag surviving-spouse-occupied homes among kept court-confirmed rows")
         n_spouse = flag_surviving_spouse_occupied(rows)
         print(f"  Surviving-spouse homes flagged: {n_spouse}")
+
+    # Re-assert late: catches a rejected parcel re-attached by any path the
+    # blacklist doesn't cover (decedent-address fallback, trust fallback,
+    # Step 1 repairs). Idempotent — no-op when nothing re-attached.
+    print("Step 3.95: re-assert manual parcel rejects (block re-attachment)")
+    n_reassert, _ = apply_manual_parcel_rejects(rows)
+    print(f"  Re-blanked after late attach: {n_reassert}")
 
     print("Step 4: filter to has-parcel; promote DM/beneficiary or apply 'Heirs of' fallback")
     kept, dropped, dm_promoted, promoted, heirs = prep_for_datasift(rows)

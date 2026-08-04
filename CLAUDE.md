@@ -254,6 +254,7 @@ python src/main.py nc-daily \
 - Tax-sale + tax-delinquent scrapers are unaffected (Mecklenburg ArcGIS, Zacchaeus, Mecklenburg/Rowan county XLSX) — those aren't newspaper sources.
 
 **Post-scrape polish pipeline** (`python fix_addresses_and_prep.py`):
+0. **Step -0.96** Reject known-wrong parcels but HOLD the case (`manual_parcel_rejects.txt`: Case No. + Parcel ID per line). Unlike `manual_drops.txt` (permanent case kill), this only blocks that parcel from that case — the row stays live as no-parcel (auto-excluded from workbook/uploads) while nightly runs keep hunting; the Step 0.64 decedent-address fallback can attach the right parcel once the court scans the Application PDF. Re-asserted at Step 3.95 against late re-attachment.
 1. **Step -1** Backfill blank Case No. from user's manual archive (see `build_manual_archive_index.py` — newspapers publish Notice-to-Creditors 1-8 weeks AFTER eCourts filing, so blank-case-no rows often match cases the user already pulled manually in a prior week)
 2. **Step -0.8** Drop archive duplicates — rows whose backfilled Case No. resolves to a prior ISO week's manual entry. User's rule: keep the original in the prior week and update info there; remove from current week.
 3. **Step -0.5** Soft-dedup blank-case-no rows against same-decedent named rows in the current week (catches newspaper notices that ALSO appear in this week's eCourts pull)

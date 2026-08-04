@@ -1,0 +1,20 @@
+# manual_parcel_rejects.txt — "wrong parcel, but KEEP hunting" list
+#
+# Use this when a low-confidence parcel match turns out to be a DIFFERENT
+# person (wrong property), but the estate itself is still a good lead.
+# Unlike manual_drops.txt (which deletes the case from every future build),
+# an entry here only blocks THAT parcel from THAT case. The case stays live
+# as a no-parcel row — kept out of the workbook and uploads automatically —
+# while the nightly build keeps looking. When the court scans the probate
+# application (usually days to weeks after filing), the decedent's real
+# address on it can attach the RIGHT parcel and the case comes back on its
+# own. If nothing ever lands, the case dies quietly when its week archives.
+#
+# HOW TO ADD ONE:
+#   - Case No., then the wrong Parcel ID, then an optional reason.
+#   - Copy both from the workbook row (Parcel ID column) before deleting it.
+#
+# Format:  CASE_NO   PARCEL_ID   optional reason
+
+26E001046-350   227672   McCall, Lori Fay Crooks — parcel owner is MCCALL LAURA E | GIBSON LORI, a different McCall (Oren verified 2026-08-04)
+26E001047-350   146001   Greene, Wanda Fletcher — parcel owner is GREENE WANDA JEANETTE, a different Greene (Oren verified 2026-08-04)

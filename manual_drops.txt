@@ -1,7 +1,7 @@
-# manual_drops.txt — "always drop these case numbers" list
+﻿# manual_drops.txt â€” "always drop these case numbers" list
 #
 # Add a case number here to REMOVE it from the workbook on EVERY future run.
-# Use this for rows the county data can't detect on its own — e.g. a condo in
+# Use this for rows the county data can't detect on its own â€” e.g. a condo in
 # Lincoln or Catawba (those counties only give us a zoning code, not a real
 # structure type, so a condo looks exactly like a single-family house).
 #
@@ -16,11 +16,11 @@
 #
 # ----------------------------------------------------------------------------
 
-26E000418-540   Compessi, Eileen Ann — condo at Mariners Pointe (Lincoln zoning can't detect)
-26E000452-540   Lynch, Emma G. — house at 3032 Buffalo Shoals titled to son Rex A + Barbara C Lynch (their own residence); decedent not on deed, no estate real property. Obit: husband CB Lynch predeceased, Rex is her SON not spouse.
-26E000778-120   Taggart, Judy Lee — heir-occupied: beneficiary Daniel Blue Taggart Sr. lives at 514 Wyoming Dr NW per case file (Oren verified 2026-07-27, Week 31 audit; beneficiary address missing from our court data feed)
-26E000875-170   Callahan, Michael — heir-occupied: GIS deed shows CALLAHAN MICHAEL FRANCIS JR + wife SANDRA SEAGLE living at 5771 Lauren Ln (Oren verified 2026-07-27, Week 31 audit)
-26E000873-170   Reeves, Charles Earl Jr. — wrong parcel: 60%-confidence match resolved to REEVES CHARLES S, who lives at that property and is likely a DIFFERENT person (Oren verified 2026-07-27, Week 31 audit)
-26E000743-480   Burns, Hang — heir-occupied: Administrator Tyler Burns (also beneficiary, w/ Tara Burns) lives at 125 Milroy Ln per case file; parties lagged the feed at scrape time (Oren verified 2026-07-30)
-26E001032-350   Blakley, Harvey Edward Nathaniel Sr. — townhouse at 543 Queen Brogan Ct (Oren confirmed TH 2026-08-02; his manual pull was the miss, GIS Condo class was right)
-26E002826-590   Walsh, James Burnham — no buy-box property. Real parcels (deed: JAMES B WALSH + ELIZABETH I WALSH) are ONLY 701 Central Av (COMMERCIAL, land_use C700, $1.02M) and 2615 Selwyn Av 303 (condo). Pipeline had matched two OTHER James Walshes' homes (13131 Feale Ct = James Walsh + Dina Qualizza $970K; 3910 Aster Dr = Susan Walsh + James Walsh JR) — swap-on-over-cap then made Aster Dr the main and its co-owner Susan the PR. Court PR is Elizabeth I Walsh (surviving spouse), 727 E Morehead St Apt 905, Charlotte 28202. Verified 2026-08-02 via Polaris + Year's Allowance petition.
+26E000418-540   Compessi, Eileen Ann â€” condo at Mariners Pointe (Lincoln zoning can't detect)
+26E000452-540   Lynch, Emma G. â€” house at 3032 Buffalo Shoals titled to son Rex A + Barbara C Lynch (their own residence); decedent not on deed, no estate real property. Obit: husband CB Lynch predeceased, Rex is her SON not spouse.
+26E000778-120   Taggart, Judy Lee â€” heir-occupied: beneficiary Daniel Blue Taggart Sr. lives at 514 Wyoming Dr NW per case file (Oren verified 2026-07-27, Week 31 audit; beneficiary address missing from our court data feed)
+26E000875-170   Callahan, Michael â€” heir-occupied: GIS deed shows CALLAHAN MICHAEL FRANCIS JR + wife SANDRA SEAGLE living at 5771 Lauren Ln (Oren verified 2026-07-27, Week 31 audit)
+26E000873-170   Reeves, Charles Earl Jr. â€” wrong parcel: 60%-confidence match resolved to REEVES CHARLES S, who lives at that property and is likely a DIFFERENT person (Oren verified 2026-07-27, Week 31 audit)
+26E000743-480   Burns, Hang â€” heir-occupied: Administrator Tyler Burns (also beneficiary, w/ Tara Burns) lives at 125 Milroy Ln per case file; parties lagged the feed at scrape time (Oren verified 2026-07-30)
+26E001032-350   Blakley, Harvey Edward Nathaniel Sr. â€” townhouse at 543 Queen Brogan Ct (Oren confirmed TH 2026-08-02; his manual pull was the miss, GIS Condo class was right)
+26E002826-590   Walsh, James Burnham â€” no buy-box property. Real parcels (deed: JAMES B WALSH + ELIZABETH I WALSH) are ONLY 701 Central Av (COMMERCIAL, land_use C700, $1.02M) and 2615 Selwyn Av 303 (condo). Pipeline had matched two OTHER James Walshes' homes (13131 Feale Ct = James Walsh + Dina Qualizza $970K; 3910 Aster Dr = Susan Walsh + James Walsh JR) â€” swap-on-over-cap then made Aster Dr the main and its co-owner Susan the PR. Court PR is Elizabeth I Walsh (surviving spouse), 727 E Morehead St Apt 905, Charlotte 28202. Verified 2026-08-02 via Polaris + Year's Allowance petition.
