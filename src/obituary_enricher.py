@@ -230,6 +230,59 @@ def _get_name_variants(first_name: str) -> list[str]:
 _GENERATIONAL_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
+def _heir_verify_model() -> str:
+    """Cheap model for heir alive/dead verification (runs hundreds of times/night)."""
+    return getattr(_cfg, "HEIR_VERIFY_LLM_MODEL", "claude-haiku-4-5-20251001")
+
+
+# Per-run budget for heir-verification LLM calls. 2026-08-03: a 73-owner Monday
+# batch fanned out to 658 heir/sub-heir verifications x up to 8 page parses each
+# = 3,513 Sonnet calls (~$40) in one nightly and triggered three $10 auto-recharges.
+_HEIR_VERIFY_LOCK = threading.Lock()
+_heir_verify_calls_used = 0
+_heir_verify_budget_warned = False
+
+
+def _heir_verify_budget_take() -> bool:
+    """Reserve one heir-verify LLM call. False when the per-run budget is spent."""
+    global _heir_verify_calls_used, _heir_verify_budget_warned
+    budget = getattr(_cfg, "HEIR_VERIFY_LLM_BUDGET", 600)
+    with _HEIR_VERIFY_LOCK:
+        if _heir_verify_calls_used >= budget:
+            if not _heir_verify_budget_warned:
+                _heir_verify_budget_warned = True
+                logger.warning(
+                    "Heir-verify LLM budget exhausted (%d calls) — remaining heirs "
+                    "stay unverified this run (raise HEIR_VERIFY_LLM_BUDGET to change)",
+                    budget,
+                )
+            return False
+        _heir_verify_calls_used += 1
+        return True
+
+
+_RELATIONSHIP_WORDS = {
+    "aunt", "auntie", "uncle", "cousin", "grandma", "grandpa", "granny",
+    "nana", "papaw", "mamaw", "meemaw", "papa", "mother", "father", "mom",
+    "dad", "sister", "brother", "niece", "nephew", "mr", "mrs", "ms", "dr",
+}
+
+
+def _is_searchable_name(name: str) -> bool:
+    """True when the name is complete enough for an obituary search to mean anything.
+
+    Obituaries name survivors as "Donna", "Aunt TJ", "J. Prater" — searching
+    those returns pages about strangers, and every page costs an LLM parse.
+    Requires at least two real name tokens of 2+ letters after stripping
+    relationship words. Skipped heirs stay "unverified", which the DM ranking
+    already handles.
+    """
+    tokens = [t for t in re.split(r"[\s,]+", _ascii_fold(name).strip()) if t]
+    real = [t for t in tokens if t.lower().strip(".\"'()") not in _RELATIONSHIP_WORDS]
+    alpha = [t for t in real if len(re.sub(r"[^A-Za-z]", "", t)) >= 2]
+    return len(alpha) >= 2
+
+
 def _obituary_model() -> str:
     """High-quality model for heir-determining obituary parsing (configurable)."""
     return getattr(_cfg, "OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
@@ -1920,10 +1973,13 @@ def _parse_obituary_with_llm(
     address: str,
     api_key: str,
     state: str = "TN",
+    model: str | None = None,
 ) -> dict | None:
     """Use Claude Haiku to validate and parse an obituary.
 
     Returns parsed dict if the obituary matches the owner, None otherwise.
+    model: per-call override (heir verification passes the cheap model);
+    defaults to OBITUARY_LLM_MODEL.
     """
     if not obituary_text.strip():
         return None
@@ -1943,7 +1999,7 @@ def _parse_obituary_with_llm(
     try:
         parsed = llm_client.chat_json(
             prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS,
-            api_key=api_key, model=_obituary_model(),
+            api_key=api_key, model=model or _obituary_model(),
         )
         if not parsed:
             return None
@@ -2242,6 +2298,12 @@ def verify_heir_status(
         "search_log": {"query": "", "result": "not_searched"},
     }
 
+    # Incomplete names ("Donna", "Aunt TJ", "J. Prater") can't be verified —
+    # the search returns strangers and every page costs an LLM parse.
+    if not _is_searchable_name(heir_name):
+        result["search_log"]["result"] = "name_not_searchable"
+        return result
+
     state_name = _state_full(state)
     results = _search_obituary(heir_name, city, state=state)
     result["search_log"]["query"] = f"{heir_name} obituary {city} {state_name}"
@@ -2254,10 +2316,16 @@ def verify_heir_status(
         time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
         return result
 
-    # Try each result — fetch full page, then LLM parse
-    for search_result in results:
+    # Try the top results — fetch full page, then LLM parse. Capped: if the
+    # best-ranked obituary pages don't confirm deceased, more pages about
+    # strangers with the same surname won't either.
+    max_pages = getattr(_cfg, "HEIR_VERIFY_MAX_PAGES", 2)
+    for search_result in results[:max_pages]:
         page_text = _fetch_page_text(search_result["url"])
         if page_text and len(page_text) >= 100:
+            if not _heir_verify_budget_take():
+                result["search_log"]["result"] = "llm_budget_exhausted"
+                return result
             parsed = _parse_obituary_with_llm(
                 obituary_text=page_text,
                 owner_name=heir_name,
@@ -2265,6 +2333,7 @@ def verify_heir_status(
                 address="",  # don't know heir's address
                 api_key=api_key,
                 state=state,
+                model=_heir_verify_model(),
             )
             if parsed and parsed.get("confidence") in ("high", "medium"):
                 result["status"] = "deceased"
@@ -2280,7 +2349,7 @@ def verify_heir_status(
 
     # Snippet fallback
     best_snippet = next((r for r in results if r.get("snippet")), None)
-    if best_snippet:
+    if best_snippet and _heir_verify_budget_take():
         snippet_text = (
             f"Search result title: {best_snippet['title']}\n"
             f"URL: {best_snippet['url']}\n"
@@ -2292,6 +2361,7 @@ def verify_heir_status(
             city=city,
             address="",
             api_key=api_key,
+            model=_heir_verify_model(),
         )
         if parsed and parsed.get("confidence") == "high":
             result["status"] = "deceased"
@@ -2373,6 +2443,21 @@ def build_heir_map(
 
         to_verify.append((name, s))
 
+    # Cap the fan-out: the DM ranking only needs the top few candidates, and
+    # obituaries list survivors closest-kin first (spouse, children), so the
+    # head of the list is where the decision-maker lives anyway.
+    max_heirs = getattr(_cfg, "HEIR_VERIFY_MAX_HEIRS", 8)
+    if len(to_verify) > max_heirs:
+        skipped = len(to_verify) - max_heirs
+        logger.info(
+            "    Verifying first %d of %d survivors (%d left unverified — "
+            "HEIR_VERIFY_MAX_HEIRS)", max_heirs, len(to_verify), skipped,
+        )
+        for name, _ in to_verify[max_heirs:]:
+            heir_statuses[name] = "unverified"
+            error_info["heirs_unverified"] += 1
+        to_verify = to_verify[:max_heirs]
+
     # Parallel depth-0 heir verification
     def _verify_depth0(args):
         vname, _ = args
@@ -2396,15 +2481,25 @@ def build_heir_map(
                 else:
                     error_info["heirs_unverified"] += 1
 
-    # Parallel depth-1 sub-heir verification
+    # Parallel depth-1 sub-heir verification. Capped per deceased heir: a dead
+    # heir's estate share passes to a couple of their children — verifying ten
+    # grandchildren costs a fortune in LLM calls and changes nothing about who
+    # signs. Incomplete names are dropped here (they'd be skipped anyway).
+    max_subheirs = getattr(_cfg, "HEIR_VERIFY_MAX_SUBHEIRS", 3)
     sub_verify_tasks: list[tuple[str, dict]] = []
     for _, sub_heirs in sub_heirs_to_check:
+        taken = 0
         for sub in sub_heirs:
             sub_name = sub.get("name", "").strip()
             if not sub_name or sub_name in verified_names:
                 continue
+            if not _is_searchable_name(sub_name):
+                continue
+            if taken >= max_subheirs:
+                break
             verified_names.add(sub_name)
             sub_verify_tasks.append((sub_name, sub))
+            taken += 1
 
     def _verify_depth1(args):
         vname, _ = args

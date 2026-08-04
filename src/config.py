@@ -66,6 +66,15 @@ LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001")  # Anthropic mod
 # Getting the heir/decision-maker chain right is critical: a wrong heir map sends
 # the whole deal down the wrong path, so this defaults to Sonnet rather than Haiku.
 OBITUARY_LLM_MODEL = os.getenv("OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
+# Heir VERIFICATION (is this survivor alive?) is a yes/no + DOD read, not the
+# high-stakes extraction above — it runs hundreds of times per night, so it
+# gets the cheap model. 2026-08-03: unbounded verification on Sonnet made
+# 3,513 API calls in one nightly run and drained the Anthropic balance.
+HEIR_VERIFY_LLM_MODEL = os.getenv("HEIR_VERIFY_LLM_MODEL", "claude-haiku-4-5-20251001")
+HEIR_VERIFY_MAX_PAGES = int(os.getenv("HEIR_VERIFY_MAX_PAGES", "2"))      # search-result pages LLM-parsed per heir
+HEIR_VERIFY_MAX_HEIRS = int(os.getenv("HEIR_VERIFY_MAX_HEIRS", "8"))      # survivors verified per decedent
+HEIR_VERIFY_MAX_SUBHEIRS = int(os.getenv("HEIR_VERIFY_MAX_SUBHEIRS", "3"))  # sub-heirs verified per deceased heir
+HEIR_VERIFY_LLM_BUDGET = int(os.getenv("HEIR_VERIFY_LLM_BUDGET", "600"))  # hard cap on verify LLM calls per run
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")        # Local Ollama model
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1/")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")       # OpenRouter API key
