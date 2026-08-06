@@ -177,7 +177,9 @@ def main() -> None:
             needs_benef = (key == "cover_sheet"
                            and not (r.get("Beneficiaries") or "").strip())
             if not c["phone_digits"] or needs_benef:
-                v = _vision_contacts(pdf, r.get("First Name", ""), r.get("Last Name", ""))
+                v = _vision_contacts(
+                    pdf, r.get("First Name", ""), r.get("Last Name", ""),
+                    cache_key=f"{case}|{doc.get('fragment_id', '')}")
                 if v:
                     # Beneficiaries: the cover sheet's numbered list is the
                     # court's own statement of who may share in the estate.
@@ -280,6 +282,75 @@ def main() -> None:
 
 _VISION_SCORE = 8   # a hand-filled court form beats any skip-trace number
 
+# ── Persistent vision-read cache ─────────────────────────────────────
+# Court documents are immutable, but the nightly build re-fetched and
+# re-vision-read (Sonnet — the priciest model in the pipeline) the SAME
+# docs every night for rows still missing a phone. Cache the vision result
+# per (case, fragment_id) so each document is paid for once, ever. A
+# genuine "form has no phone" read is cached too — that was the case that
+# re-billed nightly. API failures are deliberately NOT cached, so a credits
+# outage never poisons the cache. NC_VISION_CACHE_DISABLE=1 bypasses;
+# delete output/.nc_vision_cache.json to clear.
+_VISION_CACHE_PATH = "output/.nc_vision_cache.json"
+_VISION_CACHE_VERSION = 1
+_VISION_CACHE_TTL_DAYS = int(os.environ.get("NC_VISION_CACHE_TTL_DAYS", "90"))
+_VISION_CACHE_DISABLED = os.environ.get("NC_VISION_CACHE_DISABLE", "") == "1"
+_vision_cache_store: dict | None = None  # None = not yet loaded
+
+
+def _vision_cache_load() -> dict:
+    global _vision_cache_store
+    if _vision_cache_store is not None:
+        return _vision_cache_store
+    _vision_cache_store = {}
+    if _VISION_CACHE_DISABLED:
+        return _vision_cache_store
+    try:
+        with open(_VISION_CACHE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return _vision_cache_store
+    if not isinstance(data, dict) or data.get("_version") != _VISION_CACHE_VERSION:
+        return _vision_cache_store
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(days=_VISION_CACHE_TTL_DAYS)
+    for k, v in (data.get("entries") or {}).items():
+        try:
+            if datetime.fromisoformat(v.get("ts", "")) >= cutoff:
+                _vision_cache_store[k] = v
+        except (ValueError, AttributeError):
+            continue
+    return _vision_cache_store
+
+
+def _vision_cache_get(key: str) -> dict | None:
+    """Return {"empty": True} or {"v": {...}} for a cached read, else None."""
+    if _VISION_CACHE_DISABLED or not key:
+        return None
+    return _vision_cache_load().get(key)
+
+
+def _vision_cache_put(key: str, v: dict | None) -> None:
+    """Persist a completed vision read (v=None means form had no contacts)."""
+    if _VISION_CACHE_DISABLED or not key:
+        return
+    from datetime import datetime
+    store = _vision_cache_load()
+    entry: dict = {"ts": datetime.now().isoformat(timespec="seconds")}
+    if v is None:
+        entry["empty"] = True
+    else:
+        entry["v"] = v
+    store[key] = entry
+    try:
+        os.makedirs(os.path.dirname(_VISION_CACHE_PATH), exist_ok=True)
+        tmp = _VISION_CACHE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"_version": _VISION_CACHE_VERSION, "entries": store}, f)
+        os.replace(tmp, _VISION_CACHE_PATH)
+    except (OSError, TypeError) as e:
+        logger.info("  vision cache: could not write (%s)", e)
+
 
 def _render_pdf_pages(pdf: bytes, max_pages: int = 2, scale: float = 2.0) -> list[bytes]:
     """Render the first `max_pages` PDF pages to PNG bytes for a vision call."""
@@ -333,7 +404,8 @@ Rules:
   fiduciary — exclude it everywhere."""
 
 
-def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
+def _vision_contacts(pdf: bytes, first: str, last: str,
+                     cache_key: str = "") -> dict | None:
     """Read a hand-filled court form with Claude vision.
 
     WHY: Tesseract cannot read handwriting. These forms are printed templates
@@ -344,12 +416,17 @@ def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
 
     Returns an extract_contacts-shaped dict (plus "heirs"), or None.
     """
+    cached = _vision_cache_get(cache_key)
+    if cached is not None:
+        logger.info("  vision cache hit for %s%s", cache_key,
+                    " (empty form)" if cached.get("empty") else "")
+        return None if cached.get("empty") else cached.get("v")
     images = _render_pdf_pages(pdf)
     if not images:
         return None
     data = vision_json(_VISION_PROMPT, images, max_tokens=2048)
     if not data:
-        return None
+        return None  # API failure / no answer — transient, do NOT cache
     phone = (data.get("phone") or "").strip()
     digits = "".join(ch for ch in phone if ch.isdigit())
     if len(digits) == 11 and digits.startswith("1"):
@@ -364,8 +441,9 @@ def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
     entitled = _people("entitled_to_share")
     fiduciaries = _people("fiduciaries")
     if not phone and not (data.get("email") or "").strip() and not (heirs or entitled):
+        _vision_cache_put(cache_key, None)  # genuine read, nothing on the form
         return None
-    return {
+    result = {
         "phone": phone, "phone_digits": digits,
         "email": (data.get("email") or "").strip(),
         "score": _VISION_SCORE if phone else 0,
@@ -375,6 +453,8 @@ def _vision_contacts(pdf: bytes, first: str, last: str) -> dict | None:
         "fiduciaries": fiduciaries,
         "applicant": (data.get("applicant_name") or "").strip(),
     }
+    _vision_cache_put(cache_key, result)
+    return result
 
 
 def _format_beneficiaries(entitled: list[dict]) -> str:

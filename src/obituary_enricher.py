@@ -21,7 +21,8 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import llm_client
 from notice_parser import NoticeData
@@ -55,6 +56,160 @@ def _state_full(state_code: str) -> str:
     to the 2-letter code itself if not in the map."""
     code = (state_code or "").strip().upper()
     return _STATE_FULL_NAME.get(code, code or "Tennessee")
+
+
+# ── Persistent cross-run obituary cache ──────────────────────────────
+# The nightly build re-polishes the same in-progress week every night, so the
+# SAME unresolved decedents were re-searched (Serper) and re-LLM-parsed
+# (Sonnet) every run — the in-memory search_cache in enrich_with_obituaries
+# only lives for one process ("0 cache hits" across nights), and the polish
+# Step 4.5 second-pass had no cache at all. At ~$1-1.5/night that was the
+# bulk of the recurring Anthropic spend (Oren, 2026-08-05: keep it low).
+#
+# Mirrors nc_gis_lookup's disk cache: FOUND obituaries are remembered
+# NC_OBIT_CACHE_TTL_DAYS (default 14); no-obituary misses are remembered
+# per-pass ("phaseA" = enrich_with_obituaries, "second" = the aggressive
+# Step 4.5 pass) for NC_OBIT_CACHE_MISS_TTL_DAYS (default 4) so a
+# late-published obit still gets retried — just not every night. An outage
+# night (Serper/Anthropic down) can at worst cache a 4-day miss; both now
+# log loudly, and NC_OBIT_CACHE_MISS_TTL_DAYS=0 disables miss-caching.
+# NC_OBIT_CACHE_DISABLE=1 bypasses entirely; delete the JSON file to clear.
+# Bump _OBIT_CACHE_VERSION when the parsed-obituary schema changes (cached
+# entries carry old fields baked in).
+_OBIT_CACHE_PATH = Path("output") / ".nc_obit_cache.json"
+_OBIT_CACHE_VERSION = 1
+_OBIT_CACHE_TTL_DAYS = int(os.environ.get("NC_OBIT_CACHE_TTL_DAYS", "14"))
+_OBIT_CACHE_MISS_TTL_DAYS = int(os.environ.get("NC_OBIT_CACHE_MISS_TTL_DAYS", "4"))
+_OBIT_CACHE_DISABLED = os.environ.get("NC_OBIT_CACHE_DISABLE", "") == "1"
+_MAX_CACHED_OBIT_TEXT = 15000  # cap _raw_obituary_text stored per entry
+_obit_cache_store: dict | None = None  # None = not yet loaded
+_obit_cache_lock = threading.Lock()
+
+
+def _obit_cache_key(name: str, state: str) -> str:
+    return f"{(state or '').strip().upper()}|{(name or '').strip().lower()}"
+
+
+def _obit_cache_load() -> dict:
+    """Load (once) the on-disk cache, pruning expired/foreign-version entries."""
+    global _obit_cache_store
+    if _obit_cache_store is not None:
+        return _obit_cache_store
+    _obit_cache_store = {}
+    if _OBIT_CACHE_DISABLED:
+        return _obit_cache_store
+    try:
+        data = json.loads(_OBIT_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _obit_cache_store
+    if not isinstance(data, dict) or data.get("_version") != _OBIT_CACHE_VERSION:
+        return _obit_cache_store  # schema changed → start fresh
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return _obit_cache_store
+    now = datetime.now()
+    hit_cutoff = now - timedelta(days=_OBIT_CACHE_TTL_DAYS)
+    miss_cutoff = now - timedelta(days=_OBIT_CACHE_MISS_TTL_DAYS)
+    for k, v in entries.items():
+        if not isinstance(v, dict):
+            continue
+        keep = False
+        try:
+            if v.get("found") and datetime.fromisoformat(v.get("ts", "")) >= hit_cutoff:
+                keep = True
+        except ValueError:
+            pass
+        passes = {}
+        for p, ts in (v.get("passes") or {}).items():
+            try:
+                if datetime.fromisoformat(ts) >= miss_cutoff:
+                    passes[p] = ts
+            except (ValueError, TypeError):
+                continue
+        v["passes"] = passes
+        if keep or passes:
+            _obit_cache_store[k] = v
+    return _obit_cache_store
+
+
+def _obit_cache_write() -> None:
+    """Atomic write-through (crash-safe; mirrors nc_gis_lookup)."""
+    try:
+        _OBIT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _OBIT_CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"_version": _OBIT_CACHE_VERSION, "entries": _obit_cache_store}),
+            encoding="utf-8",
+        )
+        tmp.replace(_OBIT_CACHE_PATH)
+    except (OSError, TypeError) as e:
+        logger.warning("obit cache: could not write %s: %s", _OBIT_CACHE_PATH, e)
+
+
+def _obit_cache_get(name: str, state: str) -> dict | None:
+    """Return a fresh cache entry for this person, or None.
+
+    Returns either {"found": True, "parsed": ..., "url": ..., "source": ...}
+    (obit previously found, still within TTL) or {"found": False,
+    "passes": {pass_name: ts}} (recent failed attempts). Callers decide
+    which passes' misses they honor.
+    """
+    if _OBIT_CACHE_DISABLED:
+        return None
+    entry = _obit_cache_load().get(_obit_cache_key(name, state))
+    if not entry:
+        return None
+    now = datetime.now()
+    try:
+        if entry.get("found") and datetime.fromisoformat(entry.get("ts", "")) >= (
+            now - timedelta(days=_OBIT_CACHE_TTL_DAYS)
+        ):
+            return entry
+    except ValueError:
+        pass
+    passes = {}
+    for p, ts in (entry.get("passes") or {}).items():
+        try:
+            if datetime.fromisoformat(ts) >= now - timedelta(days=_OBIT_CACHE_MISS_TTL_DAYS):
+                passes[p] = ts
+        except (ValueError, TypeError):
+            continue
+    if passes:
+        return {"found": False, "passes": passes}
+    return None
+
+
+def _obit_cache_put_found(name: str, state: str, parsed: dict, url: str, source: str) -> None:
+    """Persist a successful obituary parse (write-through)."""
+    if _OBIT_CACHE_DISABLED or not parsed:
+        return
+    with _obit_cache_lock:
+        store = _obit_cache_load()
+        p = dict(parsed)
+        raw = p.get("_raw_obituary_text")
+        if isinstance(raw, str) and len(raw) > _MAX_CACHED_OBIT_TEXT:
+            p["_raw_obituary_text"] = raw[:_MAX_CACHED_OBIT_TEXT]
+        key = _obit_cache_key(name, state)
+        entry = store.get(key) or {}
+        entry.update({
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "found": True, "parsed": p, "url": url or "", "source": source or "",
+        })
+        store[key] = entry
+        _obit_cache_write()
+
+
+def _obit_cache_put_miss(name: str, state: str, pass_name: str) -> None:
+    """Record that `pass_name` searched this person and found nothing."""
+    if _OBIT_CACHE_DISABLED or _OBIT_CACHE_MISS_TTL_DAYS <= 0:
+        return
+    with _obit_cache_lock:
+        store = _obit_cache_load()
+        key = _obit_cache_key(name, state)
+        entry = store.get(key) or {"found": False}
+        entry.setdefault("passes", {})[pass_name] = datetime.now().isoformat(timespec="seconds")
+        store[key] = entry
+        _obit_cache_write()
 
 
 def _notice_state(notice: "NoticeData") -> str:
@@ -2775,6 +2930,39 @@ def enrich_obituary_data(
                     logger.debug("  [%d/%d] %s: cache hit (no match)", i, len(candidates), search_name)
                 break
 
+            # Cross-RUN disk cache (the in-memory one above only lives for
+            # this process; the nightly re-polish was re-paying Serper +
+            # Sonnet for the same unresolved names every night).
+            disk = _obit_cache_get(search_name, state)
+            if disk is not None:
+                if disk.get("found"):
+                    c_parsed = json.loads(json.dumps(disk.get("parsed") or {}))
+                    # DOD sanity is notice-relative — re-check against THIS
+                    # filing; on failure fall through to a fresh search.
+                    if _dod_sanity_check(c_parsed.get("date_of_death", ""), notice):
+                        c_url = disk.get("url", "")
+                        c_source = disk.get("source", "full_page")
+                        search_cache[cache_key] = (c_parsed, c_url, c_source)
+                        notice.owner_deceased = "yes"
+                        matches.append((notice, c_parsed, c_url, c_source, raw_name, is_tax_name))
+                        confirmed += 1
+                        cache_hits += 1
+                        found = True
+                        logger.info(
+                            "  [%d/%d] %s: DECEASED (disk cache, DOD: %s)",
+                            i, len(candidates), search_name,
+                            c_parsed.get("date_of_death", "unknown"),
+                        )
+                        break
+                else:
+                    search_cache[cache_key] = None
+                    cache_hits += 1
+                    logger.debug(
+                        "  [%d/%d] %s: disk cache: no obituary recently (retry after TTL)",
+                        i, len(candidates), search_name,
+                    )
+                    break
+
             # Run primary + no-city searches and merge results (dedup by URL)
             results = _search_obituary(search_name, city, state=state)
             no_city_results = _search_obituary(search_name, "", state=state)
@@ -2869,6 +3057,7 @@ def enrich_obituary_data(
                     # Store for Phase B heir processing
                     matches.append((notice, parsed, result["url"], "full_page", raw_name, is_tax_name))
                     search_cache[cache_key] = (parsed, result["url"], "full_page")
+                    _obit_cache_put_found(search_name, state, parsed, result["url"], "full_page")
                     confirmed += 1
                     found = True
                     logger.info(
@@ -2919,6 +3108,7 @@ def enrich_obituary_data(
                     notice.owner_deceased = "yes"
                     matches.append((notice, parsed, best_snippet_result["url"], "snippet", raw_name, is_tax_name))
                     search_cache[cache_key] = (parsed, best_snippet_result["url"], "snippet")
+                    _obit_cache_put_found(search_name, state, parsed, best_snippet_result["url"], "snippet")
                     confirmed += 1
                     found = True
                     logger.info(
@@ -2930,9 +3120,11 @@ def enrich_obituary_data(
             if found:
                 break
 
-        # Cache miss for this name
+        # Cache miss for this name (in-memory + cross-run disk; the disk
+        # entry expires after NC_OBIT_CACHE_MISS_TTL_DAYS so late obits retry)
         if not found and cache_key and cache_key not in search_cache:
             search_cache[cache_key] = None
+            _obit_cache_put_miss(cache_key, state, "phaseA")
 
         if not found and searched > 0:
             logger.debug(

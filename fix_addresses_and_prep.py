@@ -5580,11 +5580,13 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
     name_only = heir name found but no address.
     """
     try:
+        import json
         import config as cfg
         from obituary_enricher import (
             _search_obituary, _fetch_cached_text,
             _parse_obituary_with_llm, identify_decision_maker,
             _lookup_dm_address, _lookup_dm_address_tracerfy,
+            _obit_cache_get, _obit_cache_put_found, _obit_cache_put_miss,
         )
         import tracerfy_budget
     except Exception as e:  # pragma: no cover - import-time guards only
@@ -5623,54 +5625,71 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
                   f"{full} (Application PDF) — skipping obit")
             continue
 
+        # Cross-run disk cache: this step used to re-run 4 search variants +
+        # LLM parses on the SAME stuck "Heirs of" rows every night. Reuse a
+        # previously found survivor-bearing obit; skip decedents whose
+        # aggressive search already came up dry within the miss TTL.
+        parsed = None
+        _disk = _obit_cache_get(decedent, "NC")
+        if _disk is not None:
+            if _disk.get("found") and (_disk.get("parsed") or {}).get("survivors"):
+                parsed = json.loads(json.dumps(_disk["parsed"]))
+                parsed.setdefault("_url", _disk.get("url", ""))
+                print(f"  2ND-PASS-OBIT cache hit {r.get('County')}/{decedent}")
+            elif not _disk.get("found") and (_disk.get("passes") or {}).get("second"):
+                continue  # searched aggressively within TTL, nothing found
+
         attempted += 1
         property_city = (r.get("Property City") or "").strip()
 
-        # Broader search than first-pass: multiple keyword variants.
-        seen_urls: set[str] = set()
-        obit_results: list[dict] = []
-        for terms in ("obituary", '"death notice"', '"passed away"', "funeral memorial"):
-            try:
-                rs = _search_obituary(decedent, property_city, extra_terms=terms, state="NC")
-            except Exception:
-                continue
-            for o in rs:
-                u = (o.get("url") or "").strip()
-                if not u or u in seen_urls:
+        if parsed is None:
+            # Broader search than first-pass: multiple keyword variants.
+            seen_urls: set[str] = set()
+            obit_results: list[dict] = []
+            for terms in ("obituary", '"death notice"', '"passed away"', "funeral memorial"):
+                try:
+                    rs = _search_obituary(decedent, property_city, extra_terms=terms, state="NC")
+                except Exception:
                     continue
-                seen_urls.add(u)
-                obit_results.append(o)
-        if not obit_results:
-            continue
+                for o in rs:
+                    u = (o.get("url") or "").strip()
+                    if not u or u in seen_urls:
+                        continue
+                    seen_urls.add(u)
+                    obit_results.append(o)
+            if not obit_results:
+                _obit_cache_put_miss(decedent, "NC", "second")
+                continue
 
-        # Try up to 6 URLs, stop on first that yields survivors.
-        parsed = None
-        for obit in obit_results[:6]:
-            url = obit["url"]
-            try:
-                text = _fetch_cached_text(url)
-            except Exception:
-                continue
-            if not text:
-                continue
-            try:
-                cand = _parse_obituary_with_llm(
-                    obituary_text=text,
-                    owner_name=decedent,
-                    city=property_city,
-                    address=r.get("Property Address", ""),
-                    api_key=api_key,
-                    state="NC",
-                )
-            except Exception:
-                continue
-            if cand and cand.get("survivors"):
-                parsed = cand
-                parsed["_url"] = url
-                break
+            # Try up to 6 URLs, stop on first that yields survivors.
+            for obit in obit_results[:6]:
+                url = obit["url"]
+                try:
+                    text = _fetch_cached_text(url)
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                try:
+                    cand = _parse_obituary_with_llm(
+                        obituary_text=text,
+                        owner_name=decedent,
+                        city=property_city,
+                        address=r.get("Property Address", ""),
+                        api_key=api_key,
+                        state="NC",
+                    )
+                except Exception:
+                    continue
+                if cand and cand.get("survivors"):
+                    parsed = cand
+                    parsed["_url"] = url
+                    break
 
-        if not parsed:
-            continue
+            if not parsed:
+                _obit_cache_put_miss(decedent, "NC", "second")
+                continue
+            _obit_cache_put_found(decedent, "NC", parsed, parsed.get("_url", ""), "second_pass")
 
         dm_name, dm_rel = identify_decision_maker(parsed["survivors"])
         if not dm_name:
