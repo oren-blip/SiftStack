@@ -90,27 +90,77 @@ def case_address_map() -> dict[str, dict]:
     return out
 
 
-async def _find_record(page, address: str) -> str | None:
-    """Search the records page for an address; return its uuid or None."""
+def _norm(s: str) -> str:
+    """Loose address key: lowercase alphanumerics only."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+async def _search(page, term: str) -> list[dict]:
+    """Run one search; return [{uuid, text}] for each result row."""
     await page.goto(RECORDS_URL, wait_until="domcontentloaded", timeout=45_000)
-    await page.wait_for_timeout(4000)
+    await page.wait_for_timeout(3500)
     box = page.locator('input[placeholder*="Search for records"]').first
     if not await box.count():
         logger.error("records search box not found")
-        return None
+        return []
     await box.click()
     await box.fill("")
-    await box.fill(address)
+    await box.fill(term)
     await page.keyboard.press("Enter")
     await page.wait_for_timeout(6000)
-    href = await page.evaluate("""() => {
-        const a = document.querySelector('a[href*="/records/properties/"]');
-        return a ? a.getAttribute('href') : null;
+    return await page.evaluate("""() => {
+        const out = [];
+        document.querySelectorAll('a[href*="/records/properties/"]').forEach(a => {
+            const m = a.getAttribute('href').match(/properties\\/([0-9a-f-]{36})/);
+            if (!m) return;
+            // Climb to the SMALLEST ancestor that actually carries row text.
+            // Taking the largest ancestor (and truncating) grabbed the whole
+            // table and cut the address off -- that is why the surname
+            // fallback found 8 rows but matched none of them.
+            let n = a, txt = (a.innerText || '').trim();
+            for (let i = 0; i < 6 && n; i++) {
+                const t = (n.innerText || '').trim();
+                if (t.length > txt.length && t.length < 600) txt = t;
+                if (txt.length > 25) break;
+                n = n.parentElement;
+            }
+            out.push({uuid: m[1], text: txt.slice(0, 600)});
+        });
+        return out;
     }""")
-    if not href:
+
+
+async def _find_record(page, address: str, surname: str = "") -> str | None:
+    """Resolve a record uuid, address first then surname.
+
+    The records search box does NOT reliably match street addresses -- verified
+    2026-08-07: "Ike Lynch Rd" and "115 South Point Dr" both returned zero rows
+    even though records with exactly those addresses exist, while searching the
+    owner surname found them immediately. So fall back to the surname and pick
+    the row whose text contains the street.
+    """
+    rows = await _search(page, address)
+    if rows:
+        return rows[0]["uuid"]
+    if not surname:
         return None
-    m = re.search(r"/records/properties/([0-9a-f-]{36})", href)
-    return m.group(1) if m else None
+    logger.info("      address search empty; retrying by surname %r", surname)
+    rows = await _search(page, surname)
+    if not rows:
+        return None
+    want = _norm(address)
+    for r in rows:
+        if want and want in _norm(r["text"]):
+            return r["uuid"]
+    # a bare street (vacant lot, e.g. "Ike Lynch Rd") may be stored with a
+    # "0 " prefix or extra tokens -- accept a strong partial instead
+    for r in rows:
+        t = _norm(r["text"])
+        if want and (want[:14] in t or t.find(want[-14:]) >= 0):
+            return r["uuid"]
+    logger.warning("      surname %r returned %d rows, none matching %r",
+                   surname, len(rows), address)
+    return None
 
 
 async def _attach(page, uuid: str, pdf_path: str) -> tuple[bool, str]:
@@ -161,10 +211,14 @@ async def run(dry: bool, only: str | None, headless: bool) -> int:
     amap = case_address_map()
     jobs = []
     for p in pdfs:
-        m = CASE_RE.search(os.path.basename(p))
+        base = os.path.basename(p)
+        m = CASE_RE.search(base)
         case = m.group(1) if m else ""
         addr = amap.get(case)
-        jobs.append({"pdf": p, "case": case, "addr": addr})
+        # DP_Week31_Lineberger_26E001011-350.pdf -> "Lineberger" (search fallback)
+        parts = base.split("_")
+        surname = parts[2] if len(parts) > 2 else ""
+        jobs.append({"pdf": p, "case": case, "addr": addr, "surname": surname})
 
     logger.info("%d report(s); %d resolved to an address", len(jobs),
                 sum(1 for j in jobs if j["addr"]))
@@ -192,7 +246,7 @@ async def run(dry: bool, only: str | None, headless: bool) -> int:
                 fail += 1
                 continue
             addr = j["addr"]["street"]
-            uuid = await _find_record(page, addr)
+            uuid = await _find_record(page, addr, j.get("surname", ""))
             if not uuid:
                 logger.warning("SKIP %s - no DataSift record matched %r", nm, addr)
                 fail += 1
