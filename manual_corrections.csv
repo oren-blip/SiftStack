@@ -251,3 +251,16 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E002916-590,DM 2 Name,Adam C. Holbrook
 26E002916-590,DM 2 Relationship,son
 26E002916-590,Tag,Multi-Signer (2)
+# Sylvester 26E002907-590 — deed + obituary VERIFIED 2026-08-06.
+# Deed: ANN D SYLVESTER sole owner of 5514 Samuel Neel Rd since 2012, mail = property.
+# Obit (csofcharlotte.com/obituary/Ann-Sylvester): Ann Denise Sylvester, DOD 2026-06-20,
+# filed 2026-08-05 (1.5mo gap, passes). Only survivor named: Harvey Sylvester (father).
+# CAVEAT for the caller: a father inherits ONLY if there is no spouse and no children --
+# children would outrank him. The obit naming just the father suggests neither, but that
+# is inference, not proof. Confirm before treating him as the sole signer.
+26E002907-590,First Name,Harvey
+26E002907-590,Last Name,Sylvester
+26E002907-590,Personal Representative,Harvey Sylvester
+26E002907-590,DM Name,Harvey Sylvester
+26E002907-590,DM Relationship,father
+26E002907-590,Tag,Verify Heirs
