@@ -5802,7 +5802,23 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
     promoted = 0
     heirs = 0
     for r in kept:
-        if (r.get("Personal Representative") or "").strip():
+        # A previously-written "Heirs of <Decedent>" is this function's OWN
+        # fallback, not a court-named PR — treat it as still-unfilled so a
+        # heir found on a LATER night can still be promoted.
+        #
+        # Why this matters (2026-08-06): the nightly re-polishes the same
+        # in-progress week by re-reading the prior night's CSV. Once the
+        # fallback stamped "Heirs of X" into Personal Representative, this
+        # guard skipped the row on every subsequent run — so when the obituary
+        # enricher finally found a real heir days later, the contact stayed
+        # "Heirs X" forever. DataSift skip trace cannot work a name like that,
+        # so those rows parked permanently in the "Needs Skipped" step
+        # (4 of week 32's 15 heirs-of rows had a real DM sitting unused in the
+        # Decision Maker field). Nothing else writes "Heirs of " into this
+        # field, so re-opening it is safe: a genuine court PR never matches.
+        _pr = (r.get("Personal Representative") or "").strip()
+        _pr_is_fallback = _pr.lower().startswith("heirs of ")
+        if _pr and not _pr_is_fallback:
             continue
         decedent = (r.get("Deceased Owner") or "").strip()
         if not decedent or "IN THE MATTER" in decedent.upper():
@@ -5826,6 +5842,13 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             if (r.get("Property Zip") or "").strip():
                 r["Mailing Zip"] = r["Property Zip"]
             tag_reason(r, "dm-promoted-pr")
+            if _pr_is_fallback:
+                # Rescued from a stuck "Heirs of" row — worth surfacing, since
+                # these are the ones that were dead in DataSift's Needs Skipped.
+                tag_reason(r, "heirs-of-upgraded-to-named-heir")
+                print(f"  HEIRS-OF UPGRADED {r.get('County')}/{decedent}: "
+                      f"{_pr} -> {dm['name']}"
+                      f"{' (' + dm['relationship'] + ')' if dm.get('relationship') else ''}")
             # Obituary says the promoted DM is the decedent's spouse — the
             # widow/widower class Oren under-works but wants kept + labeled
             # (see Step 3.9 / feedback_surviving_spouse_leads). Deed is
@@ -5854,6 +5877,10 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Mailing State"] = ben["state"]
             r["Mailing Zip"] = ben["zip"]
             tag_reason(r, "beneficiary-promoted-pr")
+            if _pr_is_fallback:
+                tag_reason(r, "heirs-of-upgraded-to-named-heir")
+                print(f"  HEIRS-OF UPGRADED {r.get('County')}/{decedent}: "
+                      f"{_pr} -> {ben['name']} (beneficiary)")
             promoted += 1
             continue
 
