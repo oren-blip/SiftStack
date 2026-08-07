@@ -423,8 +423,34 @@ async def upload_csv(
             if got:
                 logger.info("Setup: list pull date = %s", got)
             else:
-                logger.warning("Setup: pull date did not take (wanted %s, ok=%s)",
-                               when, res.get("ok"))
+                # The read-back-the-same-element fix (2026-08-06) did NOT stop
+                # this warning, so the element we write to is not the one the
+                # form reads. Dump every date-ish input so the next upload
+                # identifies the real target instead of another guess.
+                try:
+                    probe = await page.evaluate("""() => {
+                        const out = [];
+                        document.querySelectorAll('input').forEach((el, i) => {
+                            const ph = el.getAttribute('placeholder') || '';
+                            const cls = el.className || '';
+                            const looksDate = /date|calendar|flatpickr/i.test(ph + ' ' + cls)
+                                || el.type === 'date';
+                            if (!looksDate) return;
+                            const r = el.getBoundingClientRect();
+                            out.push({i, ph, cls: String(cls).slice(0, 60),
+                                      type: el.type, value: el.value || '',
+                                      hasFp: !!el._flatpickr, ro: el.readOnly,
+                                      vis: r.width > 0 && r.height > 0,
+                                      x: Math.round(r.x), y: Math.round(r.y)});
+                        });
+                        return out;
+                    }""")
+                    logger.warning("Setup: pull date did not take (wanted %s, ok=%s) "
+                                   "— date-ish inputs on page: %s",
+                                   when, res.get("ok"), probe)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Setup: pull date did not take (wanted %s, ok=%s); "
+                                   "probe failed: %s", when, res.get("ok"), e)
         else:
             logger.warning("Setup: date field not found — pull date NOT set")
     except Exception as e:
