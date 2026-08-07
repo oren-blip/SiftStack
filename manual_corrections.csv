@@ -238,3 +238,16 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E001042-350,DM 3 Name,Sherry Peeler
 26E001042-350,DM 3 Relationship,daughter
 26E001042-350,Tag,Multi-Signer (3)
+# Holbrook 26E002916-590 — deed + obituary VERIFIED 2026-08-06 (see
+# output/reports/DP_Week32_Holbrook_26E002916-590.md). Donald Keith Holbrook,
+# DOD 2026-05-19, sole owner of 9 parcels, NO surviving spouse on deed or in
+# the obituary -> the two children take everything and BOTH must sign.
+# Mailing intentionally left as-is: neither child's own address is known yet.
+26E002916-590,First Name,Jennifer
+26E002916-590,Last Name,Pratt
+26E002916-590,Personal Representative,Jennifer H. Pratt
+26E002916-590,DM Name,Jennifer H. Pratt
+26E002916-590,DM Relationship,daughter
+26E002916-590,DM 2 Name,Adam C. Holbrook
+26E002916-590,DM 2 Relationship,son
+26E002916-590,Tag,Multi-Signer (2)
