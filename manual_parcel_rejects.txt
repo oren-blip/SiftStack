@@ -18,3 +18,12 @@
 
 26E001046-350   227672   McCall, Lori Fay Crooks — parcel owner is MCCALL LAURA E | GIBSON LORI, a different McCall (Oren verified 2026-08-04)
 26E001047-350   146001   Greene, Wanda Fletcher — parcel owner is GREENE WANDA JEANETTE, a different Greene (Oren verified 2026-08-04)
+
+# --- Baker 26E002844-590 (Claude verified via Mecklenburg deed records 2026-08-06) ---
+# Decedent Joseph Cephus Baker Sr (DOD 2026-02-05, obit names wife Shirley).
+# ONLY parcel 02756532 / 6034 Shining Oak Ln ties to him (co-owner SHIRLEY H. BAKER).
+# The four below are other Joseph Bakers swept in by common-name matching.
+26E002844-590   23125152   Baker, Joseph Cephus — owner JOSEPH C BAKER sole, no tie to wife Shirley; tax bill goes to the house itself (owner-occupied by a different Joseph C Baker)
+26E002844-590   00111424   Baker, Joseph Cephus — owner JOSEPH C BAKER + KIMBERLY R BAKER + BAKER REVOCABLE TRUST (different spouse); moved to living trust 2026-04-01, after death
+26E002844-590   00111109   Baker, Joseph Cephus — owner JOSEPH C BAKER + KIMBERLY R BAKER + BAKER REVOCABLE TRUST (different spouse); same trust transfer 2026-04-01
+26E002844-590   16308345   Baker, Joseph Cephus — owner GABRIELLE CURRY + JOSEPH BAKER; PURCHASED 2026-04-02 for $910,000, two months AFTER the decedent died

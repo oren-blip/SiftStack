@@ -222,7 +222,7 @@ scripts\nc_weekly_run.bat 2026-05-18       # from a specific date
 Steps it runs in sequence: scrape → merge by ISO week → manual archive index refresh → polish pipeline → eCourts name-search backfill → consolidate workbook. All output appends to `logs/nc_weekly_run.log`. Final workbook: `output/FTM_YYYY_NC_Estates_throughWeekN.xlsx`.
 
 **Scheduling model — daily workbook (build 1.0.33+).** One Windows Task Scheduler job:
-- **`SiftStack NC Daily Build`** → `scripts/nc_daily_run.bat`, daily 6 PM. Full pipeline: scrape last 2 days → merge by ISO week → archive index refresh → polish → eCourts backfill → consolidate workbook. Skips weekends + NC court holidays (`scripts/is_workday.py`) and takes the pipeline lock. Logs to `logs/nc_daily_run.log`.
+- **`SiftStack NC Daily Build`** → `scripts/nc_daily_run.bat`, daily 5 PM. Full pipeline: scrape last 2 days → merge by ISO week → archive index refresh → polish → eCourts backfill → consolidate workbook. Skips weekends + NC court holidays (`scripts/is_workday.py`) and takes the pipeline lock. Logs to `logs/nc_daily_run.log`.
 - The current (non-archived) week is re-polished each night until it's archived, so the workbook is fresh every morning. `scripts/nc_weekly_run.bat` remains as the manual full-week (7-day) catch-up build.
 - `scripts/nc_daily_scrape.bat` exists as an optional scrape-ONLY helper (accumulate raw cases without rebuilding) but is **not scheduled** — the daily build covers the normal case.
 
@@ -240,7 +240,7 @@ python src/main.py nc-daily \
 
 **Required NC flags (and why):**
 - `--skip-obituary` / `--nc-obituary` — **NC obituary enrichment is ON by default** as of 2026-06-13 (the A/B rollout flipped). `scripts\nc_weekly_scrape.bat` sets `NC_OBITUARY=1` and passes `--nc-obituary`, which overrides the global `--skip-obituary` for NC notices and runs the Tier 2 path (Serper + Firecrawl + LLM; Knox Tax tier gated off for non-TN states). To opt OUT for a single run, set `NC_OBITUARY=0`. Ancestry SSDI stays disabled in NC (Knox-tested only).
-- `--no-skip-trace` — DataSift's $97/mo unlimited skip-trace (post-upload, auto-tag `skip_traced_YYYY-MM`) handles phones + emails. Tracerfy ($0.02/contact) is reserved for **Phase 2 deep prospecting** where DataSift can't help (heirs identified from obituary search who aren't in the CSV yet).
+- `--no-skip-trace` — DataSift skip trace (post-upload, auto-tag `skip_traced_YYYY-MM`) handles phones + emails. **PAY-PER-RECORD, not unlimited** (corrected 2026-08-06): the account is on Professional $149/mo with **no skip-trace addon**, drawing down a prepaid balance (`user/` API → `balance`). The $97/mo unlimited add-on is something Oren has NOT bought yet — he wants a heads-up when monthly pay-per-record spend approaches $97 so upgrading becomes worthwhile. So skip trace ONLY the rows that need it. Tracerfy ($0.02/contact) is reserved for **Phase 2 deep prospecting** where DataSift can't help (heirs identified from obituary search who aren't in the CSV yet).
 
 **`--nc-obituary` (ON by default since 2026-06-13; build 1.0.30+):**
 - Default ON — `nc_weekly_scrape.bat` sets `NC_OBITUARY=1`. Opt OUT for a single run with `NC_OBITUARY=0`. The A/B rollout is complete; NC obituary enrichment is now standard.
@@ -344,7 +344,7 @@ Key flags: `--dry-run` (count-only pull, or count-only delete preview with `--de
 After CSV upload, the pipeline automatically runs two DataSift actions via Playwright:
 
 1. **Enrich Property Information** (Manage → Enrich Data): Adds SiftMap property data (beds, baths, Zestimate, sqft, sale history) to uploaded records. "Enrich Owners" and "Swap Owners" are OFF — protects our PR/DM contact mapping.
-2. **Skip Trace** (Send To → Skip Trace): Pulls phone numbers (up to 5 per owner) + emails via unlimited plan ($97/mo). Adds auto-tag `skip_traced_YYYY-MM`.
+2. **Skip Trace** (Send To → Skip Trace): Pulls phone numbers (up to 5 per owner) + emails. **Billed per record against a prepaid balance — NOT unlimited** (see the `--no-skip-trace` note above). Adds auto-tag `skip_traced_YYYY-MM`.
 
 Both run in background — tracked in Activity tab. Both are ON by default when `--upload-datasift` is set.
 

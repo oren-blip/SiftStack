@@ -197,3 +197,44 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 # inheritance + 2/3 by deed = 100% of the remainder. Betty's life estate ended
 # at her death 06/13/2026: DEAN OWNS 100% FEE SIMPLE, SOLE SIGNER.
 26E001011-350,Notes,"LIFE ESTATE ENDED - NO PROBATE, SOLE OWNER. Larry Dean Lineberger (goes by DEAN, aunt's obit calls him 'special nephew') owns 100% fee simple in 423 + 430 + the vacant Ike Lynch Rd tract. Chain: Betty Faye reserved a life estate (Bk 4491 Pg 1717/1721/1724) with remainder to her brother Larry E. Lineberger, who died testate 08/31/2012; his three children took the remainder; Bk 4632 Pg 2236 (2012, excise $0) conveyed Timothy Mark's + May Lynn's 2/3 future interest to Dean under NCGS 39-6.3, giving him 3/3. Her life estate ended 06/13/2026. 75.4 ac; the 52.64 ac tract is taxed $39K vs $260K land market = farm/forestry use-value deferment, so a sale or subdivide likely triggers ROLLBACK TAXES. 1920 farmhouse on the 21.24 ac, LIKELY VACANT (she died at Peak Resources care facility, obit says 'formerly of Ike Lynch Road'). TITLE CAVEATS for the closing attorney: (1) the 2012 deed is stamped TITLE NOT EXAMINED BY PREPARING ATTORNEY (J. Ben Morrow PA) and recites 'heirs at law' for a man who died TESTATE - confirm Larry E.'s will actually devised the remainder to those three; (2) name reads 'Mary Lynn' on p.1/index but 'May Lynn' on p.4. Tax roll still shows BETTY FAYE LIFE EST - the death certificate may not be recorded yet, which Dean must do to clear title (useful opener)."
+# --- 2026-08-06 deep-prospecting results (Claude) ---
+# Baker 26E002844-590: reroute to the ONE deed-confirmed property + surviving spouse.
+# Wrong parcels blocked in manual_parcel_rejects.txt; 02756532 should become main.
+26E002844-590,First Name,Shirley
+26E002844-590,Last Name,Baker
+26E002844-590,Personal Representative,Shirley H. Baker
+26E002844-590,DM Name,Shirley H. Baker
+26E002844-590,DM Relationship,surviving spouse
+26E002844-590,Tag,Surviving Spouse
+# Promote obituary-verified heirs into the contact slot so DataSift skip trace
+# has a real person to work (they were stuck in "Needs Skipped" as "Heirs X").
+# Mailing stays the property address - mail still reaches the house.
+26E000910-170,First Name,Bobby
+26E000910-170,Last Name,Hollar
+26E000910-170,Personal Representative,Bobby Dean Hollar
+26E000910-170,DM Name,Bobby Dean Hollar
+26E000910-170,DM Relationship,husband
+26E001049-350,First Name,Taquilla
+26E001049-350,Last Name,Diggs-Wright
+26E001049-350,Personal Representative,Taquilla Diggs-Wright
+26E001049-350,DM Name,Taquilla Diggs-Wright
+26E001049-350,DM Relationship,daughter
+26E002870-590,First Name,Ana
+26E002870-590,Last Name,Rodriguez Pineda
+26E002870-590,Personal Representative,Ana Vilma Rodriguez Pineda
+26E002870-590,DM Name,Ana Vilma Rodriguez Pineda
+26E002870-590,DM Relationship,mother
+# Burch 26E001042-350 — obituary VERIFIED 2026-08-06 (greenefuneral.com/obituaries/nancy-burch).
+# "Lynn Black (husband)" was WRONG twice: the husband Harvey Wilburn Burch PREDECEASED her,
+# and no "Lynn Black" appears anywhere in the obituary. Survivors are 3 living children:
+# Robert Burch (son), Kim Black (daughter), Sherry Peeler (daughter). ALL THREE must sign.
+26E001042-350,First Name,Robert
+26E001042-350,Last Name,Burch
+26E001042-350,Personal Representative,Robert Burch
+26E001042-350,DM Name,Robert Burch
+26E001042-350,DM Relationship,son
+26E001042-350,DM 2 Name,Kim Black
+26E001042-350,DM 2 Relationship,daughter
+26E001042-350,DM 3 Name,Sherry Peeler
+26E001042-350,DM 3 Relationship,daughter
+26E001042-350,Tag,Multi-Signer (3)
