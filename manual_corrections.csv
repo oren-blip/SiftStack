@@ -264,3 +264,10 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E002907-590,DM Name,Harvey Sylvester
 26E002907-590,DM Relationship,father
 26E002907-590,Tag,Verify Heirs
+# Baker 26E002844-590 — the verified property. The week CSV still carries
+# 2417 Normancrest Ct, which the deed proved belongs to a DIFFERENT Joseph
+# Baker (tagged "Wrong Parcel - Do Not Mail" in DataSift). Only 6034 Shining
+# Oak Ln ties to this decedent, via wife Shirley H. Baker on the deed.
+26E002844-590,Property Address,6034 Shining Oak Ln
+26E002844-590,Property City,Charlotte
+26E002844-590,Property Zip,28269
