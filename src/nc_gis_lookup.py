@@ -17,6 +17,7 @@ keep / drop.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -2861,6 +2862,53 @@ _PERSIST_TTL_DAYS = int(os.environ.get("NC_GIS_CACHE_TTL_DAYS", "14"))
 _PERSIST_DISABLED = os.environ.get("NC_GIS_CACHE_DISABLE", "") == "1"
 _persist_store: dict[str, dict] | None = None  # None = not yet loaded
 
+# ── Cache size control (2026-08-06) ──────────────────────────────────
+# The file had grown to 403 MB / 1,278 entries (avg 128 candidates each,
+# worst 1,104 — Iredell prefix-LIKE searches return most of the county).
+# Because _persist_put write-throughs the WHOLE store on every successful
+# lookup, a normal night rewrote tens of GB. Two fixes, neither of which
+# changes matching behaviour (so NO _PERSIST_VERSION bump — bumping would
+# throw away 1,278 good lookups and re-hit the slow county GIS):
+#
+#   1. `raw` (the unparsed GIS record) is NOT persisted. It is 81% of every
+#      entry and is write-only — nothing in the codebase ever reads
+#      PropertyCandidate.raw after construction (verified 2026-08-06). Live
+#      in-process objects still carry it; only the disk copy drops it.
+#   2. Candidates per entry are capped. EVERY candidate scoring >= 0.7 (the
+#      "strong match" band) is always kept no matter how many, so a genuine
+#      multi-parcel estate is never truncated (biggest real one seen:
+#      Holbrook 26E002916-590, 9 parcels). Only the weak-scoring tail —
+#      same-surname strangers that every caller's min_score filters out
+#      anyway — is trimmed.
+#
+# Flushes are batched (dirty flag + every _PERSIST_FLUSH_EVERY puts + at
+# process exit) instead of once per put. A crash loses at most a few cached
+# lookups, which simply get re-fetched — a cache miss is safe, never wrong.
+_MAX_CACHED_CANDIDATES = int(os.environ.get("NC_GIS_CACHE_MAX_CANDIDATES", "60"))
+_STRONG_SCORE_KEEP_ALL = 0.7
+_PERSIST_FLUSH_EVERY = int(os.environ.get("NC_GIS_CACHE_FLUSH_EVERY", "25"))
+_persist_dirty = 0  # puts since last flush
+
+
+def _trim_for_cache(candidates: list[PropertyCandidate]) -> list[dict]:
+    """Serialize candidates for disk: drop `raw`, cap the weak-scoring tail.
+
+    Keeps every strong (>= 0.7) match plus the highest-scoring remainder up
+    to _MAX_CACHED_CANDIDATES total.
+    """
+    strong = [c for c in candidates if (c.match_score or 0) >= _STRONG_SCORE_KEEP_ALL]
+    weak = sorted(
+        (c for c in candidates if (c.match_score or 0) < _STRONG_SCORE_KEEP_ALL),
+        key=lambda c: c.match_score or 0, reverse=True,
+    )
+    room = max(0, _MAX_CACHED_CANDIDATES - len(strong))
+    out = []
+    for c in [*strong, *weak[:room]]:
+        d = asdict(c)
+        d.pop("raw", None)  # write-only field — never read back
+        out.append(d)
+    return out
+
 
 def _persist_key(decedent_name: str, county: str) -> str:
     return f"{county.strip().upper()}|{decedent_name.strip().upper()}"
@@ -2884,12 +2932,41 @@ def _persist_load() -> dict[str, dict]:
     if not isinstance(entries, dict):
         return _persist_store
     cutoff = datetime.now() - timedelta(days=_PERSIST_TTL_DAYS)
+    global _persist_dirty
     for k, v in entries.items():
         try:
-            if datetime.fromisoformat(v.get("ts", "")) >= cutoff:
-                _persist_store[k] = v
+            if datetime.fromisoformat(v.get("ts", "")) < cutoff:
+                continue
         except (ValueError, AttributeError):
             continue
+        # Compact legacy entries in place: older files carry the write-only
+        # `raw` blob (81% of their size) and an uncapped candidate tail.
+        # Rewriting them here means the next flush shrinks the file without
+        # invalidating anything (scores are untouched).
+        cands = v.get("candidates")
+        if isinstance(cands, list) and cands:
+            has_raw = any(c.get("raw") for c in cands if isinstance(c, dict))
+            strong = [c for c in cands
+                      if isinstance(c, dict) and (c.get("match_score") or 0) >= _STRONG_SCORE_KEEP_ALL]
+            weak = sorted(
+                (c for c in cands
+                 if isinstance(c, dict) and (c.get("match_score") or 0) < _STRONG_SCORE_KEEP_ALL),
+                key=lambda c: c.get("match_score") or 0, reverse=True,
+            )
+            room = max(0, _MAX_CACHED_CANDIDATES - len(strong))
+            keep = [*strong, *weak[:room]]
+            # Only rewrite when something actually changes — an entry whose
+            # strong matches alone exceed the cap is already minimal, and
+            # re-flagging it would rewrite the file every single run.
+            if has_raw or len(keep) != len(cands):
+                trimmed = []
+                for c in keep:
+                    c = dict(c)
+                    c.pop("raw", None)
+                    trimmed.append(c)
+                v["candidates"] = trimmed
+                _persist_dirty += 1
+        _persist_store[k] = v
     return _persist_store
 
 
@@ -2908,25 +2985,40 @@ def _persist_get(decedent_name: str, county: str) -> list[PropertyCandidate] | N
         return None  # corrupt/old-schema entry → treat as miss, re-fetch
 
 
+def _persist_flush() -> None:
+    """Write the store to disk atomically. No-op when nothing is pending."""
+    global _persist_dirty
+    if _PERSIST_DISABLED or _persist_store is None or not _persist_dirty:
+        return
+    try:
+        _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PERSIST_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"_version": _PERSIST_VERSION, "entries": _persist_store}),
+            encoding="utf-8",
+        )
+        tmp.replace(_PERSIST_PATH)  # atomic on Windows + POSIX
+        _persist_dirty = 0
+    except OSError as e:
+        logger.warning("nc_gis_lookup: could not write persistent cache: %s", e)
+
+
+atexit.register(_persist_flush)
+
+
 def _persist_put(decedent_name: str, county: str, candidates: list[PropertyCandidate]) -> None:
-    """Persist a SUCCESSFUL lookup (write-through, crash-safe). Empties skipped."""
+    """Persist a SUCCESSFUL lookup. Empties skipped; flush is batched."""
+    global _persist_dirty
     if _PERSIST_DISABLED or not candidates:
         return
     store = _persist_load()
     store[_persist_key(decedent_name, county)] = {
         "ts": datetime.now().isoformat(timespec="seconds"),
-        "candidates": [asdict(c) for c in candidates],
+        "candidates": _trim_for_cache(candidates),
     }
-    try:
-        _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _PERSIST_PATH.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps({"_version": _PERSIST_VERSION, "entries": store}),
-            encoding="utf-8",
-        )
-        tmp.replace(_PERSIST_PATH)  # atomic on Windows + POSIX
-    except OSError as e:
-        logger.warning("nc_gis_lookup: could not write persistent cache: %s", e)
+    _persist_dirty += 1
+    if _persist_dirty >= _PERSIST_FLUSH_EVERY:
+        _persist_flush()
 
 
 def lookup_properties(
