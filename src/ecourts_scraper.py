@@ -273,18 +273,48 @@ async def refresh_waf_cookie(*, force: bool = False, headless: bool = True) -> d
 # ── Smart Search form driving ────────────────────────────────────────
 
 
-async def _navigate_to_smart_search(page: Page) -> None:
-    """Click the Smart Search link / tile on the dashboard."""
-    # The dashboard renders Smart Search at #SmartSearchSS — direct nav works
-    if "SmartSearchSS" not in page.url:
-        await page.goto(SMART_SEARCH_URL, wait_until="domcontentloaded", timeout=45_000)
-        await page.wait_for_timeout(2500)
-    # Wait for the search form to appear
-    try:
-        await page.wait_for_selector("#btnSSSubmit", state="attached", timeout=20_000)
-    except PwTimeout:
-        logger.warning("eCourts: Smart Search submit button never rendered")
-        raise
+async def _navigate_to_smart_search(page: Page, attempts: int = 4) -> None:
+    """Navigate to Smart Search and wait for its form, retrying on a blip.
+
+    WHY THE RETRY (2026-08-06): a single 20s wait with no second try cost an
+    ENTIRE night's scrape. The portal wobbled for ~5 minutes at 6PM — the
+    Parties API threw 404s over the same window and recovered on its own — the
+    form did not render in time, PwTimeout propagated out of scrape_ecourts as
+    an unhandled error, and the run produced zero cases. The portal was fine
+    again minutes later. A few reloads spread over ~2 minutes covers that class
+    of hiccup; a genuine selector change still fails, just after real effort.
+    """
+    last_exc: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            if "SmartSearchSS" not in page.url or i > 1:
+                await page.goto(SMART_SEARCH_URL, wait_until="domcontentloaded",
+                                timeout=45_000)
+                await page.wait_for_timeout(2500)
+            await page.wait_for_selector("#btnSSSubmit", state="attached",
+                                         timeout=20_000)
+            if i > 1:
+                logger.info("eCourts: Smart Search rendered on attempt %d", i)
+            return
+        except PwTimeout as e:
+            last_exc = e
+            # A WAF challenge can also appear mid-session; re-solving is handled
+            # by the caller, so surface it clearly rather than burning retries.
+            try:
+                if await _is_waf_gate(page):
+                    logger.warning("eCourts: WAF gate re-appeared while opening "
+                                   "Smart Search (attempt %d)", i)
+            except Exception:  # noqa: BLE001
+                pass
+            if i < attempts:
+                backoff = 10 * i  # 10s, 20s, 30s — ~1 min of portal recovery time
+                logger.warning(
+                    "eCourts: Smart Search submit button never rendered "
+                    "(attempt %d/%d) — reloading in %ds", i, attempts, backoff)
+                await page.wait_for_timeout(backoff * 1000)
+    logger.error("eCourts: Smart Search never rendered after %d attempts — "
+                 "portal down or the page changed", attempts)
+    raise last_exc  # type: ignore[misc]
 
 
 async def _open_advanced_filters(page: Page) -> None:
