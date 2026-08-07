@@ -385,29 +385,46 @@ async def upload_csv(
             # threw on every single upload ("Date field: Locator.fill: Timeout
             # 30000ms exceeded"), leaving the pull date blank. Drive the
             # flatpickr instance instead, falling back to a native-setter write.
-            ok = await page.evaluate("""(val) => {
+            # Verify by reading back the SAME element we wrote to. The old code
+            # wrote via querySelector('input.flatpickr-input') but verified with
+            # the placeholder locator's .first — when flatpickr runs altInput it
+            # renders TWO inputs (a hidden original holding the real value plus a
+            # visible formatted one), so those two selectors resolve to different
+            # elements and the read-back came back empty on every upload. The
+            # date was usually set fine; the WARNING was the bug (2026-08-06).
+            res = await page.evaluate("""(val) => {
                 const el = document.querySelector('input.flatpickr-input')
                     || document.querySelector('input[placeholder*="Choose date"]');
-                if (!el) return false;
+                if (!el) return {ok: false, value: '', alt: ''};
                 if (el._flatpickr) {
                     el._flatpickr.setDate(val, true);
-                    return true;
+                } else {
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(el, val);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
                 }
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, val);
-                el.dispatchEvent(new Event('input', {bubbles: true}));
-                el.dispatchEvent(new Event('change', {bubbles: true}));
-                return true;
+                const alt = (el._flatpickr && el._flatpickr.altInput)
+                    ? el._flatpickr.altInput.value : '';
+                return {ok: true, value: el.value || '', alt: alt || ''};
             }""", when)
             await page.wait_for_timeout(500)
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
-            got = (await date_input.first.input_value()) or ""
-            if got.strip():
-                logger.info("Setup: list pull date = %s", got.strip())
+            res = res or {}
+            got = (res.get("value") or res.get("alt") or "").strip()
+            if not got:
+                # last resort: the visible input, whichever it is
+                try:
+                    got = ((await date_input.first.input_value()) or "").strip()
+                except Exception:  # noqa: BLE001
+                    got = ""
+            if got:
+                logger.info("Setup: list pull date = %s", got)
             else:
-                logger.warning("Setup: pull date did not take (wanted %s, ok=%s)", when, ok)
+                logger.warning("Setup: pull date did not take (wanted %s, ok=%s)",
+                               when, res.get("ok"))
         else:
             logger.warning("Setup: date field not found — pull date NOT set")
     except Exception as e:
