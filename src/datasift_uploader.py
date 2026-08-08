@@ -392,23 +392,37 @@ async def upload_csv(
             # visible formatted one), so those two selectors resolve to different
             # elements and the read-back came back empty on every upload. The
             # date was usually set fine; the WARNING was the bug (2026-08-06).
-            res = await page.evaluate("""(val) => {
-                const el = document.querySelector('input.flatpickr-input')
+            # 2026-08-08, from the probe data this instrumentation captured:
+            # the Setup page has TWO visible flatpickr date inputs (y≈375 and
+            # y≈529) and only the LOWER one carries the class "flatpickr-input"
+            # — so 'input.flatpickr-input' always selected the wrong question.
+            # The pull-date ("When?") field is the FIRST date input on the
+            # page. Also pass a real Date (y/m/d parts), not "MM/DD/YYYY":
+            # setDate() parses strings per the instance's dateFormat and
+            # silently clears the field when the format doesn't match.
+            m_, d_, y_ = when.split("/")
+            res = await page.evaluate("""(p) => {
+                const els = [...document.querySelectorAll('input')].filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return el._flatpickr && r.width > 0 && r.height > 0;
+                }).sort((a, b) => a.getBoundingClientRect().y
+                                - b.getBoundingClientRect().y);
+                const el = els[0]
                     || document.querySelector('input[placeholder*="Choose date"]');
                 if (!el) return {ok: false, value: '', alt: ''};
                 if (el._flatpickr) {
-                    el._flatpickr.setDate(val, true);
+                    el._flatpickr.setDate(new Date(p.y, p.m - 1, p.d), true);
                 } else {
                     const setter = Object.getOwnPropertyDescriptor(
                         window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(el, val);
+                    setter.call(el, `${p.m}/${p.d}/${p.y}`);
                     el.dispatchEvent(new Event('input', {bubbles: true}));
                     el.dispatchEvent(new Event('change', {bubbles: true}));
                 }
                 const alt = (el._flatpickr && el._flatpickr.altInput)
                     ? el._flatpickr.altInput.value : '';
                 return {ok: true, value: el.value || '', alt: alt || ''};
-            }""", when)
+            }""", {"y": int(y_), "m": int(m_), "d": int(d_)})
             await page.wait_for_timeout(500)
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
