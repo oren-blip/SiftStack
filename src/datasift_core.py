@@ -141,6 +141,20 @@ async def login(page, email: str = None, password: str = None) -> bool:
     if not email or not password:
         email, password = get_credentials()
 
+    # Block Beamer (NPS survey iframe, push modal, announcement widget) at the
+    # network level. dismiss_popups() removes these from the DOM, but Beamer
+    # injects seconds AFTER page load, so any single dismissal pass can lose
+    # the race — 2026-08-08: two pr_upgrade runs in a row died on
+    # #npsIframeContainer / #beamerPushModal appearing after dismissal. With
+    # the script never loaded, no widget ever exists.
+    if not getattr(page, "_ds_beamer_blocked", False):
+        try:
+            await page.context.route(
+                "**://*.getbeamer.com/**", lambda route: route.abort())
+            page._ds_beamer_blocked = True
+        except Exception:
+            pass
+
     # Log every POST to reisift endpoints — status of the sign-in request is
     # the decisive evidence when login fails with a clean form and no error.
     if not getattr(page, "_ds_net_logged", False):
