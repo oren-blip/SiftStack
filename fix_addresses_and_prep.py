@@ -3989,6 +3989,16 @@ _COOWNER_NOISE = {
     "JR", "SR", "II", "III", "IV", "V",
 }
 
+# A co-owner segment that is a business/trust entity, not a person. Must be
+# checked against the RAW segment BEFORE _COOWNER_NOISE stripping — stripping
+# "LLC" from "SPEAK IT LLC" is what turned it into the fake person "Speak It"
+# (26E002941-590 Week 32, deed "SPEAK IT LLC | FULTON CUTHBERTSON").
+_COOWNER_ENTITY_RX = re.compile(
+    r"\b(LLC|L\.L\.C|PLLC|INC|CORP|CO(MPANY)?|LTD|LP|LLP|TRUST|TRUSTEES?|"
+    r"FOUNDATION|MINISTR(Y|IES)|CHURCH|PROPERTIES|HOLDINGS|INVESTMENTS?|"
+    r"VENTURES?|PARTNERS(HIP)?|ASSOC(IATES|IATION)?|ENTERPRISES?|HOMES|"
+    r"REALTY|GROUP)\b\.?", re.I)
+
 
 def _gis_owner_name_parts(segment: str, county: str) -> tuple[str, str, str]:
     """Parse one GIS owner segment into (First, Last, Middle), county-format-
@@ -4087,7 +4097,11 @@ def promote_deed_coowner_to_dm(
         _f, _m, dec_last = split_decedent_name(dec)
         dec_last_up = (dec_last or "").upper()
         picked = None
+        entity_co = None
         for co in co_owners:
+            if _COOWNER_ENTITY_RX.search(co):
+                entity_co = entity_co or co.strip()
+                continue  # an LLC/trust is not a person to text or mail
             fn, ln, mid = _gis_owner_name_parts(co, county)
             if fn and ln:
                 if ln.upper() != dec_last_up:
@@ -4096,6 +4110,16 @@ def promote_deed_coowner_to_dm(
                 if picked is None:
                     picked = (fn, ln, mid)  # same-surname co-owner as a fallback
         if not picked:
+            if entity_co:
+                # Keep the entity visible for the deep-prospecting workflow
+                # (an LLC co-owning with a decedent is often the family's own
+                # vehicle) without shipping it as a fake person contact.
+                note = f"[Deed co-owner (entity): {entity_co.title()}]"
+                notes = (r.get("Notes") or "").strip()
+                if note not in notes:
+                    r["Notes"] = (note + ("\n" + notes if notes else "")).strip()
+                print(f"  CO-OWNER DM skipped {r.get('Case No.')} {dec}: only "
+                      f"entity co-owner on deed ({entity_co}) — noted, not promoted")
             continue
         fn, ln, mid = picked
         r["DM Name"] = f"{fn} {ln}"
