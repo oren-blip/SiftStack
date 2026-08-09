@@ -21,6 +21,17 @@ REM   scripts\nc_daily_run.bat 2026-05-25   ^<- from a specific date
 
 cd /d "D:\SiftStack"
 
+REM Hold the machine awake for the whole run. The 8/3 run died when the PC
+REM idle-slept into Modern Standby mid-step (23:41); the 8/4 run died to a
+REM restart. Re-exec this bat under keep_awake.py, which holds a SYSTEM
+REM power request until the run exits. Display still sleeps normally; a
+REM user-initiated restart still kills the run -- nothing prevents that.
+if not defined NC_KEEPAWAKE (
+    set NC_KEEPAWAKE=1
+    "D:\SiftStack\.venv\Scripts\python.exe" scripts\keep_awake.py -- cmd /c "%~f0" %*
+    exit /b
+)
+
 REM Skip on weekends + NC court holidays. is_workday.py exits 1 if today
 REM is Sat/Sun or any holiday in the NC General Court of Justice calendar
 REM (see scripts\is_workday.py for the list).

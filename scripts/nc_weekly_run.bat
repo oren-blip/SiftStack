@@ -20,6 +20,14 @@ REM   scripts\nc_weekly_run.bat 2026-05-18   ^<- from a specific date
 
 cd /d "D:\SiftStack"
 
+REM Hold the machine awake for the whole run (idle sleep killed the 8/3
+REM nightly mid-step). See scripts\keep_awake.py.
+if not defined NC_KEEPAWAKE (
+    set NC_KEEPAWAKE=1
+    "D:\SiftStack\.venv\Scripts\python.exe" scripts\keep_awake.py -- cmd /c "%~f0" %*
+    exit /b
+)
+
 REM Acquire pipeline lock -- refuses if another pipeline (daily or weekly) is running.
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\pipeline_lock.py acquire weekly
 if errorlevel 1 (

@@ -107,3 +107,6 @@ datasift_*.png
 # (scripts/pipeline_lock.py), not code. Tracking it makes git flip-flop on
 # every run and risks committing a stale lock that blocks the next build.
 state/pipeline.lock
+
+# KPI engine cached auth token (secret)
+.claude/skills/kpi-engine/scripts/reisift_token.txt
