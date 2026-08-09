@@ -5619,7 +5619,23 @@ def apply_manual_corrections(
         if not overrides:
             continue
         for field, value in overrides.items():
-            if field in r:
+            # "Tag" appends to the Tags column (dedup); "Untag" removes an
+            # exact tag. Neither is a real column — entries like
+            # "26E001042-350,Tag,Multi-Signer (3)" had been silently
+            # warn-skipped every night until 2026-08-09 because only literal
+            # column names were accepted.
+            if field == "Tag":
+                tags = (r.get("Tags") or "").strip()
+                if value and value not in [t.strip() for t in tags.split(",")]:
+                    r["Tags"] = (tags + ", " if tags else "") + value
+                fields_applied += 1
+                cases_touched.add(c)
+            elif field == "Untag":
+                tags = [t.strip() for t in (r.get("Tags") or "").split(",") if t.strip()]
+                r["Tags"] = ", ".join(t for t in tags if t != value)
+                fields_applied += 1
+                cases_touched.add(c)
+            elif field in r:
                 r[field] = value
                 fields_applied += 1
                 cases_touched.add(c)

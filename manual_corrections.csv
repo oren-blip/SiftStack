@@ -271,3 +271,83 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E002844-590,Property Address,6034 Shining Oak Ln
 26E002844-590,Property City,Charlotte
 26E002844-590,Property Zip,28269
+# --- Week 32 deep-prospecting sweep (obit-verified, Claude 2026-08-09) ---
+# Griffin couple: Thomas d. 5/29/26, wife Sandra d. 6/23/26 (25 days later).
+# Only child Cynthia Lynn Griffin Goforth signs for BOTH estates.
+26E002904-590,First Name,Cynthia
+26E002904-590,Last Name,Goforth
+26E002904-590,Personal Representative,Cynthia Lynn Griffin Goforth
+26E002904-590,DM Name,Cynthia Lynn Griffin Goforth
+26E002904-590,DM Relationship,daughter
+26E002903-590,First Name,Cynthia
+26E002903-590,Last Name,Goforth
+26E002903-590,Personal Representative,Cynthia Lynn Griffin Goforth
+26E002903-590,DM Name,Cynthia Lynn Griffin Goforth
+26E002903-590,DM Relationship,daughter
+26E000806-790,First Name,William
+26E000806-790,Last Name,Bryan Jr.
+26E000806-790,Personal Representative,William Sturges Bryan Jr.
+26E000806-790,DM Name,William Sturges Bryan Jr.
+26E000806-790,DM Relationship,son
+26E000919-170,First Name,Charles
+26E000919-170,Last Name,Punch
+26E000919-170,Personal Representative,Charles D. Punch
+26E000919-170,DM Name,Charles D. Punch
+26E000919-170,DM Relationship,husband
+26E000919-170,DM 2 Name,David Punch
+26E000919-170,DM 2 Relationship,son
+26E000919-170,DM 3 Name,Todd Punch
+26E000919-170,DM 3 Relationship,son
+26E000919-170,Tag,Surviving Spouse
+26E001060-350,First Name,Lisa
+26E001060-350,Last Name,Johnston
+26E001060-350,Personal Representative,Lisa Johnston
+26E001060-350,DM Name,Lisa Johnston
+26E001060-350,DM Relationship,wife
+26E001060-350,DM 2 Name,Caleb Gauge Johnston
+26E001060-350,DM 2 Relationship,son
+26E001060-350,Tag,Surviving Spouse
+26E000775-480,First Name,Rhonda
+26E000775-480,Last Name,Haynes
+26E000775-480,Personal Representative,Rhonda Haynes
+26E000775-480,DM Name,Rhonda Haynes
+26E000775-480,DM Relationship,daughter (deed co-owner)
+26E000775-480,DM 2 Name,Keith Fitzgerald
+26E000775-480,DM 2 Relationship,son
+26E001057-350,First Name,Lucy
+26E001057-350,Last Name,Lathan
+26E001057-350,Personal Representative,Lucy Lathan
+26E001057-350,DM Name,Lucy Lathan
+26E001057-350,DM Relationship,daughter
+26E001057-350,DM 2 Name,Katy Lathan Reid
+26E001057-350,DM 2 Relationship,daughter
+26E001057-350,Tag,Multi-Signer (2)
+26E001059-350,First Name,Lisa
+26E001059-350,Last Name,Everett
+26E001059-350,Personal Representative,Lisa Brown Everett
+26E001059-350,DM Name,Lisa Brown Everett
+26E001059-350,DM Relationship,daughter
+26E001059-350,DM 2 Name,Laura Ellen Burns
+26E001059-350,DM 2 Relationship,daughter
+26E001059-350,DM 3 Name,Tessa Michelle Hooker
+26E001059-350,DM 3 Relationship,daughter
+26E001059-350,Tag,Multi-Signer (3)
+26E000915-170,First Name,Chris
+26E000915-170,Last Name,Osborne
+26E000915-170,Personal Representative,Chris Osborne
+26E000915-170,DM Name,Chris Osborne
+26E000915-170,DM Relationship,son
+26E000915-170,DM 2 Name,Michael Osborne
+26E000915-170,DM 2 Relationship,son
+26E000915-170,Tag,Multi-Signer (2)
+26E000794-120,First Name,Elaine
+26E000794-120,Last Name,Williams
+26E000794-120,Personal Representative,Elaine Queen Williams
+26E000794-120,DM Name,Elaine Queen Williams
+26E000794-120,DM Relationship,wife
+26E000794-120,DM 2 Name,Dennis Ray Williams
+26E000794-120,DM 2 Relationship,son
+26E000794-120,Tag,Surviving Spouse
+# Griffins were auto-tagged Surviving Spouse? before the obit check showed both spouses died
+26E002904-590,Untag,Surviving Spouse?
+26E002903-590,Untag,Surviving Spouse?
