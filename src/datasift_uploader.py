@@ -1573,6 +1573,35 @@ async def upload_datasift_split(
 # ── Phone Tag Export & Upload ────────────────────────────────────────────
 
 
+async def _first_download_row_text(page: Page) -> str:
+    """Normalized innerText of the newest data row in Activity -> Download.
+
+    Used as a stale-file guard: captured BEFORE requesting an export, then
+    compared during polling — the requested export is ready only once the
+    first row CHANGES (new row lands on top) and is no longer Processing.
+    Without this, a previously-completed export's Download link satisfies
+    the link-count check and a STALE file gets downloaded as if it were the
+    fresh one (burned an hour verifying restored phones against old data,
+    2026-07-29). Returns '' when no row can be identified — callers treat
+    that as 'guard unavailable', never as an error.
+    """
+    try:
+        return await page.evaluate("""() => {
+            for (const sel of ['[class*="TableRow"]', 'tbody tr',
+                               '[class*="Table"] [class*="Row"]']) {
+                const rows = Array.from(document.querySelectorAll(sel))
+                    .filter(r => /(Complete|Processing|Failed|Queued)/i.test(r.innerText || ''))
+                    .filter(r => (r.innerText || '').trim().length > 10);
+                if (rows.length) {
+                    return (rows[0].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300);
+                }
+            }
+            return '';
+        }""")
+    except Exception:
+        return ""
+
+
 async def export_phone_enrichment(
     page: Page,
     *,
@@ -1604,6 +1633,25 @@ async def export_phone_enrichment(
         download_dir = str(OUTPUT_DIR)
 
     try:
+        # Fingerprint the newest Download-tab row BEFORE requesting the
+        # export — during polling we accept the first row only once it
+        # differs from this (our export landed on top). Guard is best-effort:
+        # any failure here just disables it and polling behaves as before.
+        pre_fingerprint = ""
+        try:
+            await page.goto("https://app.reisift.io/activity", wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
+            _dtab = page.locator('text="Download"')
+            if await _dtab.count() > 0:
+                await _dtab.first.click()
+                await page.wait_for_timeout(2000)
+            pre_fingerprint = await _first_download_row_text(page)
+            logger.info("Pre-export Download-tab fingerprint: %r",
+                        pre_fingerprint[:120] if pre_fingerprint else "(none)")
+        except Exception as fp_err:
+            logger.info("Download-tab fingerprint unavailable (%s) — stale-file guard off",
+                        str(fp_err)[:80])
+
         # Navigate to Records
         await _navigate_to_records(page)
 
@@ -1814,6 +1862,22 @@ async def export_phone_enrichment(
             # If we see Download action links (beyond the tab header), proceed
             # The "Download" tab header is 1, so action links start at 2+
             if download_action_count > 1:
+                # Stale-file guard: the link count alone can't tell OUR export
+                # from a previously-completed one. Require the first row to
+                # have CHANGED since the pre-export fingerprint, and to be
+                # done processing (a Processing first row has no Download
+                # link, so nth(1) would belong to a stale row below it).
+                first_row_now = await _first_download_row_text(page)
+                if pre_fingerprint and first_row_now:
+                    if first_row_now == pre_fingerprint:
+                        logger.info("Poll %d: first Download row unchanged — our "
+                                    "export hasn't appeared yet, not touching the "
+                                    "stale file", poll + 1)
+                        continue
+                    if re.search(r"Processing|Queued", first_row_now, re.I):
+                        logger.info("Poll %d: our export row is still processing "
+                                    "(%r)", poll + 1, first_row_now[:80])
+                        continue
                 logger.info("Export rows found — attempting download from first row")
 
                 # The "Download" text appears in both the tab header AND row action links.
