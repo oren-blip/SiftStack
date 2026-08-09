@@ -5502,6 +5502,12 @@ def promote_dm_to_pr(row: dict) -> dict | None:
                     "brother", "sister", "mother", "father", "child",
                     "children", "family"}:
         return None
+    # A single-token name (obit said just "Kaiya (grandchild)", Preidt
+    # 26E001041-350) leaves Last Name blank — DataSift skip trace needs
+    # first+last, and a mailer to a bare first name reads worse than
+    # "Heirs of <Decedent>". Not promotable.
+    if len(dm_name.split()) < 2:
+        return None
     first, last = _split_person_name(dm_name)
     return {
         "name": dm_name,
@@ -5716,7 +5722,9 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
             _obit_cache_put_found(decedent, "NC", parsed, parsed.get("_url", ""), "second_pass")
 
         dm_name, dm_rel = identify_decision_maker(parsed["survivors"])
-        if not dm_name:
+        # Single-token names are not promotable (see promote_dm_to_pr) —
+        # leave the row as Heirs-of rather than ship a bare first name.
+        if not dm_name or len(dm_name.split()) < 2:
             continue
 
         # Tier 1: free people-search waterfall (Serper + Firecrawl + LLM).
@@ -5842,6 +5850,16 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
         # field, so re-opening it is safe: a genuine court PR never matches.
         _pr = (r.get("Personal Representative") or "").strip()
         _pr_is_fallback = _pr.lower().startswith("heirs of ")
+        # A single-token PR that a PROMOTION path wrote (never a court
+        # source — courts file full names) is a bare first name a prior
+        # night shipped before the single-token guard existed (Kaiya /
+        # Preidt 26E001041-350). Re-open it so this run re-stamps the
+        # Heirs-of fallback and the row becomes workable again.
+        _reason = r.get("Match Reason") or ""
+        if (len(_pr.split()) == 1
+                and ("second-pass-obit-name-only" in _reason
+                     or "dm-promoted-pr" in _reason)):
+            _pr_is_fallback = True
         if _pr and not _pr_is_fallback:
             continue
         decedent = (r.get("Deceased Owner") or "").strip()
