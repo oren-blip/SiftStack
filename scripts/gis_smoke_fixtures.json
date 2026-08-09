@@ -77,6 +77,15 @@
       "expected_pid": "21133808",
       "verified_on": "2026-07-12",
       "notes": "Mecklenburg had NO smoke coverage. Guards the 2026-07-12 polaris3g name-search rewrite: parcel 21133808 (7314 Shadowlake Dr) is jointly owned 'THOMAS A PATTERSON | DIANNE M PATTERSON'. Before the fix, scoring only owner[0] (Thomas) rejected the decedent Dianne at 0.40 and the parcel vanished; and the broken bolt firstname filter blocked the lastname-only fetch. owner_contains checks for the SECOND owner specifically, so this fails if the joint-owner scoring regresses."
+    },
+    {
+      "id": "houser_fred_lincoln",
+      "county": "Lincoln",
+      "decedent": "Houser, Fred Jones",
+      "owner_contains": "HOUSER FRED J",
+      "expected_pid": "11224",
+      "verified_on": "2026-08-08",
+      "notes": "Lincoln had NO smoke coverage (last uncovered county). Case 26E000464-540, Week 31. Guards the family-trust ownership fallback: all three of his Hallman Mill Rd parcels are titled 'HOUSER FRED J LIVING TRUST THE | HOUSER JOYCE H TRUSTEE' and only surface at score 1.00 via the trust-name path; 11224 (7416 Hallman Mill Rd, $219K) is the improved residence, the other two are the adjacent vacant lots that made this a lot-cluster-3 lead. Also exercises Lincoln's year-only sale-date synthesis (DEEDYR -> YYYY-01-01)."
     }
   ]
 }
