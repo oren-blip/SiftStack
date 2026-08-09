@@ -5044,6 +5044,26 @@ def _try_swap_to_under_cap_sibling(row: dict) -> bool:
                 and _middle_match_strength(c.owner_name, dec) >= cur_strength]
     if not siblings:
         return False
+    # Ambiguous name match (Walsh 26E002826-590, Week 31): when the row is
+    # flagged verify-name-ambiguous / verify-name-nomiddle, the current main
+    # may be a NAMESAKE's house — and a swap to an equally-ambiguous cheaper
+    # sibling just trades one stranger's parcel for another's to duck the cap
+    # (Feale Ct -> Aster Dr, both other James Walshes). Only allow the swap
+    # when a sibling identifies the decedent STRICTLY better than the current
+    # main (e.g. deed carries the middle initial the current one lacks) —
+    # that swap RESOLVES the ambiguity instead of inheriting it. Otherwise
+    # skip; the over-cap drop is recoverable on later nights if the court
+    # address or a stronger parcel surfaces.
+    reason = (row.get("Match Reason") or "")
+    if "verify-name-ambiguous" in reason or "verify-name-nomiddle" in reason:
+        stronger = [c for c in siblings
+                    if _middle_match_strength(c.owner_name, dec) > cur_strength]
+        if not stronger:
+            print(f"  SWAP-SKIP-AMBIGUOUS {county}/{dec}: name-ambiguous match "
+                  f"and no sibling identifies the decedent more confidently — "
+                  f"not swapping to a namesake; row stays over-cap")
+            return False
+        siblings = stronger
 
     def _is_vacant(c) -> bool:
         use = (c.use_description or c.use_code or "").upper()
