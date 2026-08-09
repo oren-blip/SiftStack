@@ -152,6 +152,23 @@ def _name_variations(decedent: str, county: str = "") -> list[str]:
     return out
 
 
+def _acq_anchor(row: dict) -> str | None:
+    """Acquisition-date anchor for the posthumous-parcel filter
+    (nc_gis_lookup.drop_posthumous_acquisitions): a parcel the decedent
+    acquired AFTER this date belongs to a same-name stranger.
+
+    Prefers the DOD from the Application PDF; falls back to the eCourts
+    File Date (always present, and conservative — File Date >= DOD, so it
+    can only under-reject, never over-reject). A DOD that postdates the
+    filing is bad OCR — ignored in favor of File Date."""
+    from nc_gis_lookup import _iso_date
+    filed = _iso_date(row.get("File Date"))
+    dod = _iso_date(row.get("Date of Death (App)"))
+    if dod and (not filed or dod <= filed):
+        return dod
+    return filed
+
+
 def research_blank_parcels(
     rows: list[dict],
     min_score: float = 0.7,
@@ -194,7 +211,8 @@ def research_blank_parcels(
         )
         for v in _name_variations(dec, county):
             try:
-                results = lookup_properties(v, county, min_score=min_score)
+                results = lookup_properties(v, county, min_score=min_score,
+                                            acquired_by=_acq_anchor(r))
             except Exception:
                 continue
             if not results:
@@ -482,7 +500,8 @@ def backfill_sibling_parcels_to_notes(rows: list[dict], min_score: float = 0.7) 
         if not dec or not county or "IN THE MATTER" in dec.upper():
             continue
         try:
-            cands = lookup_properties(dec, county, min_score=min_score)
+            cands = lookup_properties(dec, county, min_score=min_score,
+                                      acquired_by=_acq_anchor(r))
         except Exception:
             continue
         if len(cands) <= 1:
@@ -615,7 +634,8 @@ def tag_lot_clusters(rows: list[dict], min_score: float = 0.7) -> int:
         if not dec or not county or "IN THE MATTER" in dec.upper():
             continue
         try:
-            cands = lookup_properties(dec, county, min_score=min_score)
+            cands = lookup_properties(dec, county, min_score=min_score,
+                                      acquired_by=_acq_anchor(r))
         except Exception:
             continue
         if len(cands) < 2:
@@ -668,7 +688,8 @@ def collect_multi_parcel_estates(rows: list[dict], threshold: int = 5) -> list[d
         if not dec or not county or "IN THE MATTER" in dec.upper():
             continue
         try:
-            cands = lookup_properties(dec, county, min_score=0.7)
+            cands = lookup_properties(dec, county, min_score=0.7,
+                                      acquired_by=_acq_anchor(r))
         except Exception:
             continue
         if len(cands) < threshold:
@@ -1170,7 +1191,7 @@ def crosscheck_parcel_vs_decedent_address(rows: list[dict]) -> tuple[int, int, i
         # Name-search candidates — used by BOTH the name-search swap (next) and
         # the flag below. Fetched once.
         try:
-            cands = lookup_properties(dec, county)
+            cands = lookup_properties(dec, county, acquired_by=_acq_anchor(r))
         except Exception:  # noqa: BLE001
             cands = []
 
@@ -1580,7 +1601,8 @@ def recover_parcel_via_corroborated_name(rows: list[dict]) -> int:
             continue
         # Near-miss candidates from NAME search (works for all counties).
         try:
-            cands = lookup_properties(dec, county, min_score=0.35)
+            cands = lookup_properties(dec, county, min_score=0.35,
+                                      acquired_by=_acq_anchor(r))
         except Exception:
             continue
         # A candidate qualifies only if its situs matches the court address:
@@ -1878,14 +1900,40 @@ def validate_existing_matches(
                 blanked += 1
                 rejected_pids.add((county.lower(), pid))
                 continue
+            # Posthumous-acquisition check on the ATTACHED parcel: a sale/deed
+            # date after the DOD (or filing date) means a same-name STRANGER
+            # bought it — the decedent was already dead. Baker 26E002844-590:
+            # 513 Lyttleton Dr bought 2026-04-02, two months after the
+            # 2026-02-05 death. is_heir_transferred parcels are exempt (the
+            # post-death deed-to-heir transfer is that flag's whole meaning).
+            from nc_gis_lookup import (
+                drop_posthumous_acquisitions, _iso_date as _gis_iso,
+            )
+            _anchor = _acq_anchor(r)
+            _sd = _gis_iso(cand.sale_date)
+            if (_anchor and _sd and _sd > _anchor
+                    and not getattr(cand, "is_heir_transferred", False)):
+                print(f"  REJECT-POSTHUMOUS {county}/{dec} pid={pid}: "
+                      f"sale {_sd} > anchor {_anchor} — acquired after "
+                      f"death/filing (owner={cand.owner_name!r})")
+                for col in _PARCEL_PROPERTY_FIELDS:
+                    r[col] = ""
+                tag_reason(r, "audit-blanked-posthumous")
+                blanked += 1
+                rejected_pids.add((county.lower(), pid))
+                continue
             # Re-pick: if a strictly-better candidate exists, swap to it.
             # Catches the case where the original pick passes scoring but a
             # better parcel exists (e.g. Kinney current = LEONARD HEIRS no
             # suffix, better = LEONARD SR HEIRS with suffix; Keller current
             # = 0 Mt Hope vacant, better = 3820 Mt Hope SFR).
+            # The repick pool goes through the posthumous filter too — a
+            # stranger's newer parcel must never be swapped IN as "better".
             from nc_gis_lookup import filter_for_lead_quality, pick_best_candidate
             kept = filter_for_lead_quality(
-                [c for c in results if c.match_score >= min_score],
+                drop_posthumous_acquisitions(
+                    [c for c in results if c.match_score >= min_score],
+                    _anchor, context=dec),
                 beneficiaries_json=r.get("Beneficiaries", "") or "",
                 decedent_name=dec,
             )

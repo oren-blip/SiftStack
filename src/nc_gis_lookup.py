@@ -3021,11 +3021,75 @@ def _persist_put(decedent_name: str, county: str, candidates: list[PropertyCandi
         _persist_flush()
 
 
+def _iso_date(s: str | None) -> str | None:
+    """Normalize a date string to ISO 'YYYY-MM-DD'. Accepts ISO,
+    'M/D/YYYY' / 'MM/DD/YYYY' (eCourts File Date), and 'Month D, YYYY'
+    (OCR'd DOD). Returns None when unparseable — callers treat that as
+    'no anchor', never as an error."""
+    from datetime import datetime
+    s = (s or "").strip()
+    if not s:
+        return None
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        return s[:10]
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%B %d, %Y", "%b %d, %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def drop_posthumous_acquisitions(
+    candidates: list[PropertyCandidate],
+    anchor_date: str | None,
+    *,
+    context: str = "",
+) -> list[PropertyCandidate]:
+    """Drop candidates whose sale/deed date is AFTER the anchor date
+    (decedent's DOD, or the estate filing date as a conservative stand-in).
+    A dead person cannot acquire property — a post-anchor acquisition means
+    the parcel belongs to a same-name STRANGER, not the decedent.
+
+    Motivating case: Baker 26E002844-590 (Week 32) — 4 of 5 attached
+    Mecklenburg parcels belonged to other living Joseph Bakers, one bought
+    2026-04-02, two months after the decedent's 2026-02-05 death. A
+    post-DOD purchase date is the fastest disqualifier for common-surname
+    parcel clusters.
+
+    Exemptions (kept even with a post-anchor date):
+    - is_heir_transferred: the same-name-later-suffix post-probate transfer
+      pattern — the deed moving to the heir AFTER death is exactly what the
+      flag means, and those are deliberately kept as leads.
+    - No sale_date on the candidate (no signal — never reject on absence).
+
+    Year-only counties (Lincoln DEEDYR, Rowan DEEDYEAR) synthesize
+    'YYYY-01-01', so this only rejects there when the deed YEAR is strictly
+    after the anchor year — imprecise but never wrong in the reject
+    direction.
+    """
+    anchor = _iso_date(anchor_date)
+    if not anchor or not candidates:
+        return list(candidates)
+    kept: list[PropertyCandidate] = []
+    for c in candidates:
+        sd = _iso_date(c.sale_date)
+        if sd and sd > anchor and not c.is_heir_transferred:
+            logger.info(
+                "POSTHUMOUS-ACQ rejected %s/%s pid=%s (%s): sale %s > anchor %s "
+                "owner=%r", c.county, context, c.pid, c.situs_address, sd,
+                anchor, c.owner_name)
+            continue
+        kept.append(c)
+    return kept
+
+
 def lookup_properties(
     decedent_name: str,
     county: str,
     *,
     min_score: float = 0.7,
+    acquired_by: str | None = None,
 ) -> list[PropertyCandidate]:
     """Return parcels owned by the decedent in the given county.
 
@@ -3062,6 +3126,11 @@ def lookup_properties(
                 candidates = []
             _persist_put(decedent_name, county, candidates)
         _LOOKUP_CACHE[cache_key] = candidates
+    # Post-cache filter (never mutates the cached list) — so cached entries
+    # are served correctly and no _PERSIST_VERSION bump is needed.
+    if acquired_by:
+        candidates = drop_posthumous_acquisitions(
+            candidates, acquired_by, context=decedent_name)
     if min_score <= 0.4:
         return list(candidates)
     return [c for c in candidates if c.match_score >= min_score]
@@ -3714,6 +3783,12 @@ def expand_notices_with_gis(
         else:
             candidates = lookup_properties(decedent, county, min_score=min_score)
             _LOOKUP_CACHE[cache_key] = candidates
+
+        # A parcel acquired AFTER the estate was filed belongs to a
+        # same-name stranger (dead people don't buy houses). Applied
+        # OUTSIDE the cache so cached entries get filtered too.
+        candidates = drop_posthumous_acquisitions(
+            candidates, getattr(n, "date_added", None), context=decedent)
 
         raw_count = len(candidates)
         kept = filter_for_lead_quality(
