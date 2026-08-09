@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lead Manager Training | Remedi Home Solutions</title>
+  <meta name="description" content="Complete lead manager training for Remedi Home Solutions — lead flow, daily workflow, STABM, quality control, KPI tracking, and drip campaigns. Built on the DataSift platform.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    /* ===== DESIGN TOKENS (DataSift Brand) ===== */
+    :root {
+      --brand-navy: #181F48;
+      --brand-primary: #316AFF;
+      --brand-primary-dark: #264FD0;
+      --brand-primary-light: #4A7BFF;
+      --brand-accent: #93B3FF;
+      --brand-accent-dark: #4A7BFF;
+      --brand-pale: #F0F4FF;
+      --brand-gradient: linear-gradient(135deg, #181F48 0%, #316AFF 100%);
+      --brand-gradient-reverse: linear-gradient(135deg, #316AFF 0%, #181F48 100%);
+      --neutral-950: #0E111A;
+      --neutral-900: #1A1D29;
+      --neutral-850: #242835;
+      --neutral-800: #292D37;
+      --neutral-750: #333847;
+      --neutral-700: #3C4252;
+      --neutral-600: #5A6072;
+      --neutral-500: #656F80;
+      --neutral-400: #808B98;
+      --neutral-300: #9EA6B0;
+      --neutral-200: #C3CAD0;
+      --neutral-100: #E1E5EB;
+      --neutral-50: #F0F2F5;
+      --white: #FFFFFF;
+      --color-success: #10b981;
+      --color-success-light: #d1fae5;
+      --color-warning: #f59e0b;
+      --color-warning-light: #fef3c7;
+      --color-error: #ef4444;
+      --color-error-light: #fee2e2;
+      --color-hot: #ef4444;
+      --color-warm: #f59e0b;
+      --color-cold: #316AFF;
+      --font-primary: 'Manrope', sans-serif;
+      --text-xs: 0.75rem; --text-sm: 0.875rem; --text-base: 1rem;
+      --text-lg: 1.125rem; --text-xl: 1.25rem; --text-2xl: 1.5rem;
+      --text-3xl: 1.875rem; --text-4xl: 2.25rem;
+      --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem;
+      --space-4: 1rem; --space-5: 1.25rem; --space-6: 1.5rem;
+      --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem; --space-16: 4rem;
+      --max-width: 900px;
+      --radius-sm: 6px; --radius-md: 10px; --radius-lg: 16px; --radius-xl: 24px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+      --shadow-lg: 0 8px 30px rgba(0,0,0,0.12);
+      --shadow-glow: 0 0 20px rgba(49,106,255,0.15);
+      --transition-fast: 150ms ease;
+      --transition-base: 250ms ease;
+      --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* ===== RESET ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body { font-family: var(--font-primary); font-size: var(--text-base); line-height: 1.7; color: var(--neutral-800); background: var(--white); -webkit-font-smoothing: antialiased; }
+    img, svg { display: block; max-width: 100%; }
+    button { cursor: pointer; font-family: inherit; }
+    a { color: var(--brand-primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    :focus-visible { outline: 2px solid var(--brand-accent); outline-offset: 2px; border-radius: 2px; }
+
+    /* ===== TYPOGRAPHY ===== */
+    h1, h2, h3, h4, h5 { font-family: var(--font-primary); line-height: 1.2; color: var(--neutral-900); }
+    h1 { font-size: var(--text-4xl); font-weight: 800; }
+    h2 { font-size: var(--text-3xl); font-weight: 700; margin-bottom: var(--space-4); }
+    h3 { font-size: var(--text-2xl); font-weight: 700; margin-bottom: var(--space-3); }
+    h4 { font-size: var(--text-xl); font-weight: 600; margin-bottom: var(--space-2); }
+    p { margin-bottom: var(--space-4); }
+    strong { font-weight: 700; }
+
+    /* ===== LAYOUT ===== */
+    .ds-container { max-width: var(--max-width); margin: 0 auto; padding: 0 var(--space-6); }
+    .ds-section { padding: var(--space-16) 0; opacity: 0; transform: translateY(20px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .ds-section.ds-visible { opacity: 1; transform: translateY(0); }
+    .ds-section-alt { background: var(--brand-pale); }
+    .ds-label { display: inline-block; font-family: var(--font-primary); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--brand-primary-light); margin-bottom: var(--space-2); }
+    .ds-lead { font-size: var(--text-lg); color: var(--neutral-600); line-height: 1.8; }
+    .ds-callout { background: rgba(49,106,255,0.05); border-left: 4px solid var(--brand-primary); padding: var(--space-5) var(--space-6); border-radius: 0 var(--radius-md) var(--radius-md) 0; margin: var(--space-6) 0; }
+    .ds-callout p:last-child { margin-bottom: 0; }
+    .ds-callout-warning { border-left-color: var(--color-warning); background: rgba(245,158,11,0.05); }
+    .ds-callout-success { border-left-color: var(--color-success); background: rgba(16,185,129,0.05); }
+
+    /* ===== MODULE NAV ===== */
+    .ds-module-nav { position: fixed; top: 50%; right: var(--space-4); transform: translateY(-50%); z-index: 150; display: flex; flex-direction: column; gap: var(--space-2); }
+    .ds-module-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--neutral-200); border: 2px solid var(--neutral-300); transition: all var(--transition-base); cursor: pointer; position: relative; }
+    .ds-module-dot:hover { background: var(--brand-primary-light); border-color: var(--brand-primary-light); }
+    .ds-module-dot.ds-active { background: var(--brand-primary); border-color: var(--brand-primary); }
+    .ds-module-dot .ds-dot-tooltip { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); background: var(--neutral-900); color: var(--white); padding: 4px 10px; border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity var(--transition-fast); }
+    .ds-module-dot:hover .ds-dot-tooltip { opacity: 1; }
+
+    /* ===== STICKY PROGRESS BAR ===== */
+    .ds-progress-bar-wrap { position: fixed; top: 0; left: 0; right: 0; z-index: 200; background: var(--neutral-900); border-bottom: 1px solid rgba(255,255,255,0.1); padding: var(--space-2) 0; transform: translateY(-100%); transition: transform var(--transition-base); }
+    .ds-progress-bar-wrap.ds-show { transform: translateY(0); }
+    .ds-progress-inner { display: flex; align-items: center; gap: var(--space-4); }
+    .ds-progress-logo { display: inline-flex; align-items: center; gap: var(--space-2); font-family: var(--font-primary); font-weight: 800; font-size: var(--text-sm); color: var(--white); white-space: nowrap; }
+    .ds-progress-logo span { color: var(--brand-primary); }
+    .ds-progress-track { flex: 1; height: 4px; background: var(--neutral-700); border-radius: 2px; overflow: hidden; }
+    .ds-progress-fill { height: 100%; background: var(--brand-gradient); border-radius: 2px; transition: width 0.5s ease; width: 0%; }
+    .ds-progress-pct { font-size: var(--text-xs); font-weight: 600; color: var(--brand-primary-light); min-width: 32px; text-align: right; }
+    .ds-progress-module { font-size: var(--text-xs); color: var(--neutral-400); white-space: nowrap; display: none; }
+
+    /* ===== HERO ===== */
+    .ds-hero { background: var(--brand-gradient); color: var(--white); padding: var(--space-16) 0 var(--space-12); position: relative; overflow: hidden; }
+    .ds-hero::before { content: ''; position: absolute; top: -50%; right: -20%; width: 600px; height: 600px; background: radial-gradient(circle, rgba(49,106,255,0.15) 0%, transparent 70%); pointer-events: none; }
+    .ds-hero::after { content: ''; position: absolute; bottom: -30%; left: -10%; width: 400px; height: 400px; background: radial-gradient(circle, rgba(147,179,255,0.1) 0%, transparent 70%); pointer-events: none; }
+    .ds-hero-content { position: relative; z-index: 1; }
+    .ds-hero-brand { display: inline-flex; align-items: center; gap: var(--space-2); font-family: var(--font-primary); font-size: var(--text-sm); font-weight: 700; letter-spacing: 0.05em; margin-bottom: var(--space-4); opacity: 0.9; }
+    .ds-hero h1 { color: var(--white); margin-bottom: var(--space-4); font-size: clamp(2rem, 5vw, 3rem); max-width: 700px; }
+    .ds-hero-desc { font-size: var(--text-lg); color: var(--neutral-300); max-width: 600px; line-height: 1.8; margin-bottom: var(--space-8); }
+    .ds-hero-meta { display: flex; gap: var(--space-6); flex-wrap: wrap; font-size: var(--text-sm); color: var(--neutral-400); }
+    .ds-hero-meta-item { display: flex; align-items: center; gap: var(--space-2); }
+    .ds-hero-meta-item svg { width: 16px; height: 16px; color: var(--brand-primary-light); }
+
+    /* ===== MODULE HEADER ===== */
+    .ds-module-header { background: var(--brand-navy); color: var(--white); padding: var(--space-6) 0; margin-bottom: 0; }
+    .ds-module-header-inner { display: flex; align-items: center; gap: var(--space-4); }
+    .ds-module-number { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; background: rgba(49,106,255,0.2); border: 2px solid var(--brand-primary); color: var(--brand-primary-light); font-weight: 800; font-size: var(--text-xl); flex-shrink: 0; }
+    .ds-module-info h2 { color: var(--white); margin-bottom: var(--space-1); font-size: var(--text-2xl); }
+    .ds-module-time { font-size: var(--text-sm); color: var(--brand-accent); font-weight: 600; }
+
+    /* ===== PILLAR/EXPAND CARDS ===== */
+    .ds-pillar-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4); margin: var(--space-6) 0; }
+    .ds-pillar-card { background: var(--white); border: 2px solid var(--neutral-200); border-radius: var(--radius-lg); padding: var(--space-5); cursor: pointer; transition: all var(--transition-base); position: relative; overflow: hidden; }
+    .ds-pillar-card:hover { border-color: var(--brand-primary-light); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+    .ds-pillar-card.ds-active { border-color: var(--brand-primary); box-shadow: var(--shadow-glow); }
+    .ds-pillar-number { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: var(--brand-gradient); color: white; font-weight: 800; font-size: var(--text-sm); margin-bottom: var(--space-3); }
+    .ds-pillar-card h4 { margin-bottom: var(--space-2); }
+    .ds-pillar-card p { font-size: var(--text-sm); color: var(--neutral-600); margin-bottom: 0; }
+    .ds-pillar-detail { display: none; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--neutral-200); }
+    .ds-pillar-card.ds-active .ds-pillar-detail { display: block; animation: ds-fadeSlide 0.3s ease; }
+    .ds-pillar-detail p { font-size: var(--text-sm); margin-bottom: var(--space-2); }
+    .ds-pillar-detail ul { list-style: none; margin: var(--space-2) 0; }
+    .ds-pillar-detail li { padding: var(--space-1) 0; font-size: var(--text-sm); display: flex; align-items: flex-start; gap: var(--space-2); }
+    .ds-pillar-detail li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand-primary); flex-shrink: 0; margin-top: 8px; }
+
+    /* ===== DO / DON'T CARDS ===== */
+    .ds-do-dont { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin: var(--space-6) 0; }
+    .ds-do-card, .ds-dont-card { border-radius: var(--radius-lg); padding: var(--space-5); }
+    .ds-do-card { background: var(--color-success-light); border: 1px solid var(--color-success); }
+    .ds-dont-card { background: var(--color-error-light); border: 1px solid var(--color-error); }
+    .ds-do-card h4, .ds-dont-card h4 { font-size: var(--text-base); margin-bottom: var(--space-3); }
+    .ds-do-card h4 { color: #065f46; }
+    .ds-dont-card h4 { color: #991b1b; }
+    .ds-do-card ul, .ds-dont-card ul { list-style: none; }
+    .ds-do-card li, .ds-dont-card li { padding: var(--space-2) 0; font-size: var(--text-sm); line-height: 1.6; }
+
+    /* ===== TABLE ===== */
+    .ds-table { width: 100%; border-collapse: collapse; margin: var(--space-4) 0; font-size: var(--text-sm); border-radius: var(--radius-md); overflow: hidden; }
+    .ds-table th { background: var(--brand-navy); color: white; padding: var(--space-3) var(--space-4); text-align: left; font-weight: 700; }
+    .ds-table td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--neutral-200); }
+    .ds-table tr:nth-child(even) td { background: var(--neutral-50); }
+
+    /* ===== FLOW DIAGRAM ===== */
+    .ds-flow-diagram { margin: var(--space-6) 0; }
+    .ds-flow-step { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-3); }
+    .ds-flow-badge { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: var(--text-sm); color: white; flex-shrink: 0; }
+    .ds-flow-badge-blue { background: var(--brand-primary); }
+    .ds-flow-badge-green { background: var(--color-success); }
+    .ds-flow-badge-yellow { background: var(--color-warning); }
+    .ds-flow-badge-red { background: var(--color-error); }
+    .ds-flow-badge-navy { background: var(--brand-navy); }
+    .ds-flow-content { flex: 1; background: var(--white); border: 1px solid var(--neutral-200); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); }
+    .ds-flow-content h5 { font-weight: 700; font-size: var(--text-sm); margin-bottom: var(--space-1); }
+    .ds-flow-content p { font-size: var(--text-sm); margin-bottom: 0; color: var(--neutral-600); }
+    .ds-flow-connector { display: flex; justify-content: center; padding: var(--space-1) 0; }
+    .ds-flow-connector svg { width: 20px; height: 20px; color: var(--neutral-400); }
+    .ds-flow-loop { border: 2px dashed var(--color-warning); border-radius: var(--radius-lg); padding: var(--space-4); margin: var(--space-4) 0; background: rgba(245,158,11,0.03); }
+    .ds-flow-loop-label { font-weight: 700; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-warning); margin-bottom: var(--space-3); }
+
+    /* ===== TABS ===== */
+    .ds-tabs-container { margin: var(--space-6) 0; }
+    .ds-tab-btns { display: flex; gap: var(--space-1); margin-bottom: var(--space-4); border-bottom: 2px solid var(--neutral-200); }
+    .ds-tab-btn { padding: var(--space-3) var(--space-5); border: none; background: none; font-weight: 600; font-size: var(--text-sm); color: var(--neutral-500); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all var(--transition-fast); }
+    .ds-tab-btn:hover { color: var(--neutral-700); }
+    .ds-tab-btn.ds-active { color: var(--brand-primary); border-bottom-color: var(--brand-primary); }
+    .ds-tab-panel { display: none; animation: ds-fadeSlide 0.3s ease; }
+    .ds-tab-panel.ds-active { display: block; }
+
+    /* ===== TEMPERATURE BADGES ===== */
+    .ds-temp-badge { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px 10px; border-radius: 100px; font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+    .ds-temp-hot { background: var(--color-error-light); color: #991b1b; }
+    .ds-temp-warm { background: var(--color-warning-light); color: #92400e; }
+    .ds-temp-cold { background: rgba(49,106,255,0.1); color: #1e40af; }
+
+    /* ===== STABM GRID ===== */
+    .ds-stabm-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--space-3); margin: var(--space-6) 0; }
+    .ds-stabm-card { background: var(--white); border: 2px solid var(--neutral-200); border-radius: var(--radius-lg); padding: var(--space-4); text-align: center; transition: all var(--transition-base); }
+    .ds-stabm-card:hover { border-color: var(--brand-primary); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+    .ds-stabm-letter { font-size: var(--text-3xl); font-weight: 800; color: var(--brand-primary); margin-bottom: var(--space-1); }
+    .ds-stabm-word { font-size: var(--text-sm); font-weight: 700; color: var(--neutral-900); margin-bottom: var(--space-2); }
+    .ds-stabm-desc { font-size: var(--text-xs); color: var(--neutral-500); line-height: 1.5; }
+
+    /* ===== PRIORITY LIST ===== */
+    .ds-priority-list { list-style: none; margin: var(--space-6) 0; counter-reset: priority; }
+    .ds-priority-item { display: flex; gap: var(--space-4); padding: var(--space-4); background: var(--white); border: 1px solid var(--neutral-200); border-radius: var(--radius-md); margin-bottom: var(--space-3); transition: all var(--transition-base); cursor: default; }
+    .ds-priority-item:hover { border-color: var(--brand-primary-light); box-shadow: var(--shadow-sm); }
+    .ds-priority-num { counter-increment: priority; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: var(--brand-gradient); color: var(--white); font-weight: 800; font-size: var(--text-sm); flex-shrink: 0; }
+    .ds-priority-num::before { content: counter(priority); }
+    .ds-priority-content h5 { font-weight: 700; font-size: var(--text-base); margin-bottom: 2px; }
+    .ds-priority-content p { font-size: var(--text-sm); color: var(--neutral-600); margin: 0; }
+
+    /* ===== FLIP CARDS ===== */
+    .ds-flipcard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-5); margin: var(--space-6) 0; }
+    .ds-flipcard { perspective: 1000px; height: 190px; cursor: pointer; }
+    .ds-flipcard-inner { position: relative; width: 100%; height: 100%; transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1); transform-style: preserve-3d; }
+    .ds-flipcard.flipped .ds-flipcard-inner { transform: rotateY(180deg); }
+    .ds-flipcard-front, .ds-flipcard-back { position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; border-radius: var(--radius-lg); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: var(--space-5); text-align: center; }
+    .ds-flipcard-front { background: linear-gradient(135deg, #181F48 0%, #1A1D29 100%); border: 1px solid rgba(49,106,255,0.3); color: var(--white); }
+    .ds-flipcard-front h4 { color: var(--white); font-size: var(--text-lg); margin-bottom: var(--space-2); }
+    .ds-flipcard-hint { font-size: var(--text-xs); color: var(--brand-primary-light); text-transform: uppercase; letter-spacing: 0.1em; }
+    .ds-flipcard-back { background: var(--white); border: 2px solid var(--brand-primary); color: var(--neutral-800); transform: rotateY(180deg); }
+    .ds-flipcard-back p { font-size: var(--text-sm); line-height: 1.6; margin: 0; }
+
+    /* ===== RESOURCE CARDS ===== */
+    .ds-resource-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-4); margin: var(--space-6) 0; }
+    .ds-resource-card { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); background: var(--white); border: 1px solid var(--neutral-200); border-left: 4px solid var(--brand-primary); border-radius: var(--radius-md); text-decoration: none; color: var(--neutral-800); transition: all var(--transition-base); }
+    .ds-resource-card:hover { text-decoration: none; box-shadow: var(--shadow-md); transform: translateY(-2px); }
+    .ds-resource-icon { width: 40px; height: 40px; border-radius: var(--radius-sm); background: rgba(49,106,255,0.1); display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--brand-primary); }
+    .ds-resource-info { flex: 1; min-width: 0; }
+    .ds-resource-title { font-weight: 700; font-size: var(--text-sm); margin-bottom: 2px; }
+    .ds-resource-desc { font-size: var(--text-xs); color: var(--neutral-500); margin: 0; }
+    .ds-resource-arrow { color: var(--neutral-400); transition: transform var(--transition-fast); flex-shrink: 0; }
+    .ds-resource-card:hover .ds-resource-arrow { transform: translateX(4px); color: var(--brand-primary); }
+
+    /* ===== SMS TEMPLATE ===== */
+    .ds-sms-template { background: rgba(49,106,255,0.06); border: 1px solid rgba(49,106,255,0.15); border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 4px; padding: var(--space-4) var(--space-5); max-width: 480px; margin: var(--space-3) 0; font-size: var(--text-sm); line-height: 1.7; color: var(--neutral-800); font-style: italic; box-shadow: var(--shadow-sm); }
+    .ds-sms-label { font-weight: 700; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--brand-primary); margin-bottom: var(--space-2); font-style: normal; }
+    .ds-delay-indicator { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--neutral-100); border-radius: var(--radius-sm); font-weight: 700; font-size: var(--text-sm); color: var(--neutral-600); margin: var(--space-4) 0; }
+    .ds-delay-indicator svg { width: 16px; height: 16px; color: var(--neutral-500); }
+
+    /* ===== FOOTER ===== */
+    .ds-footer { background: var(--neutral-900); color: var(--neutral-400); padding: var(--space-10) 0 var(--space-8); }
+    .ds-footer-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-8); }
+    .ds-footer-btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--neutral-800); color: var(--neutral-300); border: 1px solid var(--neutral-700); border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 600; transition: all var(--transition-fast); }
+    .ds-footer-btn:hover { background: var(--neutral-700); color: var(--white); text-decoration: none; }
+    .ds-footer-brand { font-weight: 800; font-size: var(--text-lg); color: var(--white); margin-bottom: var(--space-2); }
+    .ds-footer-brand span { color: var(--brand-primary); }
+    .ds-footer-copy { font-size: var(--text-xs); }
+
+    /* ===== TOAST ===== */
+    .ds-toast { position: fixed; bottom: var(--space-6); right: var(--space-6); background: var(--neutral-900); color: var(--white); padding: var(--space-3) var(--space-5); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 600; box-shadow: var(--shadow-lg); transform: translateY(100px); opacity: 0; transition: all var(--transition-slow); z-index: 400; }
+    .ds-toast.ds-show { transform: translateY(0); opacity: 1; }
+
+    /* ===== MODULE TABLE OF CONTENTS ===== */
+    .ds-toc { margin: var(--space-8) 0; }
+    .ds-toc-item { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); background: var(--white); border: 1px solid var(--neutral-200); border-radius: var(--radius-md); margin-bottom: var(--space-3); text-decoration: none; color: var(--neutral-800); transition: all var(--transition-base); }
+    .ds-toc-item:hover { text-decoration: none; border-color: var(--brand-primary); box-shadow: var(--shadow-md); transform: translateX(4px); }
+    .ds-toc-num { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--brand-gradient); color: var(--white); font-weight: 800; font-size: var(--text-base); flex-shrink: 0; }
+    .ds-toc-info { flex: 1; }
+    .ds-toc-title { font-weight: 700; font-size: var(--text-base); margin-bottom: 2px; }
+    .ds-toc-desc { font-size: var(--text-sm); color: var(--neutral-500); }
+    .ds-toc-time { font-size: var(--text-xs); font-weight: 700; color: var(--brand-primary); white-space: nowrap; }
+
+    /* ===== WORKFLOW STEPS ===== */
+    .ds-workflow-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); margin: var(--space-6) 0; }
+    .ds-workflow-step { background: var(--white); border: 1px solid var(--neutral-200); border-radius: var(--radius-lg); padding: var(--space-5); text-align: center; }
+    .ds-workflow-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--brand-gradient); color: white; font-weight: 800; font-size: var(--text-lg); margin-bottom: var(--space-3); }
+    .ds-workflow-step h4 { font-size: var(--text-lg); margin-bottom: var(--space-2); }
+    .ds-workflow-step p { font-size: var(--text-sm); color: var(--neutral-600); margin: 0; }
+
+    @keyframes ds-fadeSlide { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 768px) {
+      .ds-hero h1 { font-size: var(--text-3xl); }
+      h2 { font-size: var(--text-2xl); }
+      .ds-section { padding: var(--space-10) 0; }
+      .ds-pillar-grid { grid-template-columns: 1fr; }
+      .ds-do-dont { grid-template-columns: 1fr; }
+      .ds-stabm-grid { grid-template-columns: repeat(3, 1fr); }
+      .ds-workflow-steps { grid-template-columns: 1fr; }
+      .ds-flipcard-grid { grid-template-columns: 1fr; }
+      .ds-resource-grid { grid-template-columns: 1fr; }
+      .ds-tab-btns { flex-wrap: wrap; }
+      .ds-module-nav { display: none; }
+      .ds-priority-list { margin: var(--space-4) 0; }
+    }
+
+    /* ===== PRINT ===== */
+    @media print {
+      .ds-progress-bar-wrap, .ds-module-nav, .ds-footer-actions, .ds-flipcard-hint, .ds-toast { display: none !important; }
+      .ds-section { opacity: 1 !important; transform: none !important; padding: 1rem 0; }
+      .ds-hero { background: white !important; color: black !important; padding: 1rem 0; }
+      .ds-hero h1 { color: black !important; }
+      .ds-hero-desc { color: #666 !important; }
+      .ds-flipcard { height: auto; perspective: none; }
+      .ds-flipcard-inner { transform: none !important; transform-style: flat; }
+      .ds-flipcard-front { position: static; background: #f5f5f5 !important; color: black !important; }
+      .ds-flipcard-front h4 { color: black !important; }
+      .ds-flipcard-back { position: static; transform: none !important; display: flex !important; margin-top: 0.5rem; }
+      .ds-pillar-detail { display: block !important; }
+      .ds-tab-panel { display: block !important; }
+      .ds-module-header { background: #f5f5f5 !important; color: black !important; }
+      .ds-module-header h2 { color: black !important; }
+      body { font-size: 11pt; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+      .ds-section { opacity: 1; transform: none; }
+      .ds-flipcard-inner { transition: none; }
+    }
+  
+    .ds-optional-badge {
+      display: inline-block;
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--neutral-500);
+      background: var(--neutral-100);
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      margin-left: var(--space-2);
+      vertical-align: middle;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- STICKY PROGRESS BAR -->
+  <div class="ds-progress-bar-wrap" id="progressBar">
+    <div class="ds-container ds-progress-inner">
+      <div class="ds-progress-logo"><span>Data</span>Sift</div>
+      <div class="ds-progress-track"><div class="ds-progress-fill" id="progressFill"></div></div>
+      <span class="ds-progress-module" id="progressModule"></span>
+      <div class="ds-progress-pct" id="progressPct">0%</div>
+    </div>
+  </div>
+
+  <!-- MODULE NAV DOTS -->
+  <nav class="ds-module-nav" id="moduleNav" aria-label="Module navigation"></nav>
+
+  <!-- HERO -->
+  <header class="ds-hero">
+    <div class="ds-container ds-hero-content">
+      <div class="ds-hero-brand">Remedi Home Solutions</div>
+      <h1>Lead Manager Training</h1>
+      <p class="ds-hero-desc">Everything you need to manage leads from first contact to closed deal. Eight modules plus a setup checklist and Q&amp;A covering the complete lead management system inside DataSift.</p>
+      <div class="ds-hero-meta">
+        <div class="ds-hero-meta-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span>~3 hours total</span>
+        </div>
+        <div class="ds-hero-meta-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+          <span>8 Modules</span>
+        </div>
+        <div class="ds-hero-meta-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>
+          <span>Lead Management</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- TABLE OF CONTENTS -->
+    <section class="ds-section" id="sec-toc" data-section="toc">
+      <div class="ds-container">
+        <span class="ds-label">Training Overview</span>
+        <h2>Module Breakdown</h2>
+        <p class="ds-lead">Work through each module in order. Each one builds on the last.</p>
+        <div class="ds-toc">
+          <a class="ds-toc-item" href="#setup-checklist">
+            <div class="ds-toc-num">&check;</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Setup Checklist</div><div class="ds-toc-desc">Prerequisites: DataSift default build, dialer, task presets, custom fields, KPI tracking</div></div>
+            <span class="ds-toc-time">Before you start</span>
+          </a>
+          <a class="ds-toc-item" href="#mod1">
+            <div class="ds-toc-num">1</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Welcome &amp; The Role</div><div class="ds-toc-desc">Why this role exists, what full-service RE looks like, your responsibilities</div></div>
+            <span class="ds-toc-time">~20 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod2">
+            <div class="ds-toc-num">2</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Your Toolbox &mdash; DataSift</div><div class="ds-toc-desc">SiftLine boards, sequences, task presets, and the STABM habit</div></div>
+            <span class="ds-toc-time">~30 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod3">
+            <div class="ds-toc-num">3</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">The Lead Flow</div><div class="ds-toc-desc">Three phases, temperature movement, terminal statuses, acquisitions handoff</div></div>
+            <span class="ds-toc-time">~35 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod4">
+            <div class="ds-toc-num">4</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Your Day &mdash; Daily Workflow</div><div class="ds-toc-desc">Priority order, filter presets, inbound handling, end-of-day checklist</div></div>
+            <span class="ds-toc-time">~25 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod5">
+            <div class="ds-toc-num">5</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Custom Fields &amp; The Intake Call</div><div class="ds-toc-desc">Seven folders, intake flow, CapEx basics, connection to underwriting</div></div>
+            <span class="ds-toc-time">~20 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod6">
+            <div class="ds-toc-num">6</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Quality Control</div><div class="ds-toc-desc">Four audit filters, status-phase mismatches, cleanup priority</div></div>
+            <span class="ds-toc-time">~15 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod7">
+            <div class="ds-toc-num">7</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">KPI Tracking</div><div class="ds-toc-desc">Metrics, benchmarks, tally count process, Leads Summary connection</div></div>
+            <span class="ds-toc-time">~15 min</span>
+          </a>
+          <a class="ds-toc-item" href="#mod8">
+            <div class="ds-toc-num">8</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Drip Campaigns</div><div class="ds-toc-desc">Ghosting and Not Interested nurture, SMS templates, sequence integration</div></div>
+            <span class="ds-toc-time">~15 min</span>
+          </a>
+          <a class="ds-toc-item" href="#qa-section">
+            <div class="ds-toc-num">?</div>
+            <div class="ds-toc-info"><div class="ds-toc-title">Common Questions</div><div class="ds-toc-desc">Real Q&amp;A from training calls — handoffs, motivation, buy box, drip campaigns, and more</div></div>
+            <span class="ds-toc-time">Reference</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- SETUP CHECKLIST -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="setup-checklist" data-module="0" data-module-name="Setup Checklist">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number" style="font-size:var(--text-lg);">&check;</div>
+        <div class="ds-module-info"><h2>Setup Checklist</h2><span class="ds-module-time">Complete before your first day</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="setup-intro">
+      <div class="ds-container">
+        <span class="ds-label">Before You Start</span>
+        <h2>Get These Right First</h2>
+        <p class="ds-lead">If you skip setup, you&rsquo;ll spend your first month fixing problems instead of closing deals. Complete every item below before moving to Module 1.</p>
+
+        <div class="ds-callout ds-callout-warning">
+          <strong>Warning:</strong> If you delete a board, rename a status, or modify sequences before understanding the system, your automations will break. This is the #1 support complaint. Don&rsquo;t customize until you can run the default build consistently.
+        </div>
+
+        <h3>1. DataSift Account &mdash; Default Build</h3>
+        <ul>
+          <li>Confirm your account has the <strong>default build</strong> loaded: 5 Kanban boards (Lead Management, Acquisitions, Transactions, Wholesale Flips, Rentals)</li>
+          <li>Confirm <strong>property statuses</strong> are intact: New Lead, No Contact New Lead, Cold, Warm, Hot, Ghosting Lead, Dead Lead, Not Interested, Under Contract, Closed</li>
+          <li>Confirm <strong>sequences</strong> are intact (26&ndash;27 default sequences)</li>
+          <li>If anything is missing, contact DataSift support &mdash; they can press a button and reload the default build</li>
+        </ul>
+
+        <h3>2. Phone System / Dialer</h3>
+        <ul>
+          <li>Set up your phone provider (smrtPhone, Twilio, or another dialer)</li>
+          <li>Create <strong>3 separate inboxes</strong> in your phone system:
+            <ul>
+              <li><strong>Inbound Leads</strong> &mdash; for direct mail responses</li>
+              <li><strong>Online Inbounds</strong> &mdash; for website / SEO / PPC leads</li>
+              <li><strong>PPL Inbounds</strong> &mdash; for pay-per-lead provider responses (if applicable)</li>
+            </ul>
+          </li>
+          <li>Assign tracking numbers to the correct inboxes</li>
+          <li>Confirm your lead manager knows which inbox to check for each lead source</li>
+        </ul>
+
+        <h3>3. Task Presets &mdash; Assign to Your Lead Manager</h3>
+        <ul>
+          <li>Go to <strong>Event System &rarr; Presets</strong> in DataSift</li>
+          <li>Open the <strong>Lead Management</strong> folder</li>
+          <li>Edit each preset: change the assignee from <strong>Sensei</strong> (account owner) to <strong>User Round Robin</strong></li>
+          <li>Select your lead manager(s) in the round robin list</li>
+        </ul>
+        <div class="ds-callout ds-callout-info">
+          <strong>Why User Round Robin?</strong> When you hire a second lead manager later, you just add them to the round robin &mdash; no need to re-edit every preset.
+        </div>
+
+        <h3>4. Custom Fields (75 Fields, 7 Folders)</h3>
+        <ul>
+          <li>Install the <strong>DataSift Lead Management plugin</strong> in Claude Cowork (download from the Help Center)</li>
+          <li>Run the <strong>Setup skill</strong> first: say &ldquo;set up my training&rdquo;</li>
+          <li>Run the <strong>Custom Fields skill</strong>: say &ldquo;build my custom fields&rdquo; &mdash; auto-creates all 7 folders and 75 fields in about 60 seconds</li>
+          <li>Verify in <strong>Settings &rarr; Custom Fields &rarr; Fields tab</strong> that all 7 folders appear: Qualifying Questions, Property Condition, CapEx Assessment, Property Debts &amp; Encumbrances, Title &amp; Ownership, Deal Intelligence, Appointment &amp; Next Steps</li>
+        </ul>
+
+        <h3>5. KPI Tracking &mdash; Google Sheet + Tally Counter</h3>
+        <ul>
+          <li>Create or copy the <strong>KPI Google Sheet</strong> with a Lead Manager tab</li>
+          <li>Columns: Date, Total Dials, Conversations, Sent to Acquisitions, Same-Day Contact %, Leads Missing Tasks</li>
+          <li>Download a <strong>Tally Counter app</strong> on your phone &mdash; tally in real time throughout the day</li>
+          <li>Transfer numbers to the Google Sheet before logging off &mdash; <strong>do not batch weekly</strong></li>
+        </ul>
+
+        <h3>6. Daily Workflow Filters</h3>
+        <p>Set up these saved filters in your DataSift Records page. These are the filters your lead manager uses every day, in order:</p>
+        <ol>
+          <li><strong>Call New Lead Tasks</strong> &mdash; Task preset: Call New Lead, Due: Overdue + Due Today</li>
+          <li><strong>Unqualified Lead Tasks</strong> &mdash; Status: No Contact New Lead, Due: Overdue + Due Today</li>
+          <li><strong>Qualified Lead Tasks</strong> &mdash; Status: Cold + Warm + Hot, Due: Overdue + Due Today</li>
+          <li><strong>Leads Missing Tasks</strong> &mdash; Status: Cold + Warm + Hot + No Contact New Lead, Tasks: 0</li>
+          <li><strong>Send Back to Lead Management</strong> &mdash; Task preset: Send Back to LM, Due: Overdue + Due Today</li>
+        </ol>
+
+        <div class="ds-callout ds-callout-success">
+          <strong>These filters ARE your daily workflow.</strong> If your lead manager runs through these every day in order, they&rsquo;re doing their job.
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 1: WELCOME & THE ROLE -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod1" data-module="1" data-module-name="Welcome & The Role">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">1</div>
+        <div class="ds-module-info"><h2>Welcome &amp; The Role</h2><span class="ds-module-time">~20 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod1-intro">
+      <div class="ds-container">
+        <span class="ds-label">The Big Picture</span>
+        <h2>What We Do</h2>
+        <p class="ds-lead">Remedi Home Solutions is a full-service real estate business. We buy houses from motivated sellers, renovate them, and either sell them to end buyers or add them to our rental portfolio. The lead manager is the engine that makes the entire operation work.</p>
+
+        <p>Most people hear "we buy houses" and think we lowball distressed homeowners. That is not what we do. We solve real problems for real people &mdash; homeowners dealing with foreclosure, probate, divorce, code violations, or properties they simply cannot afford to maintain. We are problem solvers first, investors second.</p>
+
+        <h3>Where Leads Come From</h3>
+        <p>Leads enter the business from four primary sources. Each has a different profile and urgency level.</p>
+
+        <div class="ds-pillar-grid" id="sourceGrid">
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="dm">
+            <div class="ds-pillar-number">1</div>
+            <h4>Direct Mail</h4>
+            <p>Postcards and letters to targeted lists (high equity, pre-foreclosure, probate).</p>
+            <div class="ds-pillar-detail">
+              <p>Sellers respond by calling or texting. These are warm inbounds &mdash; they initiated the contact. Process through smrtPhone "Inbound Leads".</p>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="cc">
+            <div class="ds-pillar-number">2</div>
+            <h4>Cold Calling</h4>
+            <p>Outbound team (callers) dials through targeted lists and generates leads.</p>
+            <div class="ds-pillar-detail">
+              <p>These are outbound-generated leads. The cold caller had a conversation and determined the seller might be interested. They push the record to you as a New Lead. Quality varies &mdash; you need to verify motivation.</p>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="carrot">
+            <div class="ds-pillar-number">3</div>
+            <h4>Your Website (Website) <span class="ds-optional-badge">[Optional]</span></h4>
+            <p>Sellers find our website through Google and submit their property info.</p>
+            <div class="ds-pillar-detail">
+              <p>These are high-intent leads &mdash; the seller searched for a solution and found us. Process through Your Website and the smrtPhone "Online Inbounds" inbox. Speed to contact matters here.</p>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="ppl">
+            <div class="ds-pillar-number">4</div>
+            <h4>Pay-Per-Lead <span class="ds-optional-badge">[Optional]</span></h4>
+            <p>Third-party lead providers send us seller inquiries for a fee per lead.</p>
+            <div class="ds-pillar-detail">
+              <p>Process through your PPL provider and the smrtPhone "PPL Inbounds" inbox. These sellers are actively looking to sell &mdash; they went to a lead provider site and filled out a form. Treat these as hot inbounds.</p>
+            </div>
+          </div>
+        </div>
+
+        <h3>Your Role as Lead Manager</h3>
+        <p>You are the first human touchpoint in the sales cycle. Your job is to take every lead that enters the business and move it through a structured qualification process until it either becomes an appointment for the Acquisitions Specialist or exits the pipeline.</p>
+
+        <div class="ds-callout">
+          <p><strong>The core goal of every interaction:</strong> End with either an appointment set for the Acquisitions Specialist or a confirmed follow-up task with a date. No lead should ever sit without a next action. There is no third option.</p>
+        </div>
+
+        <p>You are not making offers or closing deals. You are gathering intelligence on the seller's situation, maintaining consistent follow-up, and making sure no lead ever sits without a next action. You are the bridge between marketing (which generates the leads) and Acquisitions (which makes offers and closes deals).</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 2: YOUR TOOLBOX — DATASIFT -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod2" data-module="2" data-module-name="Your Toolbox — DataSift">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">2</div>
+        <div class="ds-module-info"><h2>Your Toolbox &mdash; DataSift</h2><span class="ds-module-time">~30 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod2-build">
+      <div class="ds-container">
+        <span class="ds-label">The Default Build</span>
+        <h2>What Comes Pre-Built</h2>
+        <p class="ds-lead">Every DataSift account ships with a complete framework for managing your sales cycle. This default build was developed through direct collaboration with six- and seven-figure investors. Your job is to learn and operate within it &mdash; then improve it over time.</p>
+
+        <div class="ds-pillar-grid" id="buildGrid">
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="boards">
+            <div class="ds-pillar-number">1</div>
+            <h4>SiftLine Boards</h4>
+            <p>Kanban-style boards for visualizing your pipeline.</p>
+            <div class="ds-pillar-detail">
+              <p>Default boards: Lead Management, Acquisitions, Transactions, Wholesale, Flips, and Rentals. SiftLine is for managing records after they become leads &mdash; not for prospecting large volumes of unqualified data.</p>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="statuses">
+            <div class="ds-pillar-number">2</div>
+            <h4>Property Statuses</h4>
+            <p>Where a record sits in the sales cycle.</p>
+            <div class="ds-pillar-detail">
+              <p>Active statuses: New Lead, No Contact New Lead, Cold, Warm, Hot, Ghosting Lead, Dead Lead, Not Interested, Under Contract, Closed. Others exist but are toggled off by default.</p>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="tasks">
+            <div class="ds-pillar-number">3</div>
+            <h4>Task Presets</h4>
+            <p>Pre-configured follow-up actions with assignees and due dates.</p>
+            <div class="ds-pillar-detail">
+              <ul>
+                <li>Lead Management: Call New Lead, No Contact New Lead, Nurture New Lead, Cold/Warm/Hot Follow-Up</li>
+                <li>Acquisitions: Make Offer, Offer Follow-Up, Send Back to Lead Management</li>
+                <li>Transactions: Process New Contract, Follow Up with Seller and Title, Close Out Deal</li>
+              </ul>
+            </div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="sequences">
+            <div class="ds-pillar-number">4</div>
+            <h4>Sequences</h4>
+            <p>Automations that fire when statuses change or cards move.</p>
+            <div class="ds-pillar-detail">
+              <p>Sequences follow a <strong>Trigger → Condition → Action</strong> pattern. When you move a card to the Cold Lead phase, a sequence fires that changes the status, clears existing tasks, and adds a Cold Follow-Up due in 45 days. When you complete that task, the loop creates another one automatically.</p>
+              <p><strong>Important:</strong> A sequence cannot be triggered by an action from another sequence. Combine actions into one sequence instead.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-callout-warning ds-callout">
+          <p><strong>Be careful about expanding the system.</strong> Do not create new statuses, tasks, or phases just because you feel like you need them. The default build was designed to focus you on what matters. Expanding without understanding why it's built this way will create clutter, break automations, and make your pipeline harder to manage.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="ds-section ds-section-alt" data-section="mod2-stabm">
+      <div class="ds-container">
+        <span class="ds-label">The Non-Negotiable Habit</span>
+        <h2>STABM &mdash; Check Every Record, Every Time</h2>
+        <p class="ds-lead">Every time you open or leave a record, run STABM. This is not a QC audit step &mdash; it is a proactive habit on every record you touch. If you STABM every record on the way in and on the way out, you are doing quality control in real-time throughout your day.</p>
+
+        <div class="ds-stabm-grid">
+          <div class="ds-stabm-card">
+            <div class="ds-stabm-letter">S</div>
+            <div class="ds-stabm-word">Status</div>
+            <div class="ds-stabm-desc">Is the property status correct for where this record is in the pipeline?</div>
+          </div>
+          <div class="ds-stabm-card">
+            <div class="ds-stabm-letter">T</div>
+            <div class="ds-stabm-word">Task</div>
+            <div class="ds-stabm-desc">Is the right task on the record? Only one task? Correct frequency?</div>
+          </div>
+          <div class="ds-stabm-card">
+            <div class="ds-stabm-letter">A</div>
+            <div class="ds-stabm-word">Assignee</div>
+            <div class="ds-stabm-desc">Is the record assigned to the correct team member?</div>
+          </div>
+          <div class="ds-stabm-card">
+            <div class="ds-stabm-letter">B</div>
+            <div class="ds-stabm-word">Board</div>
+            <div class="ds-stabm-desc">Correct SiftLine board and phase? Does it match the status and task?</div>
+          </div>
+          <div class="ds-stabm-card">
+            <div class="ds-stabm-letter">M</div>
+            <div class="ds-stabm-word">Messages</div>
+            <div class="ds-stabm-desc">Are notes and messages up to date? Did you log your call notes?</div>
+          </div>
+        </div>
+
+        <div class="ds-callout-success ds-callout">
+          <p><strong>STABM prevents problems from accumulating.</strong> Status-phase mismatches, orphaned records, and double tasks happen when people skip this step. Make it muscle memory.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 3: THE LEAD FLOW -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod3" data-module="3" data-module-name="The Lead Flow">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">3</div>
+        <div class="ds-module-info"><h2>The Lead Flow</h2><span class="ds-module-time">~35 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod3-phases">
+      <div class="ds-container">
+        <span class="ds-label">Three Phases</span>
+        <h2>How Every Lead Moves Through the Pipeline</h2>
+        <p class="ds-lead">Every lead moves through three phases: New Lead, Unqualified, and Qualified. Within each phase, the record has a specific status, task, and follow-up frequency. Leads are always in motion &mdash; they promote or demote based on engagement and never sit static.</p>
+
+        <div class="ds-tabs-container" data-tabs="phases">
+          <div class="ds-tab-btns">
+            <button class="ds-tab-btn ds-active" data-tab="phase1">Phase 1: New Lead</button>
+            <button class="ds-tab-btn" data-tab="phase2">Phase 2: Unqualified</button>
+            <button class="ds-tab-btn" data-tab="phase3">Phase 3: Qualified</button>
+          </div>
+
+          <div class="ds-tab-panel ds-active" data-tab-panel="phase1">
+            <h4>Phase 1: New Lead</h4>
+            <p>A brand-new lead has entered the business. Call immediately. This phase should last <strong>one day</strong>. By end of day, the New Lead column on SiftLine should be empty.</p>
+            <table class="ds-table">
+              <thead><tr><th>Component</th><th>Value</th></tr></thead>
+              <tbody>
+                <tr><td>Status</td><td>New Lead</td></tr>
+                <tr><td>Task</td><td>Call New Lead</td></tr>
+                <tr><td>Frequency</td><td>Due immediately (by 6:00 PM the day it comes in)</td></tr>
+                <tr><td>Duration</td><td>1 day &mdash; clear same day</td></tr>
+              </tbody>
+            </table>
+            <p><strong>Outcomes:</strong> They answer &rarr; qualify and move to Cold/Warm/Hot. They don't answer &rarr; move to No Contact New Lead (Phase 2). Property is clearly not viable &rarr; Dead Lead. They say no after objection handling &rarr; Not Interested.</p>
+          </div>
+
+          <div class="ds-tab-panel" data-tab-panel="phase2">
+            <h4>Phase 2: Unqualified</h4>
+            <p>The lead has expressed interest (or was identified as a potential seller), but you haven't spoken to them yet. Two stages with different tempos.</p>
+
+            <h5 style="margin-top:var(--space-4);font-weight:700;">Stage 1: No Contact New Lead (Daily)</h5>
+            <table class="ds-table">
+              <thead><tr><th>Component</th><th>Value</th></tr></thead>
+              <tbody>
+                <tr><td>Status</td><td>No Contact New Lead</td></tr>
+                <tr><td>Task</td><td>No Contact New Lead</td></tr>
+                <tr><td>Frequency</td><td>Due daily</td></tr>
+                <tr><td>Duration</td><td>3&ndash;5 days (your judgment)</td></tr>
+              </tbody>
+            </table>
+            <p>Call every day. Double-tap (morning and evening). Text. Leave voicemails. Duration depends on the property &mdash; a distressed block home from an inbound Your Website lead gets the full 5 days. A rural lot with $3K comps might get 3 days.</p>
+
+            <h5 style="margin-top:var(--space-4);font-weight:700;">Stage 2: Nurture New Lead (Weekly)</h5>
+            <table class="ds-table">
+              <thead><tr><th>Component</th><th>Value</th></tr></thead>
+              <tbody>
+                <tr><td>Task</td><td>Nurture New Lead</td></tr>
+                <tr><td>Frequency</td><td>Due weekly</td></tr>
+                <tr><td>Duration</td><td>Up to 3&ndash;6 months</td></tr>
+              </tbody>
+            </table>
+            <p>Reduced frequency. The task loops automatically &mdash; complete it, a new one gets added. A high-value property stays in nurture for 6 months. Marginal ones, 1&ndash;3 months before moving to Ghosting.</p>
+            <p><strong>Total touches in unqualified:</strong> 5 days daily + 6 months weekly = ~31 touches before Ghosting. You are not giving up &mdash; you're managing your time by adjusting frequency.</p>
+          </div>
+
+          <div class="ds-tab-panel" data-tab-panel="phase3">
+            <h4>Phase 3: Qualified</h4>
+            <p>You've spoken to the seller and qualified them. Now assign a temperature based on motivation, timeline, and engagement.</p>
+
+            <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;margin:var(--space-4) 0;">
+              <div style="flex:1;min-width:200px;background:var(--color-error-light);border:1px solid var(--color-error);border-radius:var(--radius-md);padding:var(--space-4);">
+                <h5 style="color:#991b1b;margin-bottom:var(--space-2);">Hot &mdash; Every 2 Days</h5>
+                <p style="font-size:var(--text-sm);margin:0;color:#7f1d1d;">Actively communicating, wants to sell, good lead for your business. Hot is about tempo and priority, not just motivation level.</p>
+              </div>
+              <div style="flex:1;min-width:200px;background:var(--color-warning-light);border:1px solid var(--color-warning);border-radius:var(--radius-md);padding:var(--space-4);">
+                <h5 style="color:#92400e;margin-bottom:var(--space-2);">Warm &mdash; Every 15 Days</h5>
+                <p style="font-size:var(--text-sm);margin:0;color:#78350f;">Moderate motivation. Timeline 30&ndash;180 days. Some flexibility on price. Engaging but not ready to commit.</p>
+              </div>
+              <div style="flex:1;min-width:200px;background:rgba(49,106,255,0.1);border:1px solid var(--brand-primary);border-radius:var(--radius-md);padding:var(--space-4);">
+                <h5 style="color:#1e40af;margin-bottom:var(--space-2);">Cold &mdash; Every 45 Days</h5>
+                <p style="font-size:var(--text-sm);margin:0;color:#1e3a8a;">Wants to sell but not urgent. Timeline 180+ days. Price may be anchored high. Motivation is low but present.</p>
+              </div>
+            </div>
+
+            <div class="ds-callout">
+              <p><strong>Special case &mdash; Foreclosure or auction with a deadline:</strong> Even if the seller hasn't expressed strong motivation, if the property is going to auction in 30 days, common sense says you keep it on a hot or daily tempo. The situation dictates the frequency, not just the seller's words.</p>
+            </div>
+
+            <p><strong>Pipeline distribution:</strong> A healthy qualified pipeline is roughly ~75% Cold, ~15% Warm, ~5% Hot. This makes sense because cold has the longest interval and most leads naturally settle there over time.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ds-section ds-section-alt" data-section="mod3-movement">
+      <div class="ds-container">
+        <span class="ds-label">Temperature Movement</span>
+        <h2>Leads Are Always in Motion</h2>
+        <p class="ds-lead">Leads promote or demote based on engagement. They never just sit static at one temperature.</p>
+
+        <div class="ds-do-dont">
+          <div class="ds-do-card">
+            <h4>Promotion (Temperature Up)</h4>
+            <ul>
+              <li>Cold &rarr; Warm: Seller becomes more engaged, timeline shortens</li>
+              <li>Warm &rarr; Hot: Seller is ready to discuss an offer, actively communicating</li>
+              <li>Any qualified &rarr; Send to Acquisitions: Seller is ready for an offer</li>
+            </ul>
+          </div>
+          <div class="ds-dont-card">
+            <h4>Demotion (Temperature Down)</h4>
+            <ul>
+              <li>Hot &rarr; Warm: Seller stops communicating after ~1 week at hot tempo</li>
+              <li>Warm &rarr; Cold: Still not engaging after a period on 15-day tempo</li>
+              <li>Cold &rarr; Ghosting: After 12&ndash;18 months of cycling with no meaningful engagement</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>Terminal Statuses</h3>
+        <p>These are the exit points from the active pipeline. Each has a specific meaning &mdash; do not use them interchangeably.</p>
+
+        <div class="ds-flipcard-grid">
+          <div class="ds-flipcard" tabindex="0" role="button" aria-label="Flip to see definition">
+            <div class="ds-flipcard-inner">
+              <div class="ds-flipcard-front"><h4>Dead Lead</h4><span class="ds-flipcard-hint">Click to flip</span></div>
+              <div class="ds-flipcard-back"><p>Clearly never going to be a deal. Unrealistic expectations, property not viable, or outbound team pushed it but after reviewing, it's automatically not viable. No task added &mdash; handled through marketing filters.</p></div>
+            </div>
+          </div>
+          <div class="ds-flipcard" tabindex="0" role="button" aria-label="Flip to see definition">
+            <div class="ds-flipcard-inner">
+              <div class="ds-flipcard-front"><h4>Not Interested</h4><span class="ds-flipcard-hint">Click to flip</span></div>
+              <div class="ds-flipcard-back"><p>You spoke to the seller. They explicitly said they do not want to sell. You went through your objection list and they confirmed. This is NOT "we couldn't reach them." Requires a conversation. No task added &mdash; gets periodic marketing campaigns.</p></div>
+            </div>
+          </div>
+          <div class="ds-flipcard" tabindex="0" role="button" aria-label="Flip to see definition">
+            <div class="ds-flipcard-inner">
+              <div class="ds-flipcard-front"><h4>Lost Deal</h4><span class="ds-flipcard-hint">Click to flip</span></div>
+              <div class="ds-flipcard-back"><p>At any point, the property got listed with an agent or sold to another investor. The deal is gone. No task added &mdash; move to Lost Deal phase on SiftLine.</p></div>
+            </div>
+          </div>
+          <div class="ds-flipcard" tabindex="0" role="button" aria-label="Flip to see definition">
+            <div class="ds-flipcard-inner">
+              <div class="ds-flipcard-front"><h4>Ghosting</h4><span class="ds-flipcard-hint">Click to flip</span></div>
+              <div class="ds-flipcard-back"><p>The lead stopped communicating over time. No active task, but they receive periodic marketing campaigns every 45&ndash;90 days. Ghosting is not permanent &mdash; if they respond, they re-enter at the appropriate qualified status.</p></div>
+            </div>
+          </div>
+        </div>
+
+        <h3>The Handoff to Acquisitions</h3>
+        <p>When a qualified lead is ready for an offer, move the record to the <strong>Send to Acquisitions</strong> phase on the Lead Management SiftLine board. This triggers a sequence that creates a Make Offer task and moves the card to the Acquisitions board. If the lead comes back, it enters the <strong>Sent Back to LM</strong> phase and re-enters your workflow &mdash; usually at Warm or Hot, since they were recently engaged enough to warrant an offer.</p>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 4: DAILY WORKFLOW -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod4" data-module="4" data-module-name="Your Day — Daily Workflow">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">4</div>
+        <div class="ds-module-info"><h2>Your Day &mdash; Daily Workflow</h2><span class="ds-module-time">~25 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod4-priority">
+      <div class="ds-container">
+        <span class="ds-label">Priority Order</span>
+        <h2>How Your Day Flows</h2>
+        <p class="ds-lead">Work through these in order every day. Use the filter presets on the Records page under the Lead Management folder. For each filter, always check Overdue first, then switch to Due Today.</p>
+
+        <div class="ds-callout-warning ds-callout">
+          <p><strong>One rule overrides everything:</strong> Any new inbound call or newly submitted lead takes immediate priority over whatever you are currently working on. Inbounds always come first.</p>
+        </div>
+
+        <ol class="ds-priority-list">
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Clear the Queue</h5>
+              <p>Missed calls, voicemails, texts. Check inbound direct mail leads (smrtPhone "Inbound Leads"), your PPL provider leads (your PPL provider + smrtPhone "PPL Inbounds"), Your Website leads (Your Website + smrtPhone "Online Inbounds").</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Call New Lead Tasks (Preset 0)</h5>
+              <p>Brand-new leads needing first call attempt. Complete same day. New Lead column should be empty by end of day.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Unqualified Lead Tasks (Preset 1)</h5>
+              <p>No Contact New Lead (daily follow-up) and Nurture New Lead (weekly). Call, double-tap, text, voicemails.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Qualified Follow-Ups (Preset 2)</h5>
+              <p>Hot (2 days), Warm (15 days), Cold (45 days). Work overdue first, then due today.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Leads Missing Tasks (Preset 3)</h5>
+              <p>Daily safety net. Any lead without a task is invisible to your workflow. Should be zero every day.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Sent Back to LM (Preset 5)</h5>
+              <p>Leads returned from Acquisitions. Review, re-qualify, put back at the right temperature with the correct task.</p>
+            </div>
+          </li>
+        </ol>
+
+        <h3>End of Day Checklist</h3>
+        <div class="ds-do-dont">
+          <div class="ds-do-card">
+            <h4>Before You Log Off</h4>
+            <ul>
+              <li>Check for missed calls, voicemails, or texts that need a response</li>
+              <li>Confirm New Lead phase on SiftLine is empty</li>
+              <li>Confirm all tasks due today are completed or rescheduled</li>
+              <li>Transfer Tally Count numbers to the KPI Google Sheet</li>
+            </ul>
+          </div>
+          <div class="ds-dont-card">
+            <h4>Common Mistakes</h4>
+            <ul>
+              <li>Leaving New Leads overnight &mdash; these must be contacted same day</li>
+              <li>Skipping the Leads Missing Tasks filter &mdash; invisible leads are lost leads</li>
+              <li>Batching KPI entry at end of week &mdash; daily entry keeps data accurate</li>
+              <li>Forgetting to log call notes &mdash; do it immediately after each call</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 5: CUSTOM FIELDS & THE INTAKE CALL -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod5" data-module="5" data-module-name="Custom Fields & Intake">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">5</div>
+        <div class="ds-module-info"><h2>Custom Fields &amp; The Intake Call</h2><span class="ds-module-time">~20 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod5-fields">
+      <div class="ds-container">
+        <span class="ds-label">The Source of Truth</span>
+        <h2>Seven Custom Field Folders</h2>
+        <p class="ds-lead">When you get a seller on the phone, it's not enough to assign a temperature and set a follow-up. You need to capture detailed information into seven custom field folders in DataSift. These fields are the singular source of truth for the entire company.</p>
+
+        <div class="ds-pillar-grid" id="fieldGrid">
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f1">
+            <div class="ds-pillar-number">1</div>
+            <h4>Qualifying Questions</h4>
+            <p>Timeline, motivation, asking price, flexibility.</p>
+            <div class="ds-pillar-detail"><p>This is where you capture the seller's urgency, their price expectations, and how flexible they are. These fields directly determine the lead temperature.</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f2">
+            <div class="ds-pillar-number">2</div>
+            <h4>Property Condition</h4>
+            <p>Overall condition, vacancy, interior/exterior notes.</p>
+            <div class="ds-pillar-detail"><p>General assessment of the property. Is it occupied or vacant? What's the overall condition? Any visible issues?</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f3">
+            <div class="ds-pillar-number">3</div>
+            <h4>CapEx Assessment</h4>
+            <p>Roof, HVAC, water heater, plumbing, electrical, junk removal.</p>
+            <div class="ds-pillar-detail"><p>Every "Unknown" in CapEx forces conservative assumptions that lower the offer. The better the intake, the more accurate the underwriting, the more competitive the offer.</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f4">
+            <div class="ds-pillar-number">4</div>
+            <h4>Property Debts</h4>
+            <p>Mortgage, taxes, liens, HOA, probate, foreclosure.</p>
+            <div class="ds-pillar-detail"><p>What does the seller owe? Are there liens? Is there an HOA with violations? Is the property in probate or foreclosure? This affects deal structure.</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f5">
+            <div class="ds-pillar-number">5</div>
+            <h4>Title &amp; Ownership</h4>
+            <p>Decision-maker confirmation, heirs, trusts, attorneys.</p>
+            <div class="ds-pillar-detail"><p>Who actually has authority to sell? Is there a trust? Multiple heirs? An attorney involved? If you're not talking to the decision-maker, you're wasting time.</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f6">
+            <div class="ds-pillar-number">6</div>
+            <h4>Deal Intelligence</h4>
+            <p>Price source, willingness, preferred terms, negotiation intel.</p>
+            <div class="ds-pillar-detail"><p>Where did the seller's price come from? Zillow estimate? Agent appraisal? Their own head? Are they open to creative terms? This is gold for the Acquisitions Specialist.</p></div>
+          </div>
+          <div class="ds-pillar-card" tabindex="0" role="button" aria-expanded="false" data-pillar="f7">
+            <div class="ds-pillar-number">7</div>
+            <h4>Appointment &amp; Next Steps</h4>
+            <p>Photos on file, field visit scheduling, property access logistics.</p>
+            <div class="ds-pillar-detail"><p>Do we have photos? Has a field visit been scheduled for the TC or team member? Who will be present? Is there lockbox access? Appointment dates and times live in the Tasks feature &mdash; this folder captures the access logistics and field visit status.</p></div>
+          </div>
+        </div>
+
+        <div class="ds-callout">
+          <p><strong>Update custom fields during or immediately after every seller conversation.</strong> Don't leave blanks for Acquisitions to discover later. The fields are your intake guide &mdash; refer to CUSTOM_FIELDS.md for the complete field-by-field breakdown and the CapEx cheat sheet.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 6: QUALITY CONTROL -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod6" data-module="6" data-module-name="Quality Control">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">6</div>
+        <div class="ds-module-info"><h2>Quality Control</h2><span class="ds-module-time">~15 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod6-qc">
+      <div class="ds-container">
+        <span class="ds-label">Pipeline Hygiene</span>
+        <h2>Keep the Pipeline Clean</h2>
+        <p class="ds-lead">QC is a daily discipline, not an occasional audit. STABM handles real-time QC. The four audit filters below are your weekly safety net &mdash; they catch anything that slipped through.</p>
+
+        <div class="ds-tabs-container" data-tabs="qc">
+          <div class="ds-tab-btns">
+            <button class="ds-tab-btn ds-active" data-tab="qc1">Filter 1: Tasks Check</button>
+            <button class="ds-tab-btn" data-tab="qc2">Filter 2: No Tasks</button>
+            <button class="ds-tab-btn" data-tab="qc3">Filter 3: Double Tasks</button>
+            <button class="ds-tab-btn" data-tab="qc4">Filter 4: Missing Phone</button>
+          </div>
+          <div class="ds-tab-panel ds-active" data-tab-panel="qc1">
+            <h4>Boards, Tasks, Check</h4>
+            <p>Finds records on a board phase that have overdue or due-today tasks. Look for overdue tasks that haven't been addressed, conflicting tasks (a Make Offer task on a No Contact record), or records moved between phases without sequences updating. Fix by running STABM and resolving what's out of place.</p>
+          </div>
+          <div class="ds-tab-panel" data-tab-panel="qc2">
+            <h4>Boards, No Tasks, Check</h4>
+            <p>Finds records on a board phase that have zero tasks. <strong>A record on the board with no task is invisible.</strong> It will never surface in your daily workflow. This filter is the only way to find them. Usually caused by a manual status change that didn't trigger the sequence, or a task loop that didn't add the next one.</p>
+          </div>
+          <div class="ds-tab-panel" data-tab-panel="qc3">
+            <h4>Boards with Two or More Tasks</h4>
+            <p>Finds records with multiple tasks. Usually a double task (one manual, one from a sequence), tasks from a previous phase that weren't cleared, or random tasks stacked on top of the follow-up task. Keep the most recent and correct task. Delete the duplicate.</p>
+          </div>
+          <div class="ds-tab-panel" data-tab-panel="qc4">
+            <h4>Boards Missing Correct Number</h4>
+            <p>Finds records that don't have a correct phone number. These records will fail in drip campaigns and dial sessions. Flag them for skip tracing or further research.</p>
+          </div>
+        </div>
+
+        <h3>The #1 QC Problem: Status vs. Phase Mismatch</h3>
+        <p>The single most frequent QC issue is records where the status doesn't match the board phase. Example: a record in the Cold Lead phase but with a "Not Interested" status. This happens when someone changes the status manually instead of moving the card on SiftLine.</p>
+        <div class="ds-callout">
+          <p><strong>The fix:</strong> Always move cards on the board instead of just changing statuses manually. Let the sequences do their job. For bulk cleanup: filter by a phase, then add a second filter for status "does not include" that phase's status. Everything that shows up is mismatched.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 7: KPI TRACKING -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod7" data-module="7" data-module-name="KPI Tracking">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">7</div>
+        <div class="ds-module-info"><h2>KPI Tracking</h2><span class="ds-module-time">~15 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod7-kpis">
+      <div class="ds-container">
+        <span class="ds-label">Measure What Matters</span>
+        <h2>Your Numbers Tell the Story</h2>
+        <p class="ds-lead">We track KPIs manually &mdash; with a tally counter and a Google Sheet &mdash; on purpose. There is no way to get closer to perfect than doing it yourself in real time rather than relying on the CRM after the fact.</p>
+
+        <h3>Benchmarks</h3>
+        <table class="ds-table">
+          <thead><tr><th>KPI</th><th>Benchmark</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Dials Made (daily)</td><td><strong>150 minimum</strong></td><td>This is the floor, not the target. If consistently under 150, something is eating your calling time.</td></tr>
+            <tr><td>Conversations (daily)</td><td><strong>25</strong></td><td>Actual two-way conversations, not just "someone picked up and hung up."</td></tr>
+            <tr><td>Conversation Rate</td><td><strong>~15&ndash;20%</strong></td><td>Conversations &divide; Dials. Below 15% consistently = list or number quality issues.</td></tr>
+            <tr><td>Sent to AQS (daily)</td><td><strong>2&ndash;5</strong></td><td>The money metric. Leads sent to Acquisitions for an offer, every day.</td></tr>
+            <tr><td>Same-Day Contact</td><td><strong>100%</strong></td><td>Every new lead gets a call attempt the same business day. No exceptions.</td></tr>
+            <tr><td>Leads Missing Tasks</td><td><strong>0</strong></td><td>Preset 3 check. Should be zero every day.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>The Daily Tracking Process</h3>
+        <div class="ds-workflow-steps">
+          <div class="ds-workflow-step">
+            <div class="ds-workflow-badge">1</div>
+            <h4>Tally</h4>
+            <p>Open Tally Count at start of shift. Tap every action as it happens &mdash; dials, conversations, texts, voicemails. Update after every conversation.</p>
+          </div>
+          <div class="ds-workflow-step">
+            <div class="ds-workflow-badge">2</div>
+            <h4>Transfer</h4>
+            <p>End of day: open Remedi Home Solutions KPIs Google Sheet &rarr; Lead Management tab. Add a new row. Transfer your Tally Count numbers 1:1 into the columns.</p>
+          </div>
+          <div class="ds-workflow-step">
+            <div class="ds-workflow-badge">3</div>
+            <h4>Verify</h4>
+            <p>Cross-reference DataSift for pipeline metrics. Conversations should never exceed Dials. Sent to AQS should be traceable to records you moved.</p>
+          </div>
+        </div>
+
+        <div class="ds-callout-warning ds-callout">
+          <p><strong>Do not batch KPI entry at the end of the week.</strong> Daily entry keeps the data accurate. If you wait until Friday to fill in Monday's numbers, you're guessing.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- MODULE 8: DRIP CAMPAIGNS -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="mod8" data-module="8" data-module-name="Drip Campaigns">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number">8</div>
+        <div class="ds-module-info"><h2>Drip Campaigns</h2><span class="ds-module-time">~15 minutes</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="mod8-drips">
+      <div class="ds-container">
+        <span class="ds-label">Automated Follow-Up</span>
+        <h2>Keeping the Line Alive</h2>
+        <p class="ds-lead">Drip campaigns automate follow-up on records that no longer need manual effort. The primary use case: leads that have exited the active pipeline &mdash; ghosting and not interested leads &mdash; where you still want periodic contact without burning calling hours.</p>
+
+        <div class="ds-callout">
+          <p><strong>Drips supplement your manual workflow &mdash; they do not replace it.</strong> Your daily workflow (filter presets, manual task loops) handles active leads. Drips pick up where manual effort leaves off.</p>
+        </div>
+
+        <div class="ds-tabs-container" data-tabs="drips">
+          <div class="ds-tab-btns">
+            <button class="ds-tab-btn ds-active" data-tab="drip-ghosting">Ghosting Nurture</button>
+            <button class="ds-tab-btn" data-tab="drip-ni">Not Interested Nurture</button>
+            <button class="ds-tab-btn" data-tab="drip-rules">Critical Rules</button>
+          </div>
+
+          <div class="ds-tab-panel ds-active" data-tab-panel="drip-ghosting">
+            <h4>Ghosting Lead Nurture</h4>
+            <p>45-day cycle, 4 cycles total (~142 days). Triggered when a record moves to the Ghosting phase on SiftLine.</p>
+
+            <div class="ds-sms-label">Cycle 1 SMS</div>
+            <div class="ds-sms-template">Hi @Owner First Name, this is Jay at Remedi Home Solutions. Still thinking about @Property Address? Happy to chat if anything has changed. No pressure.</div>
+
+            <div class="ds-delay-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              45-day delay
+            </div>
+
+            <div class="ds-sms-label">Cycle 2 SMS</div>
+            <div class="ds-sms-template">Hey @Owner First Name, Jay here. Your property at @Property Address is still on my radar. Text or call me if you want to talk.</div>
+
+            <div class="ds-delay-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              45-day delay
+            </div>
+
+            <div class="ds-sms-label">Cycle 3 SMS</div>
+            <div class="ds-sms-template">Hi @Owner First Name, just checking in on @Property Address. If the timing is ever right to sell, my number hasnt changed. -Jay</div>
+
+            <div class="ds-delay-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              45-day delay
+            </div>
+
+            <div class="ds-sms-label">Cycle 4 SMS</div>
+            <div class="ds-sms-template">Hey @Owner First Name, its Jay. Periodically checking in on @Property Address. If anything has changed, Id love to connect.</div>
+          </div>
+
+          <div class="ds-tab-panel" data-tab-panel="drip-ni">
+            <h4>Not Interested Nurture</h4>
+            <p>90-day cycle with a 14-day initial buffer (respects the seller's stated decision), 4 cycles total (~360 days). Triggered when a record moves to the Not Interested phase.</p>
+
+            <div class="ds-delay-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              14-day buffer before first text
+            </div>
+
+            <p>SMS templates follow the same tone &mdash; casual, no pressure, acknowledging they said no but leaving the door open. 90-day spacing between each touch. Each cycle includes an SMS plus a manual task for the lead manager to call.</p>
+          </div>
+
+          <div class="ds-tab-panel" data-tab-panel="drip-rules">
+            <h4>Critical Design Rules</h4>
+            <div class="ds-flow-diagram">
+              <div class="ds-flow-step">
+                <div class="ds-flow-badge ds-flow-badge-red">!</div>
+                <div class="ds-flow-content">
+                  <h5>Drips Run on Autopilot</h5>
+                  <p>Once enrolled, actions fire on schedule whether the lead manager notices or not. You need a plan for how leads get removed from drips when they re-engage.</p>
+                </div>
+              </div>
+              <div class="ds-flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>
+              <div class="ds-flow-step">
+                <div class="ds-flow-badge ds-flow-badge-yellow">!</div>
+                <div class="ds-flow-content">
+                  <h5>Sequence-Based Removal Is Essential</h5>
+                  <p>When a ghosting lead re-enters the pipeline, the receiving sequence (New Lead, Cold, Warm, Hot) must include a "Remove from Drip Campaign" action. Without this, double-contact.</p>
+                </div>
+              </div>
+              <div class="ds-flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>
+              <div class="ds-flow-step">
+                <div class="ds-flow-badge ds-flow-badge-blue">!</div>
+                <div class="ds-flow-content">
+                  <h5>No Task Conflicts</h5>
+                  <p>Drip campaigns are for leads that exited the active task-based pipeline. Don't add drip-generated tasks to records that already have sequence-generated task loops.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RESOURCES & LOOM VIDEOS -->
+    <!-- ============================================================ -->
+    <section class="ds-section ds-section-alt" id="sec-resources" data-section="resources">
+      <div class="ds-container">
+        <span class="ds-label">Resources &amp; Quick Tip Trainings</span>
+        <h2>Loom Video Library</h2>
+        <p class="ds-lead">Short video walkthroughs for specific lead processing scenarios. Watch these as you encounter each lead type.</p>
+
+        <div class="ds-resource-grid">
+          <a class="ds-resource-card" href="https://www.loom.com/share/08f38611f8994d7389dcc5b96d8ae08c?sid=c17f7f8c-d7b2-4c7b-a8a2-15ee529ad4c2" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">Your Website Lead Processing</div><p class="ds-resource-desc">After talking to a new PPC/SEO/Your Website lead</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a class="ds-resource-card" href="https://www.loom.com/share/aa37dfed8b7c45d7bb675505b02a7398?sid=d787abcf-c5d4-4829-8a41-305aebb4e969" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">Your Website Lead Processing (Part 2)</div><p class="ds-resource-desc">Continued walkthrough of Your Website lead handling</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a class="ds-resource-card" href="https://www.loom.com/share/08038fa94d904db89ac58423a4402b52?sid=9302e74b-68f5-4cff-9390-fb0bb06853fa" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">Your Website Lead with Property Typo</div><p class="ds-resource-desc">Handling a Your Website lead with an incorrect address</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a class="ds-resource-card" href="https://www.loom.com/share/077db5fb76464186be2994a8fc5ba489?sid=6623cacd-1c1f-4c71-b34d-75bf6c810d31" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">PPL Lead &mdash; 280 Bracewell St</div><p class="ds-resource-desc">Processing a new Pay-Per-Lead</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a class="ds-resource-card" href="https://www.loom.com/share/f03b664d9a7049f0a863a9b772bdec03?sid=766d51f8-b139-4ea3-8a96-aea847d63d1c" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">PPL Lead &mdash; 37 Olde Cypress</div><p class="ds-resource-desc">Another PPL lead processing walkthrough</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+          <a class="ds-resource-card" href="https://www.loom.com/share/68f0c32ef1c848579ba672238030438e?sid=a6c9a0fa-6c71-49ff-90be-93b945760450" target="_blank" rel="noopener">
+            <div class="ds-resource-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+            <div class="ds-resource-info"><div class="ds-resource-title">PPL Lead &mdash; 3155 Pinewoods Dr</div><p class="ds-resource-desc">Third PPL lead walkthrough</p></div>
+            <svg class="ds-resource-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Q&A: COMMON QUESTIONS -->
+    <!-- ============================================================ -->
+    <div class="ds-module-header" id="qa-section" data-module="9" data-module-name="Common Questions">
+      <div class="ds-container ds-module-header-inner">
+        <div class="ds-module-number" style="font-size:var(--text-lg);">?</div>
+        <div class="ds-module-info"><h2>Common Questions</h2><span class="ds-module-time">Reference</span></div>
+      </div>
+    </div>
+
+    <section class="ds-section" data-section="qa-intro">
+      <div class="ds-container">
+        <span class="ds-label">Real Q&amp;A from Training Calls</span>
+        <h2>Questions &amp; Answers</h2>
+        <p class="ds-lead">These are real questions from DataSift customers, answered live during training. If you have the same question, you&rsquo;re not alone.</p>
+
+        <!-- Q1 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">How do I handle the handoff when I have multiple acquisition managers?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p>Never say &ldquo;my partner will be in touch&rdquo; &mdash; it&rsquo;s vague and doesn&rsquo;t build trust. Instead, <strong>use real names and real roles:</strong></p>
+            <ul>
+              <li>If you have 2&ndash;3 people, name them: <em>&ldquo;I&rsquo;m going to pass your information to either Jay, Danny, or Brent &mdash; one of them will be reaching out.&rdquo;</em></li>
+              <li>If you have more, summarize: <em>&ldquo;Someone from our lead management team &mdash; whoever&rsquo;s quickest available &mdash; will reach out. Keep an eye out for a call from an 850 number you don&rsquo;t recognize. We&rsquo;ll text you before we call.&rdquo;</em></li>
+            </ul>
+            <p>Setting this expectation is what separates a 50%+ qualifying rate from sitting in the 20s. The seller needs to know what happens next, who&rsquo;s contacting them, and from what number.</p>
+          </div>
+        </div>
+
+        <!-- Q2 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">What do I do with leads that have no real motivation?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p>There are <strong>two kinds of motivation</strong>: what the seller tells you, and what the data tells you.</p>
+            <ul>
+              <li><strong>No motivation + no data indicators</strong> (owner-occupied, high equity, unrealistic price, no distress): Not a real lead. Move to <strong>Not Interested</strong> or <strong>Dead Lead</strong>. This is a qualifying problem on the caller side.</li>
+              <li><strong>&ldquo;No motivation&rdquo; + data indicators</strong> (probate, absentee, auction date coming): This IS a lead. The seller may say they want $650K, but if they&rsquo;re in probate and absentee, there may be a listing opportunity or a future cash offer.</li>
+            </ul>
+            <p>If someone says they&rsquo;re interested in selling, they&rsquo;re a lead &mdash; because you may have multiple ways to close (cash offer, listing, creative terms). If they&rsquo;re completely off in left field with zero indicators, move them to Dead Lead with &ldquo;unrealistic expectations&rdquo; as the reason.</p>
+          </div>
+        </div>
+
+        <!-- Q3 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">What about sellers who want to sell but need to find another house first?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p><strong>If this comes up a lot:</strong> Build a program around it. Give it a name &mdash; a &ldquo;white glove transition service&rdquo; where you help them find a place, buy theirs, and handle the move in one seamless process.</p>
+            <p><strong>If it&rsquo;s occasional:</strong> Put them in the follow-up frequency that matches how closely you want to track them. This is typically a <strong>warm lead</strong> &mdash; check in regularly: <em>&ldquo;Hey, just checking to see if you found a place. Can I send you a few recommendations?&rdquo;</em></p>
+            <p><strong>Key insight:</strong> Cold, warm, and hot aren&rsquo;t about when the seller wants to sell. They&rsquo;re about the <strong>frequency</strong> you need to follow up. A probate property 6 months out might be hot because it&rsquo;s in a neighborhood you want to buy in.</p>
+          </div>
+        </div>
+
+        <!-- Q4 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">Should cold leads have drip campaigns?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p><strong>No</strong> &mdash; not unless you&rsquo;ve decided you&rsquo;re never going to hire another lead manager.</p>
+            <p>Drip campaigns are for leads that have <strong>exited</strong> the active pipeline: ghosting and not-interested leads. Cold leads are still in your active pipeline and deserve manual follow-up.</p>
+            <p>People default to drip campaigns because they don&rsquo;t invest enough time teaching their lead managers how to prioritize. You&rsquo;ll recapture some deals from drips &mdash; but you can never quantify how many deals you <strong>lost</strong> by not doing manual follow-up.</p>
+          </div>
+        </div>
+
+        <!-- Q5 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">What do I do with leads outside my buy box?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p>Move them to <strong>Dead Lead</strong>. Never delete them from your account &mdash; they&rsquo;ll end up back in your system if they re-enter your marketing cycle, and you don&rsquo;t want to re-evaluate from scratch.</p>
+            <p>Track the date and the reasoning (e.g., &ldquo;outside buy box,&rdquo; &ldquo;not viable property type&rdquo;). Consider adding a <strong>Dead Lead Reasoning</strong> custom field so you can reference it if the record resurfaces.</p>
+          </div>
+        </div>
+
+        <!-- Q6 -->
+        <div class="ds-expand-card">
+          <button class="ds-expand-trigger" aria-expanded="false">
+            <span class="ds-expand-title">Should I track when a property sells to someone else?</span>
+            <svg class="ds-expand-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="ds-expand-content">
+            <p>Move it to <strong>Lost Deal</strong>. The status changes to Lost Deal, and it exits the active pipeline.</p>
+            <p>DataSift is building auto-updating functionality where, if a property gets a new sold date, you&rsquo;ll be prompted to update the record. For now, focus on moving to Lost Deal when you become aware of it.</p>
+          </div>
+        </div>
+
+        <!-- Status Decision Tree -->
+        <h3 style="margin-top:var(--space-8);">Quick-Reference: Status Decision Tree</h3>
+        <div class="ds-table-wrap">
+          <table>
+            <thead><tr><th>Situation</th><th>Status</th><th>Why</th></tr></thead>
+            <tbody>
+              <tr><td>Seller interested, you spoke to them</td><td>Cold / Warm / Hot</td><td>Based on follow-up frequency needed</td></tr>
+              <tr><td>Seller not answering (new lead)</td><td>No Contact New Lead</td><td>Daily follow-up for 3&ndash;5 days</td></tr>
+              <tr><td>Seller not answering (after daily cycle)</td><td>Nurture New Lead</td><td>Weekly follow-up for 3&ndash;6 months</td></tr>
+              <tr><td>Seller says not interested after conversation</td><td>Not Interested</td><td>Exits active pipeline, drip campaign candidate</td></tr>
+              <tr><td>No indicators, unrealistic expectations</td><td>Dead Lead</td><td>Not a real lead &mdash; caller qualifying issue</td></tr>
+              <tr><td>Outside buy box, property not viable</td><td>Dead Lead</td><td>Track reasoning, don&rsquo;t delete</td></tr>
+              <tr><td>Property sold to someone else</td><td>Lost Deal</td><td>Exits pipeline</td></tr>
+              <tr><td>Seller stops responding after qualifying</td><td>Ghosting</td><td>Periodic marketing every 45&ndash;90 days</td></tr>
+              <tr><td>Ready for an offer</td><td>Send to Acquisitions</td><td>Handoff to acquisitions board</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- KEYS TO SUCCESS -->
+    <section class="ds-section" data-section="keys">
+      <div class="ds-container">
+        <span class="ds-label">Final Takeaways</span>
+        <h2>Keys to Success</h2>
+        <p class="ds-lead">These are the principles that separate good lead managers from great ones.</p>
+
+        <ol class="ds-priority-list">
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Every call ends with an appointment or a follow-up task.</h5>
+              <p>There is no third option. An appointment means the lead goes to Acquisitions. A follow-up task means you have a date to call back.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Comping is the enemy of revenue.</h5>
+              <p>There's selling time and admin time. Master having a general idea of property value so you can understand seller needs without getting bogged down in analysis during calling hours.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Stay organized.</h5>
+              <p>Know who you need to speak with and when. Tasks must be updated constantly. Every lead should have a task unless it's Dead or has an Appointment set for Acquisitions.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Call back every lead the same business day it comes in.</h5>
+              <p>After-hours hot leads? Motivated lead managers call those back too.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Always take calls with DataSift open.</h5>
+              <p>Log notes immediately. Update custom fields during the call. Don't rely on memory.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Keep all promises to your prospects.</h5>
+              <p>If you said you'd call Tuesday at 2 PM, call Tuesday at 2 PM. Create a Google Calendar event so you don't miss it.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Prioritize by conversion likelihood.</h5>
+              <p>Probates and foreclosures before high-equity cold outreach. Inbound leads before outbound leads. Build this instinct over time and document the patterns you see.</p>
+            </div>
+          </li>
+          <li class="ds-priority-item">
+            <div class="ds-priority-num"></div>
+            <div class="ds-priority-content">
+              <h5>Commit to continual learning.</h5>
+              <p>Refine your craft. Watch the Loom videos. Ask questions. The best lead managers never stop getting better.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="ds-footer">
+    <div class="ds-container">
+      <div class="ds-footer-actions">
+        <button class="ds-footer-btn" id="btnPrint">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          Print
+        </button>
+        <button class="ds-footer-btn" id="btnTop">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          Back to Top
+        </button>
+      </div>
+      <div class="ds-footer-brand"><span>Data</span>Sift</div>
+      <p class="ds-footer-copy">Remedi Home Solutions &mdash; Lead Manager Training. Built on DataSift.</p>
+    </div>
+  </footer>
+
+  <div class="ds-toast" id="toast"></div>
+
+  <script>
+  (function() {
+    'use strict';
+
+    // ===== TOAST =====
+    const showToast = (msg) => {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('ds-show');
+      setTimeout(() => t.classList.remove('ds-show'), 2500);
+    };
+
+    // ===== PROGRESS TRACKER =====
+    const Progress = (() => {
+      const sections = document.querySelectorAll('[data-section]');
+      const bar = document.getElementById('progressBar');
+      const fill = document.getElementById('progressFill');
+      const pct = document.getElementById('progressPct');
+      const modLabel = document.getElementById('progressModule');
+      const visited = new Set();
+      const update = () => {
+        const total = sections.length;
+        const done = visited.size;
+        const percent = Math.round((done / total) * 100);
+        fill.style.width = percent + '%';
+        pct.textContent = percent + '%';
+      };
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting && e.intersectionRatio > 0.2) {
+            visited.add(e.target.dataset.section);
+            update();
+          }
+        });
+      }, { threshold: 0.2 });
+
+      // Show current module name in progress bar
+      const moduleHeaders = document.querySelectorAll('[data-module]');
+      const moduleObserver = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            modLabel.textContent = 'Module ' + e.target.dataset.module + ': ' + e.target.dataset.moduleName;
+            modLabel.style.display = 'block';
+            // Update nav dots
+            document.querySelectorAll('.ds-module-dot').forEach(d => d.classList.remove('ds-active'));
+            const dot = document.querySelector('.ds-module-dot[data-mod="' + e.target.dataset.module + '"]');
+            if (dot) dot.classList.add('ds-active');
+          }
+        });
+      }, { threshold: 0.1, rootMargin: '0px 0px -80% 0px' });
+
+      window.addEventListener('scroll', () => {
+        if (window.scrollY > 400) bar.classList.add('ds-show');
+        else bar.classList.remove('ds-show');
+      }, { passive: true });
+
+      const init = () => {
+        sections.forEach(s => observer.observe(s));
+        moduleHeaders.forEach(m => moduleObserver.observe(m));
+        update();
+      };
+      return { init };
+    })();
+
+    // ===== SCROLL ANIMATIONS =====
+    const Animations = (() => {
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) { e.target.classList.add('ds-visible'); observer.unobserve(e.target); }
+        });
+      }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+      const init = () => { document.querySelectorAll('.ds-section').forEach(s => observer.observe(s)); };
+      return { init };
+    })();
+
+    // ===== EXPANDABLE CARDS =====
+    const ExpandCards = (() => {
+      const init = () => {
+        document.querySelectorAll('.ds-pillar-card').forEach(card => {
+          const toggle = () => {
+            card.classList.toggle('ds-active');
+            card.setAttribute('aria-expanded', card.classList.contains('ds-active'));
+          };
+          card.addEventListener('click', toggle);
+          card.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+          });
+        });
+      };
+      return { init };
+    })();
+
+    // ===== TABS =====
+    const Tabs = (() => {
+      const init = () => {
+        document.querySelectorAll('.ds-tabs-container').forEach(container => {
+          const btns = container.querySelectorAll('.ds-tab-btn');
+          const panels = container.querySelectorAll('.ds-tab-panel');
+          const activate = (tabId) => {
+            btns.forEach(b => b.classList.toggle('ds-active', b.dataset.tab === tabId));
+            panels.forEach(p => p.classList.toggle('ds-active', p.dataset.tabPanel === tabId));
+          };
+          btns.forEach(btn => {
+            btn.addEventListener('click', () => activate(btn.dataset.tab));
+          });
+        });
+      };
+      return { init };
+    })();
+
+    // ===== FLIP CARDS =====
+    const FlipCards = (() => {
+      const init = () => {
+        document.querySelectorAll('.ds-flipcard').forEach(card => {
+          const toggle = () => card.classList.toggle('flipped');
+          card.addEventListener('click', toggle);
+          card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+        });
+      };
+      return { init };
+    })();
+
+    // ===== MODULE NAV =====
+    const ModuleNav = (() => {
+      const init = () => {
+        const nav = document.getElementById('moduleNav');
+        const modules = [
+          { id: 'setup-checklist', num: '✓', name: 'Setup Checklist' },
+          { id: 'mod1', num: '1', name: 'Welcome & The Role' },
+          { id: 'mod2', num: '2', name: 'Your Toolbox' },
+          { id: 'mod3', num: '3', name: 'The Lead Flow' },
+          { id: 'mod4', num: '4', name: 'Daily Workflow' },
+          { id: 'mod5', num: '5', name: 'Custom Fields' },
+          { id: 'mod6', num: '6', name: 'Quality Control' },
+          { id: 'mod7', num: '7', name: 'KPI Tracking' },
+          { id: 'mod8', num: '8', name: 'Drip Campaigns' },
+          { id: 'qa-section', num: '?', name: 'Common Questions' },
+        ];
+        modules.forEach(m => {
+          const dot = document.createElement('div');
+          dot.className = 'ds-module-dot';
+          dot.dataset.mod = m.num;
+          dot.innerHTML = '<span class="ds-dot-tooltip">' + m.name + '</span>';
+          dot.addEventListener('click', () => {
+            document.getElementById(m.id).scrollIntoView({ behavior: 'smooth' });
+          });
+          nav.appendChild(dot);
+        });
+      };
+      return { init };
+    })();
+
+    // ===== FOOTER BUTTONS =====
+    const Footer = (() => {
+      const init = () => {
+        document.getElementById('btnPrint').addEventListener('click', () => window.print());
+        document.getElementById('btnTop').addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+      };
+      return { init };
+    })();
+
+    // ===== INIT =====
+    document.addEventListener('DOMContentLoaded', () => {
+      Progress.init();
+      Animations.init();
+      ExpandCards.init();
+      Tabs.init();
+      FlipCards.init();
+      ModuleNav.init();
+      Footer.init();
+    });
+  })();
+  </script>
+</body>
+</html>

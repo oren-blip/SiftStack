@@ -1,0 +1,28 @@
+{
+  "company_name": "Remedi Home Solutions",
+  "user_name": "Oren",
+  "team_setup": "solo",
+  "lead_managers": [],
+  "phone_provider": "smrtPhone",
+  "lead_sources": {
+    "website": {
+      "active": false,
+      "platform": null,
+      "inbox": null
+    },
+    "ppl": {
+      "active": false,
+      "provider": null,
+      "inbox": null
+    },
+    "direct_mail": {
+      "active": true,
+      "inbox": null
+    },
+    "cold_calling": {
+      "active": true
+    }
+  },
+  "created_at": "2026-07-30T22:30:00Z",
+  "plugin_version": "0.1.8"
+}
