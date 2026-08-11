@@ -167,8 +167,12 @@ async def main() -> int:
                     "Charlotte 28269 (new record created 8/10/26). Phone (704) 607-6553 "
                     "and the Levanduski emails here belong to Vicky Levanduski - wrong "
                     "person, do not dial. Case 26E002810-590.")
+            already = await page.evaluate(
+                "() => /WRONG PROPERTY - matcher error/.test(document.body.innerText || '')")
             box = page.locator('textarea[name="message"]')
-            if await box.count():
+            if already:
+                log.info("note already present — skipping message board")
+            elif await box.count():
                 await box.first.fill(note)
                 await page.wait_for_timeout(500)
                 sent = await page.evaluate("""() => {
@@ -185,14 +189,37 @@ async def main() -> int:
                 await page.wait_for_timeout(2500)
             else:
                 log.warning("message board textarea not found — note skipped")
-            # Status -> Dead Lead (chip list is rendered inline on the record page)
-            chip = page.locator('text="Dead Lead"').first
-            if await chip.count():
-                await chip.click()
-                await page.wait_for_timeout(3000)
-                log.info("clicked Dead Lead status chip")
-            else:
-                log.warning("Dead Lead chip not found")
+            # Status -> Dead Lead. The status control is a NATIVE <select>
+            # (the "chip list" in the body text is its <option>s) — options
+            # can't be clicked, use select_option + React change event.
+            # The <select> is HIDDEN behind a styled overlay, so Playwright's
+            # visibility-gated select_option can't touch it. Set the value via
+            # the native setter + React change event (standard DataSift pattern).
+            # Drive the VISIBLE styled dropdown: click the control that wraps
+            # the hidden select, then click the visible "Dead Lead" item.
+            opened = await page.evaluate("""() => {
+                const sel = Array.from(document.querySelectorAll('select'))
+                    .find(s => Array.from(s.options).some(o => o.value === 'Dead Lead'));
+                if (!sel) return 'no-select';
+                let el = sel.parentElement;
+                for (let up = 0; up < 4 && el; up++, el = el.parentElement) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 40 && r.height > 10) { el.click(); return 'opened ' + el.className.slice(0, 60); }
+                }
+                return 'no-visible-wrapper';
+            }""")
+            log.info("status dropdown open: %s", opened)
+            await page.wait_for_timeout(1500)
+            clicked = await page.evaluate("""() => {
+                const items = Array.from(document.querySelectorAll('li, [role="option"], div, span'))
+                    .filter(e => (e.innerText || '').trim() === 'Dead Lead')
+                    .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+                if (!items.length) return 'no-visible-item';
+                items[items.length - 1].click();
+                return 'clicked (' + items.length + ' visible)';
+            }""")
+            log.info("Dead Lead item: %s", clicked)
+            await page.wait_for_timeout(4000)
             # ── verify by reload ──
             await page.goto(f"{RECORDS_URL}/{uuid}/details", wait_until="domcontentloaded")
             await page.wait_for_timeout(4000)
