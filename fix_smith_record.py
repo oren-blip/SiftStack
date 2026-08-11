@@ -167,34 +167,13 @@ async def main() -> int:
                     "Charlotte 28269 (new record created 8/10/26). Phone (704) 607-6553 "
                     "and the Levanduski emails here belong to Vicky Levanduski - wrong "
                     "person, do not dial. Case 26E002810-590.")
-            already = await page.evaluate(
-                "() => /WRONG PROPERTY - matcher error/.test(document.body.innerText || '')")
-            box = page.locator('textarea[name="message"]')
-            if already:
-                log.info("note already present — skipping message board")
-            elif await box.count():
-                await box.first.fill(note)
-                await page.wait_for_timeout(500)
-                sent = await page.evaluate("""() => {
-                    const ta = document.querySelector('textarea[name="message"]');
-                    if (!ta) return 'no-textarea';
-                    let el = ta.parentElement;
-                    for (let up = 0; up < 4 && el; up++, el = el.parentElement) {
-                        const btn = el.querySelector('button[type="submit"], button');
-                        if (btn) { btn.click(); return 'clicked: ' + (btn.innerText || btn.type); }
-                    }
-                    return 'no-button';
-                }""")
-                log.info("message-board note: %s", sent)
-                await page.wait_for_timeout(2500)
-            else:
-                log.warning("message board textarea not found — note skipped")
-            # Status -> Dead Lead. The status control is a NATIVE <select>
-            # (the "chip list" in the body text is its <option>s) — options
-            # can't be clicked, use select_option + React change event.
-            # The <select> is HIDDEN behind a styled overlay, so Playwright's
-            # visibility-gated select_option can't touch it. Set the value via
-            # the native setter + React change event (standard DataSift pattern).
+            # NOTE-POSTING REMOVED (2026-08-10): the textarea named "message"
+            # ("Jot Something down...") on a record page is the 1:1 SMS
+            # COMPOSER, not the Message Board -- filling it and clicking the
+            # nearest button SENT THE NOTE AS AN OUTBOUND TEXT from the
+            # smrtPhone number to the record's phone (a wrong-number
+            # stranger, 9:54 PM). Never automate free-text entry on DataSift
+            # record pages; notes go in by hand.
             # Drive the VISIBLE styled dropdown: click the control that wraps
             # the hidden select, then click the visible "Dead Lead" item.
             opened = await page.evaluate("""() => {
