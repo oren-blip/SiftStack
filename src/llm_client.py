@@ -7,6 +7,7 @@ Supports two backends:
 Backend selection: LLM_BACKEND env var or config.LLM_BACKEND.
 """
 
+import atexit
 import json
 import logging
 import re
@@ -14,6 +15,61 @@ import re
 import config as cfg
 
 logger = logging.getLogger(__name__)
+
+# ── Per-process Anthropic usage accounting ────────────────────────────
+#
+# Why: the 8/3-8/7 spend blowout was only discovered on the Anthropic BILL
+# ($10 auto-reloads). The nightly log had no way to answer "what did tonight
+# cost?". Every Anthropic call now records its token usage; at process exit
+# a one-line summary with an estimated dollar cost is printed to stdout (so
+# the nightly run log captures it) and logged. Zero-call processes stay
+# silent.
+#
+# Prices are per MTok (input, output) — update when Anthropic reprices.
+_PRICES = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-haiku": (1.00, 5.00),
+    "claude-sonnet": (3.00, 15.00),   # sonnet 4-6 / sonnet-5
+    "claude-opus": (15.00, 75.00),
+    "claude-fable": (15.00, 75.00),
+}
+_USAGE: dict[str, dict] = {}  # model -> {calls, in_tok, out_tok}
+
+
+def _record_usage(model: str, response) -> None:
+    """Accumulate token usage from an Anthropic response (best-effort)."""
+    try:
+        u = getattr(response, "usage", None)
+        stats = _USAGE.setdefault(model, {"calls": 0, "in_tok": 0, "out_tok": 0})
+        stats["calls"] += 1
+        if u is not None:
+            stats["in_tok"] += getattr(u, "input_tokens", 0) or 0
+            stats["out_tok"] += getattr(u, "output_tokens", 0) or 0
+    except Exception:  # noqa: BLE001 — accounting must never break a call
+        pass
+
+
+def _est_cost(model: str, in_tok: int, out_tok: int) -> float:
+    for prefix, (pin, pout) in _PRICES.items():
+        if model.startswith(prefix):
+            return (in_tok * pin + out_tok * pout) / 1_000_000
+    return (in_tok * 3.00 + out_tok * 15.00) / 1_000_000  # unknown → sonnet rate
+
+
+@atexit.register
+def _report_usage() -> None:
+    if not _USAGE:
+        return
+    total_calls = sum(s["calls"] for s in _USAGE.values())
+    total_cost = sum(_est_cost(m, s["in_tok"], s["out_tok"]) for m, s in _USAGE.items())
+    parts = ", ".join(
+        f"{m}: {s['calls']} calls {s['in_tok']}/{s['out_tok']} tok"
+        for m, s in sorted(_USAGE.items()))
+    line = (f"LLM USAGE this process: {total_calls} Anthropic calls, "
+            f"est ${total_cost:.2f} ({parts})")
+    print(line, flush=True)
+    logger.info(line)
+
 
 # ── Backend dispatch ──────────────────────────────────────────────────
 
@@ -115,6 +171,7 @@ def vision_json(
             model=model, max_tokens=max_tokens, system=system,
             messages=[{"role": "user", "content": content}],
         )
+        _record_usage(model, response)
         # Thinking-capable models put a ThinkingBlock at content[0], so index 0
         # is not reliably the answer — take the first actual text block.
         text = next((b.text for b in response.content
@@ -149,6 +206,7 @@ def _chat_anthropic(
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        _record_usage(model, response)
         result_text = response.content[0].text.strip()
         return _parse_json(result_text)
     except anthropic.NotFoundError as e:
@@ -182,6 +240,7 @@ async def _chat_anthropic_async(
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        _record_usage(model, response)
         result_text = response.content[0].text.strip()
         return _parse_json(result_text)
     except anthropic.NotFoundError as e:
