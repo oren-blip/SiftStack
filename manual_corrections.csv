@@ -351,3 +351,24 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 # Griffins were auto-tagged Surviving Spouse? before the obit check showed both spouses died
 26E002904-590,Untag,Surviving Spouse?
 26E002903-590,Untag,Surviving Spouse?
+# Roberson survivors provided by Oren from the everloved obit (no spouse; 3 children sign; stepson Ian not an intestate heir)
+26E002910-590,First Name,David
+26E002910-590,Last Name,Dockery
+26E002910-590,Personal Representative,David Dockery
+26E002910-590,DM Name,David Dockery
+26E002910-590,DM Relationship,son
+26E002910-590,DM 2 Name,Morgan Dunn
+26E002910-590,DM 2 Relationship,son
+26E002910-590,DM 3 Name,Katie Dunn
+26E002910-590,DM 3 Relationship,daughter
+26E002910-590,Tag,Multi-Signer (3)
+# Thompson DOD 3/17/2023 confirmed by Oren from eCourts -- the 2023 obit IS him; twin sons in Canton GA are the heirs (off-site)
+26E002931-590,Date of Death (App),03/17/2023
+26E002931-590,First Name,Chase
+26E002931-590,Last Name,Thompson
+26E002931-590,Personal Representative,Chase Thompson
+26E002931-590,DM Name,Chase Thompson
+26E002931-590,DM Relationship,son
+26E002931-590,DM 2 Name,Chandler Thompson
+26E002931-590,DM 2 Relationship,son
+26E002931-590,Tag,Multi-Signer (2)

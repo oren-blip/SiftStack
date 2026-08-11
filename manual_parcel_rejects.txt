@@ -28,3 +28,5 @@
 26E002844-590   00111109   Baker, Joseph Cephus — owner JOSEPH C BAKER + KIMBERLY R BAKER + BAKER REVOCABLE TRUST (different spouse); same trust transfer 2026-04-01
 26E002844-590   16308345   Baker, Joseph Cephus — owner GABRIELLE CURRY + JOSEPH BAKER; PURCHASED 2026-04-02 for $910,000, two months AFTER the decedent died
 26E002899-590   23112402   Owens, Donald Reed — deed reads DONALD M JR OWENS | PAMELA J OWENS, a different living Donald Owens (obit decedent Donald Reed Owens of Shelby, wife Darlene, d. 12/25/2025; deed names don't match — Claude verified via obit 2026-08-09)
+26E002810-590   05717212   Smith, Donald Corben — Eagles Landing Dr owner is DONALD SMITH | DENISE RICHARDS-SMITH, a different living Donald Smith (SMS reply confirmed wrong person; Claude verified 2026-08-10)
+26E002810-590   21156209   Smith, Donald Corben — $1.02M parcel owner DONALD SMITH | NICOLE SMITH, no middle-initial match; original over-cap main that triggered the bad swap (Claude verified 2026-08-10)
