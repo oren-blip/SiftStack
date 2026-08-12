@@ -117,6 +117,56 @@ _AKA_TAIL_RE = re.compile(
 )
 
 
+def collapse_repeated_phrases(name: str) -> str:
+    """Collapse an immediately-repeated multi-word phrase in a name.
+
+    Court clerks sometimes enter maiden+married surnames into both the middle
+    and last name fields, e.g. Cabarrus 26E000834-120 whose FormattedName
+    yields "Ann Barnhardt Ridenhour Barnhardt Ridenhour" in natural order.
+    The doubled phrase finds nothing in GIS/obituary searches and breaks
+    cross-run cache keying. Only phrases of >= 2 words are collapsed —
+    single-token repeats ("James James") can be legitimate names.
+
+    Handles "Last, First Middle" comma form by flipping to natural order
+    internally (the repeat is only adjacent there) and restoring the comma
+    form on output. Returns the input unchanged when nothing repeats.
+    """
+    if not name or not name.strip():
+        return name
+    last_part, comma, first_part = name.partition(",")
+    if comma:
+        last_tokens = last_part.split()
+        tokens = first_part.split() + last_tokens
+    else:
+        last_tokens = []
+        tokens = name.split()
+
+    def _norm(t: str) -> str:
+        return t.lower().rstrip(".")
+
+    changed_any = False
+    changed = True
+    while changed:
+        changed = False
+        n_tok = len(tokens)
+        for size in range(n_tok // 2, 1, -1):
+            for i in range(0, n_tok - 2 * size + 1):
+                if [_norm(t) for t in tokens[i:i + size]] == [
+                    _norm(t) for t in tokens[i + size:i + 2 * size]
+                ]:
+                    tokens = tokens[:i + size] + tokens[i + 2 * size:]
+                    changed = changed_any = True
+                    break
+            if changed:
+                break
+    if not changed_any:
+        return name
+    if comma and len(tokens) > len(last_tokens):
+        n_last = len(last_tokens)
+        return f"{' '.join(tokens[-n_last:])}, {' '.join(tokens[:-n_last])}"
+    return " ".join(tokens)
+
+
 def clean_decedent_name(name: str) -> str:
     """Strip 'Estate of' captions and aka/fka tails from a decedent name."""
     if not name:
@@ -127,6 +177,7 @@ def clean_decedent_name(name: str) -> str:
     s = _ESTATE_TAIL_RE.sub("", s)
     s = _AKA_TAIL_RE.sub("", s)
     s = re.sub(r"\s+", " ", s).strip().strip(",").strip()
+    s = collapse_repeated_phrases(s)
     # Never return empty — a caption we don't understand is better than nothing.
     return s or name.strip()
 

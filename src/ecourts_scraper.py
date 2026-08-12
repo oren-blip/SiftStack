@@ -876,6 +876,8 @@ def _row_to_notice(row: dict, county: str, notice_type: str) -> NoticeData | Non
         case_type=detected_type,
     )
     notice._roa_id = case_id_hex  # type: ignore[attr-defined]
+    from nc_gis_lookup import collapse_repeated_phrases
+    primary_name = collapse_repeated_phrases(primary_name)
     if notice_type == "probate":
         notice.decedent_name = primary_name
     else:
@@ -984,7 +986,10 @@ def _enrich_with_parties(
                 or len(n.decedent_name) < len(dec.full_name)
             )
             if looks_bad:
-                n.decedent_name = dec.full_name
+                from nc_gis_lookup import collapse_repeated_phrases
+                # Clerk double-entry guard (Cabarrus 26E000834-120:
+                # "Ridenhour, Ann Barnhardt Ridenhour Barnhardt")
+                n.decedent_name = collapse_repeated_phrases(dec.full_name)
             # Register every court-listed decedent name as an alias of the
             # primary, so the GIS matcher can score a deed recorded under any
             # of them (Dozier, Patricia H vs the deed's "PATRICIA A DOZIER" =

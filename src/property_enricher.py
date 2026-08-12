@@ -116,9 +116,20 @@ def _estimate_remaining_balance(
 
 # ── API call ──────────────────────────────────────────────────────────
 
+# 2026-08-11: every nightly since at least 7/20 burned 2 attempts x ~40
+# properties against a dead subscription ("You are not subscribed to this
+# API", HTTP 403) — ~90s of retries + 40-90 log warnings per run, 0 enriched.
+# A 403 is account-level, not per-property: the first one disables the rest
+# of the run with a single actionable error.
+_subscription_dead = False
+
+
 def _fetch_property(address: str, city: str, state: str, zip_code: str,
                     api_key: str) -> dict | None:
     """Call the Zillow API for a single property. Returns parsed JSON or None."""
+    global _subscription_dead
+    if _subscription_dead:
+        return None
     parts = [address]
     if city:
         parts.append(city)
@@ -147,6 +158,21 @@ def _fetch_property(address: str, city: str, state: str, zip_code: str,
                 logger.warning("Zillow rate limit hit -- waiting 10s (attempt %d)", attempt)
                 time.sleep(10)
                 continue
+            if resp.status_code == 403:
+                # Key rejected / subscription lapsed — retrying can't help
+                try:
+                    detail = (resp.json().get("error") or {}).get("message", "")
+                except ValueError:
+                    detail = resp.text[:200]
+                _subscription_dead = True
+                logger.error(
+                    "Zillow (OpenWeb Ninja) API rejected the key: %s — the "
+                    "subscription is inactive. Skipping Zillow enrichment for "
+                    "the rest of this run. Re-subscribe at openwebninja.com "
+                    "(API: realtime-zillow-data) to restore it.",
+                    detail or "HTTP 403",
+                )
+                return None
             resp.raise_for_status()
             body = resp.json()
             # OpenWeb Ninja wraps response in {"status": "OK", "data": {...}}
@@ -334,7 +360,7 @@ def enrich_properties(
     equity_values: list[float] = []
 
     for idx, (orig_idx, notice) in enumerate(eligible):
-        if idx > 0:
+        if idx > 0 and not _subscription_dead:
             delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
             time.sleep(delay)
 

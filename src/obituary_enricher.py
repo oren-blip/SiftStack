@@ -830,6 +830,8 @@ def _parse_notice_owner_name(raw: str) -> list[str]:
     # Split on " AND " (word) or "&" (symbol)
     parts = re.split(r"\s+AND\s+|\s*&\s*", name, flags=re.IGNORECASE)
 
+    from nc_gis_lookup import collapse_repeated_phrases  # noqa: PLC0415
+
     results = []
     for part in parts:
         part = part.strip()
@@ -837,6 +839,9 @@ def _parse_notice_owner_name(raw: str) -> list[str]:
             continue
         # Strip relational prefixes: "Husband ", "Wife ", "Spouse "
         part = re.sub(r"^\s*(?:husband|wife|spouse)\s+", "", part, flags=re.IGNORECASE).strip()
+        # Clerk double-entry ("Ann Barnhardt Ridenhour Barnhardt Ridenhour")
+        # searches for a person who doesn't exist
+        part = collapse_repeated_phrases(part)
         if part:
             results.append(part.title())
 
