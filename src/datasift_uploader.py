@@ -876,6 +876,20 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
     hits only those rows. Returns True if applied."""
     try:
         await _dismiss_popups(page)
+        # A leftover aside panel/overlay from a prior step (#asideOverlay,
+        # Asidestyles__AsideOverlay) covers the toolbar and intercepts the
+        # Filter Records click — Playwright then retries for the full timeout
+        # (2026-08-11: 5-min hang before the skip-trace abort). The filter
+        # panel we're ABOUT to open renders inside a fresh #asideOverlay, so
+        # only remove one that exists before we open ours.
+        stale = await page.evaluate("""() => {
+            const o = document.getElementById('asideOverlay');
+            if (o) { o.remove(); return 1; }
+            return 0;
+        }""")
+        if stale:
+            logger.info("Removed stale #asideOverlay before opening filter panel")
+            await page.wait_for_timeout(500)
         filter_link = page.locator('#Records__Filters_Trigger')
         if await filter_link.count() == 0:
             filter_link = page.locator('a:has-text("Filter Records")')
@@ -905,9 +919,6 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
         if await tag_search.count() == 0:
             logger.warning("'Search for tags' input not found")
             return False
-        await tag_search.first.fill(tag)
-        await page.wait_for_timeout(2000)
-        await _screenshot(page, "filter_tag_searched")
         # Click the dropdown SUGGESTION for the tag with a REAL mouse click at
         # its coordinates. Two prior failure modes (Week 31, both nights):
         # `text="{tag}"` matched the search INPUT and the Playwright click
@@ -915,7 +926,25 @@ async def _filter_by_tag(page: Page, tag: str) -> bool:
         # the right element but React's listbox ignored the untrusted event
         # (dropdown stayed open, no chip added). Input textContent never
         # includes its typed value, so an exact-text match can't hit the input.
-        if not await _mouse_click_exact_text(page, tag):
+        #
+        # A fresh upload's tag only exists once DataSift finishes processing
+        # the upload in the BACKGROUND — 2026-08-11 the suggestion was absent
+        # at +0s but present ~30 min later. Retry with waits instead of
+        # failing on the first miss.
+        clicked = False
+        for attempt in range(6):          # ~2.5 min total
+            await tag_search.first.fill(tag)
+            await page.wait_for_timeout(2000)
+            if attempt == 0:
+                await _screenshot(page, "filter_tag_searched")
+            if await _mouse_click_exact_text(page, tag):
+                clicked = True
+                break
+            logger.info("Tag suggestion %r not in dropdown yet (attempt %d/6)"
+                        " — waiting for upload processing", tag, attempt + 1)
+            await tag_search.first.fill("")
+            await page.wait_for_timeout(30_000)
+        if not clicked:
             logger.warning("Tag suggestion %r not found in dropdown", tag)
             await _screenshot(page, "filter_tag_no_suggestion")
             return False
