@@ -37,9 +37,13 @@ if "%NC_OBITUARY%"=="1" set NC_OBIT_FLAG=--nc-obituary
 echo. >> "logs\nc_weekly_scrape.log"
 echo === NC weekly scrape from %SINCE% (%DATE% %TIME%) [nc_obituary=%NC_OBITUARY%] === >> "logs\nc_weekly_scrape.log"
 
+REM PAUSED 2026-08-11: Mecklenburg removed per Oren -- FTM outreach backlog.
+REM To resume: add Mecklenburg back to --counties below, then run a one-time
+REM catch-up:  scripts\nc_weekly_run.bat 2026-08-11   (pulls everything filed
+REM during the pause; eCourts keeps all filings, nothing is lost).
 "D:\SiftStack\.venv\Scripts\python.exe" src\main.py nc-daily ^
     --since %SINCE% ^
-    --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Mecklenburg,Rowan ^
+    --counties Cabarrus,Catawba,Gaston,Iredell,Lincoln,Rowan ^
     --types probate ^
     --skip-obituary ^
     %NC_OBIT_FLAG% ^
