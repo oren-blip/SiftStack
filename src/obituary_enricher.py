@@ -212,6 +212,119 @@ def _obit_cache_put_miss(name: str, state: str, pass_name: str) -> None:
         _obit_cache_write()
 
 
+# ── Persistent cross-run heir-verification cache ─────────────────────
+# 2026-08-11: after the obit cache shipped (8/5), nightly spend was still
+# $2-3/night (384-891 Anthropic calls). Per-step attribution showed ~75% of
+# calls were verify_heir_status — up to 8 heirs x 3 LLM parses + sub-heir
+# recursion per confirmed decedent — and it had NO cross-run cache, so the
+# 2-day scrape overlap + nightly week re-polish re-verified the same heirs
+# every night (an obit-cache HIT still fanned out to a full live heir map).
+#
+# Mirrors the obit cache: "deceased" results are permanent facts, kept
+# NC_HEIR_CACHE_TTL_DAYS (default 30); "verified_living" results are kept
+# NC_HEIR_CACHE_LIVING_TTL_DAYS (default 7) so a heir who has since died is
+# re-checked weekly, not nightly. Unverified / budget-exhausted results are
+# never cached. NC_HEIR_CACHE_DISABLE=1 bypasses; delete the file to clear.
+# Bump _HEIR_CACHE_VERSION when verify_heir_status's result schema changes.
+_HEIR_CACHE_PATH = Path("output") / ".nc_heir_cache.json"
+_HEIR_CACHE_VERSION = 1
+_HEIR_CACHE_TTL_DAYS = int(os.environ.get("NC_HEIR_CACHE_TTL_DAYS", "30"))
+_HEIR_CACHE_LIVING_TTL_DAYS = int(os.environ.get("NC_HEIR_CACHE_LIVING_TTL_DAYS", "7"))
+_HEIR_CACHE_DISABLED = os.environ.get("NC_HEIR_CACHE_DISABLE", "") == "1"
+_heir_cache_store: dict | None = None  # None = not yet loaded
+_heir_cache_lock = threading.Lock()
+_heir_cache_hits = 0  # this-process counter, reported by callers' summaries
+
+
+def _heir_cache_key(name: str, city: str, state: str) -> str:
+    return (
+        f"{(state or '').strip().upper()}|{(city or '').strip().lower()}"
+        f"|{(name or '').strip().lower()}"
+    )
+
+
+def _heir_entry_fresh(entry: dict, now: datetime) -> bool:
+    """True when a cache entry is within TTL for its status."""
+    status = (entry.get("result") or {}).get("status", "")
+    ttl = {
+        "deceased": _HEIR_CACHE_TTL_DAYS,
+        "verified_living": _HEIR_CACHE_LIVING_TTL_DAYS,
+    }.get(status)
+    if ttl is None:
+        return False
+    try:
+        return datetime.fromisoformat(entry.get("ts", "")) >= now - timedelta(days=ttl)
+    except ValueError:
+        return False
+
+
+def _heir_cache_load() -> dict:
+    """Load (once) the on-disk cache, pruning expired/foreign-version entries."""
+    global _heir_cache_store
+    if _heir_cache_store is not None:
+        return _heir_cache_store
+    _heir_cache_store = {}
+    if _HEIR_CACHE_DISABLED:
+        return _heir_cache_store
+    try:
+        data = json.loads(_HEIR_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _heir_cache_store
+    if not isinstance(data, dict) or data.get("_version") != _HEIR_CACHE_VERSION:
+        return _heir_cache_store  # schema changed → start fresh
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return _heir_cache_store
+    now = datetime.now()
+    for k, v in entries.items():
+        if isinstance(v, dict) and _heir_entry_fresh(v, now):
+            _heir_cache_store[k] = v
+    return _heir_cache_store
+
+
+def _heir_cache_write() -> None:
+    """Atomic write-through (crash-safe; mirrors the obit cache)."""
+    try:
+        _HEIR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _HEIR_CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"_version": _HEIR_CACHE_VERSION, "entries": _heir_cache_store}),
+            encoding="utf-8",
+        )
+        tmp.replace(_HEIR_CACHE_PATH)
+    except (OSError, TypeError) as e:
+        logger.warning("heir cache: could not write %s: %s", _HEIR_CACHE_PATH, e)
+
+
+def _heir_cache_get(name: str, city: str, state: str) -> dict | None:
+    """Return a fresh cached verify_heir_status result (deep copy), or None."""
+    global _heir_cache_hits
+    if _HEIR_CACHE_DISABLED:
+        return None
+    with _heir_cache_lock:
+        entry = _heir_cache_load().get(_heir_cache_key(name, city, state))
+        if not entry or not _heir_entry_fresh(entry, datetime.now()):
+            return None
+        _heir_cache_hits += 1
+        result = json.loads(json.dumps(entry["result"]))  # deep copy — callers mutate
+    result.setdefault("search_log", {})["result"] = "cache_hit"
+    return result
+
+
+def _heir_cache_put(name: str, city: str, state: str, result: dict) -> None:
+    """Persist a completed verification. Only deceased/verified_living are
+    worth remembering; unverified and budget-exhausted results retry next run."""
+    if _HEIR_CACHE_DISABLED or result.get("status") not in ("deceased", "verified_living"):
+        return
+    with _heir_cache_lock:
+        store = _heir_cache_load()
+        store[_heir_cache_key(name, city, state)] = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "result": json.loads(json.dumps(result)),
+        }
+        _heir_cache_write()
+
+
 def _notice_state(notice: "NoticeData") -> str:
     """Return the notice's 2-letter state code, defaulting to 'TN' for
     legacy notices where state wasn't populated."""
@@ -2462,6 +2575,11 @@ def verify_heir_status(
         result["search_log"]["result"] = "name_not_searchable"
         return result
 
+    cached = _heir_cache_get(heir_name, city, state)
+    if cached is not None:
+        logger.info("    Heir %s: %s (heir cache)", heir_name, cached.get("status"))
+        return cached
+
     state_name = _state_full(state)
     results = _search_obituary(heir_name, city, state=state)
     result["search_log"]["query"] = f"{heir_name} obituary {city} {state_name}"
@@ -2471,6 +2589,7 @@ def verify_heir_status(
         result["status"] = "verified_living"
         result["confidence"] = "medium"
         result["search_log"]["result"] = "no_obituary_found"
+        _heir_cache_put(heir_name, city, state, result)
         time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
         return result
 
@@ -2501,6 +2620,7 @@ def verify_heir_status(
                 result["search_log"]["result"] = "obituary_confirmed_deceased"
                 if depth < max_depth:
                     result["sub_heirs"] = parsed.get("survivors", [])
+                _heir_cache_put(heir_name, city, state, result)
                 time.sleep(random.uniform(0.5, 1.0))
                 return result
             time.sleep(random.uniform(0.5, 1.0))
@@ -2527,12 +2647,14 @@ def verify_heir_status(
             result["obituary_url"] = best_snippet["url"]
             result["date_of_death"] = parsed.get("date_of_death", "")
             result["search_log"]["result"] = "obituary_confirmed_deceased_snippet"
+            _heir_cache_put(heir_name, city, state, result)
             return result
 
     # Searched but no obituary matched — likely alive
     result["status"] = "verified_living"
     result["confidence"] = "medium"
     result["search_log"]["result"] = "no_obituary_match"
+    _heir_cache_put(heir_name, city, state, result)
     time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
     return result
 
@@ -3785,6 +3907,7 @@ def enrich_obituary_data(
                 dm_identified, confirmed, 100 * dm_identified / confirmed if confirmed else 0)
     logger.info("  DM verified living:     %d", dm_verified_living)
     logger.info("  Heir-verified records:  %d", heir_verified_count)
+    logger.info("  Heir cache hits:        %d", _heir_cache_hits)
     logger.info("  Joint-owner DM added:   %d", joint_owner_dm_count)
     logger.info("  Re-search DM added:     %d", research_dm_count)
     logger.info("  Snippet DM added:       %d", snippet_dm_count)
