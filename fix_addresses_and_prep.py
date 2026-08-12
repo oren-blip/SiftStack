@@ -2184,7 +2184,7 @@ def fill_property_location_via_centroid(rows: list[dict]) -> int:
         addr = (r.get("Property Address") or "").strip()
         key = f"{county.upper()}||{addr.upper()}"
         geo = cache.get(key)
-        if geo is None:
+        if not geo:
             ll = parcel_centroid(county, addr, pid=(r.get("Parcel ID") or "").strip())
             if ll:
                 _time.sleep(1.1)         # Nominatim: 1 req/sec
@@ -2193,14 +2193,22 @@ def fill_property_location_via_centroid(rows: list[dict]) -> int:
                 # No parcel geometry (Mecklenburg polaris3g, or a centroid miss).
                 # Forward-geocode the address instead — needs a city to be
                 # unambiguous, which Meck rows already have (Charlotte).
+                # Polaris "Pvt Uninc" (private unincorporated) is not a city.
                 have_city = (r.get("Property City") or "").strip()
+                if have_city.upper() == "PVT UNINC":
+                    have_city = ""
                 if have_city:
                     _time.sleep(1.1)
                     geo = _nominatim_forward(f"{addr}, {have_city}, NC") or {}
                 else:
-                    geo = {}
-            cache[key] = geo
-            dirty = True
+                    _time.sleep(1.1)
+                    geo = _nominatim_forward(f"{addr}, {county} County, NC") or {}
+            # Cache hits only — a transient Nominatim failure must retry
+            # next run, not become a permanent blank (9 rows shipped
+            # zip-less in Wk32/33 off cached-empty results).
+            if geo:
+                cache[key] = geo
+                dirty = True
         city = (geo.get("city") or "").strip()
         zipc = (geo.get("postcode") or "").strip()[:5]
         # Nominatim sometimes returns a zip but no city for rural points —
@@ -2209,7 +2217,8 @@ def fill_property_location_via_centroid(rows: list[dict]) -> int:
             city = _NC_ZIP_TO_CITY.get(zipc, "")
         if not city and not zipc:
             continue
-        if city and not (r.get("Property City") or "").strip():
+        cur_city = (r.get("Property City") or "").strip()
+        if city and (not cur_city or cur_city.upper() == "PVT UNINC"):
             r["Property City"] = city
         if zipc and not (r.get("Property Zip") or "").strip():
             r["Property Zip"] = zipc
