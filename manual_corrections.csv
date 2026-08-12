@@ -372,3 +372,22 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 26E002931-590,DM 2 Name,Chandler Thompson
 26E002931-590,DM 2 Relationship,son
 26E002931-590,Tag,Multi-Signer (2)
+# --- 2026-08-11 Needs-Skipped sweep (Claude) ---
+# Wash 26E002820-590: parcel 19331268 (2606 Circa Dr Matthews) was WRONG — owner
+# Janet COMFORT Wash is a different, living Janet Wash (blocked in
+# manual_parcel_rejects.txt). Decedent Janet VAZQUEZ Wash obit VERIFIED
+# (dignitymemorial.com/obituaries/charlotte-nc/janet-wash-11797852): d. 5/2/2024
+# age 62, father Fidel Vazquez = maiden-name match, Charlotte resident.
+# Husband Harold Richard Wash + son Joseph Richard Wash PREDECEASED her.
+# Heirs: son Richard Keifer Wash + late Joseph's children Aaron Joseph Wash and
+# Bryana Mari Wash (per stirpes) — ready for when the real parcel attaches.
+26E002820-590,First Name,Richard
+26E002820-590,Last Name,Wash
+26E002820-590,Personal Representative,Richard Keifer Wash
+26E002820-590,DM Name,Richard Keifer Wash
+26E002820-590,DM Relationship,son
+26E002820-590,DM 2 Name,Aaron Joseph Wash
+26E002820-590,DM 2 Relationship,grandchild (per stirpes via late son Joseph)
+26E002820-590,DM 3 Name,Bryana Mari Wash
+26E002820-590,DM 3 Relationship,grandchild (per stirpes via late son Joseph)
+26E002820-590,Tag,Multi-Signer (3)

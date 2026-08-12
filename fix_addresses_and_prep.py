@@ -451,11 +451,11 @@ def apply_fetched_case_docs(rows: list[dict]) -> int:
             app_pr_name = (applicant.get("full_name") or "").strip()
             if inferred_pr and app_pr_name:
                 # Split full name into First/Last for the search-friendly columns
-                parts = app_pr_name.split()
-                if len(parts) >= 2:
+                first, last = _split_person_name(app_pr_name)
+                if first and last:
                     r["Personal Representative"] = app_pr_name
-                    r["First Name"] = parts[0]
-                    r["Last Name"] = parts[-1]
+                    r["First Name"] = first
+                    r["Last Name"] = last
                     # Apply applicant's mailing too — court-confirmed address
                     if applicant.get("street"):
                         r["Mailing Address"] = applicant.get("street", "")
@@ -5537,9 +5537,17 @@ def promote_beneficiary_to_pr(row: dict) -> dict | None:
     return None
 
 
+_NAME_SUFFIX_TOKENS = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
 def _split_person_name(full: str) -> tuple[str, str]:
-    """Split a 'First Middle Last' string into (first, last). Best-effort."""
-    parts = (full or "").strip().split()
+    """Split a 'First Middle Last' string into (first, last). Best-effort.
+    Suffix-aware: "Robert E. Fisher, Jr." -> ("Robert", "Fisher") — a bare
+    "Jr." in the Last Name field is un-skip-traceable (Fisher 26E000810-790
+    parked in Needs Skipped as "Robert Jr.")."""
+    parts = (full or "").replace(",", " ").split()
+    while len(parts) > 1 and parts[-1].lower().rstrip(".") in _NAME_SUFFIX_TOKENS:
+        parts.pop()
     if not parts:
         return "", ""
     if len(parts) == 1:
@@ -5846,9 +5854,8 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
                     print(f"  {msg}")
                 tag_reason(r, "tracerfy")
 
-        tokens = dm_name.split()
-        first = tokens[0] if tokens else "Heir"
-        last = tokens[-1] if len(tokens) > 1 else ""
+        first, last = _split_person_name(dm_name)
+        first = first or "Heir"
 
         if addr and addr.get("street"):
             r["Personal Representative"] = dm_name
