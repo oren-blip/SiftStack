@@ -1057,6 +1057,12 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
             # landlocked strip on Wellington Dr, was published as SFR.
             if "VACANT" in desc:
                 return "Vacant Land"
+            # RES + 'Auxiliary Improvement' = a lot whose only structure is a
+            # shed/garage (no dwelling). Treat as vacant: the SFR label blocked
+            # BOTH the Step 1.5 house-promotion swap AND the "0 <street>"
+            # vacant prefix on Putnam 26E001064-350 (Week 33 Belton Ave).
+            if "AUXILIARY" in desc:
+                return "Vacant Land"
             return "SFR"
         if code in ("COM", "IND"):
             return "Commercial"
@@ -1068,7 +1074,7 @@ def simplify_use_code(use_code: str, use_description: str = "", county: str = ""
             return "MH"
         if "RESIDENTIAL" in desc or "SINGLE FAMILY" in desc:
             return "SFR"
-        if "VACANT" in desc:
+        if "VACANT" in desc or "AUXILIARY" in desc:
             return "Vacant Land"
         if "COMMERCIAL" in desc or "OFFICE" in desc or "INDUSTRIAL" in desc:
             return "Commercial"
@@ -1912,6 +1918,15 @@ def _arcgis_to_candidate(
             or use_code.startswith("R") or "DWELL" in desc_upper
         )
         is_commercial = "COMMERCIAL" in desc_upper or "OFFICE" in desc_upper or "INDUSTRIAL" in desc_upper
+        # Gaston codes a lot whose only structure is an outbuilding as
+        # property_use=RES + DESC1_DESC='Auxiliary Improvement' (no dwelling:
+        # YEARBLT=0, SQFT=0). Functionally vacant land. Putnam 26E001064-350
+        # Week 33: the $32K 0.99-ac aux lot on Belton Ave carried
+        # is_residential=True, so nothing ever demoted it below the $233K
+        # house next door at 423 Belton Ave.
+        if "AUXILIARY IMPROVEMENT" in desc_upper:
+            is_vacant = True
+            is_residential = False
 
     # Vacant-by-address heuristic: when use codes aren't classified (common
     # in Rowan / Catawba / Iredell which don't expose detailed use codes
@@ -2905,7 +2920,7 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 18  # bumped 2026-07-23 (twice today). v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump.
+_PERSIST_VERSION = 19  # bumped 2026-08-13. v19: Gaston RES + 'Auxiliary Improvement' (lot with shed/garage, no dwelling) now is_vacant_land=True / is_residential=False + simplify_use_code -> Vacant Land. Cached candidates carry the old flags baked in (Putnam 26E001064-350's $32K aux lot was cached is_residential=True), so bump per the v13 precedent. Prior: v18 2026-07-23. v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.

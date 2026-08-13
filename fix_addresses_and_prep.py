@@ -1909,10 +1909,27 @@ def validate_existing_matches(
         # later run (with a clean response) validate them.
         high_scoring = [c for c in results if c.match_score >= min_score]
         if len(results) > _VALIDATE_ANOMALY_TOTAL or len(high_scoring) > _VALIDATE_ANOMALY_HIGH:
-            print(f"  ANOMALOUS GIS result {county}/{dec}: {len(results)} candidates "
-                  f"({len(high_scoring)} >= {min_score}) — flaky server, keeping existing "
-                  f"parcel(s) un-validated this run")
-            continue
+            # Common-surname exemption: a broad surname search legitimately
+            # returns a big result set in some counties (PUTNAM → ~74 Gaston
+            # parcels), which tripped this guard EVERY night and permanently
+            # froze validation + repick for those decedents (Putnam
+            # 26E001064-350 Week 33 kept its wrong aux-lot main because the
+            # repick never ran). A garbage response is distinguishable: the
+            # correct owner isn't in it (Barbee 146-match case), so the row's
+            # attached parcel won't appear among the high scorers. If the
+            # high-scoring set is plausibly small AND every attached parcel is
+            # in it, the response is clean — proceed.
+            row_pids = {(r.get("Parcel ID") or "").strip() for r in parcel_rows}
+            hs_pids = {c.pid for c in high_scoring}
+            if len(high_scoring) <= _VALIDATE_ANOMALY_HIGH and row_pids and row_pids <= hs_pids:
+                print(f"  ANOMALY-EXEMPT {county}/{dec}: {len(results)} candidates but "
+                      f"all {len(row_pids)} attached parcel(s) present among "
+                      f"{len(high_scoring)} high scorers — common surname, validating")
+            else:
+                print(f"  ANOMALOUS GIS result {county}/{dec}: {len(results)} candidates "
+                      f"({len(high_scoring)} >= {min_score}) — flaky server, keeping existing "
+                      f"parcel(s) un-validated this run")
+                continue
 
         # Index candidates by pid
         by_pid = {c.pid: c for c in results}
@@ -5243,6 +5260,14 @@ def _parcel_use_tier(use: str) -> int:
     return 1
 
 
+def _has_civic_number(addr: str) -> bool:
+    """True when the address starts with a real house number. "0 Belton Ave"
+    (Oren's vacant-lot convention) and bare "Belton Ave" both count as
+    numberless. Mirrors the address-quality check in parcel_quality_score."""
+    tok = (addr or "").strip().split(maxsplit=1)[0] if (addr or "").strip() else ""
+    return tok.isdigit() and not tok.startswith("0")
+
+
 def re_collapse_multi_parcel(rows: list[dict]) -> int:
     """For rows whose Notes contain 'PLUS N PARCELS' (multi-parcel decedents
     where the original scrape collapsed by market_value and may have
@@ -5260,8 +5285,15 @@ def re_collapse_multi_parcel(rows: list[dict]) -> int:
         if "PLUS " not in notes.upper() or "PARCEL" not in notes.upper():
             continue
         current_use = (r.get("Property use") or "").strip()
-        # Skip if main is already residential — no swap needed
-        if _parcel_use_tier(current_use) == 3:
+        cur_addr = (r.get("Property Address") or "").strip()
+        current_pid = (r.get("Parcel ID") or "").strip()
+        # Skip if main is already residential — no swap needed. EXCEPTION: a
+        # "residential" main with NO civic number is suspect (county use-code
+        # mislabel, e.g. Gaston 'Auxiliary Improvement' lots typed SFR) — keep
+        # it in the re-rank so a real numbered house can outrank it. Putnam
+        # 26E001064-350 Week 33: numberless $32K "SFR" lot held main while the
+        # $233K house at 423 Belton Ave sat in Notes ranked T1=98.
+        if _parcel_use_tier(current_use) == 3 and _has_civic_number(cur_addr):
             continue
         dec = (r.get("Deceased Owner") or "").strip()
         county = (r.get("County") or "").strip()
@@ -5281,12 +5313,23 @@ def re_collapse_multi_parcel(rows: list[dict]) -> int:
                     float(c.market_value or 0))
         sorted_kept = sorted(kept, key=sort_key, reverse=True)
         new_main = sorted_kept[0]
+        if (new_main.pid or "") == current_pid:
+            continue
         new_use = simplify_use_code(new_main.use_code, new_main.use_description, new_main.county) or ""
-        # Only swap if the new main is a higher tier than current
-        if _parcel_use_tier(new_use) <= _parcel_use_tier(current_use):
+        street, city, zipc = _candidate_to_address_parts(new_main)
+        # Only swap if the new main is a higher tier than current — OR the
+        # same tier when it upgrades a numberless main to a real civic-numbered
+        # address (the mislabeled-lot case above). Never churn numbered->
+        # numbered or numberless->numberless at equal tier.
+        cur_tier = _parcel_use_tier(current_use)
+        new_tier = _parcel_use_tier(new_use)
+        if new_tier < cur_tier:
+            continue
+        if new_tier == cur_tier and not (
+            _has_civic_number(street) and not _has_civic_number(cur_addr)
+        ):
             continue
         # Apply the new main's data
-        street, city, zipc = _candidate_to_address_parts(new_main)
         r["Parcel ID"] = new_main.pid or ""
         _set_row_acres_from_candidate(r, new_main)
         r["Property Address"] = street
