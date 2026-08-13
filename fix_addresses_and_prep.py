@@ -4024,8 +4024,19 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
         last = (r.get("Last Name") or "").strip()
         if not first or not last:
             continue  # need a real PR name to search
-        if (r.get("Mailing Address") or "").strip():
-            continue  # already have a court-supplied mailing
+        # A populated mailing is left alone UNLESS it's our own Step 1.95 /
+        # promotion property-fallback ("mailing-from-property" marker) — those
+        # used to be sticky forever: the fill made the mailing non-blank, so
+        # this step skipped the row every night after. Retry them — the
+        # enricher's disk cache (.nc_dm_addr_cache.json) makes repeat nights
+        # free until the miss TTL expires, and a late-indexed people-search
+        # page can resolve a PR days after the first attempt.
+        if ((r.get("Mailing Address") or "").strip()
+                and "mailing-from-property" not in (r.get("Match Reason") or "")):
+            continue  # court-supplied (or previously found) real mailing
+        _is_retry = bool((r.get("Mailing Address") or "").strip())
+        if _is_retry and not _dm_heal_budget_left():
+            continue  # shared live-lookup cap — retries wait for tomorrow
         # Prefer the will-extracted full legal name when available — it
         # carries middle names that the eCourts Parties API truncates
         # ("Daniel Cox" -> "DANIEL CLINTON COX"). Full middle names are
@@ -4049,6 +4060,7 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
         key = f"{name}|{city}|{county}".upper()
         res = cache.get(key)
         if res is None:
+            _t0 = time.time()
             try:
                 # Tier 1: free Serper + Firecrawl + LLM via CyberBackgroundChecks.
                 res = _lookup_dm_address(name, city, api_key, state=state, county=county)
@@ -4069,17 +4081,26 @@ def fill_pr_mailing_via_people_search(rows: list[dict], state: str = "NC") -> tu
                 except Exception:
                     tf = None
                 if tf and tf.get("street"):
+                    # A disk-cache hit was already billed the night it was
+                    # fetched — recording it again would eat the weekly cap.
+                    was_cached = tf.pop("cached", False)
                     tf["source"] = "tracerfy"
                     res = tf
-                    warn_now, msg = tracerfy_budget.record_hit()
-                    if warn_now:
-                        print(f"  {msg}")
+                    if not was_cached:
+                        warn_now, msg = tracerfy_budget.record_hit()
+                        if warn_now:
+                            print(f"  {msg}")
             cache[key] = res
+            if _is_retry:
+                _dm_heal_note_elapsed(time.time() - _t0)
         if res and res.get("street"):
             r["Mailing Address"] = res["street"]
             r["Mailing City"] = res.get("city") or city
             r["Mailing State"] = res.get("state") or "NC"
             r["Mailing Zip"] = res.get("zip") or ""
+            # Retired: the property-fallback bookkeeping, if this row was a
+            # Step 1.95 fill being retried (no-op on first-time blanks).
+            _clear_property_fallback_markers(r)
             source = (res.get("source") or "").lower()
             if "tracerfy" in source:
                 tag_reason(r, "pr-tracerfy")
@@ -4656,16 +4677,22 @@ def drop_executor_at_property(rows: list[dict]) -> tuple[list[dict], int]:
         use = (r.get("Property use") or "").upper()
         if "VACANT" in use or use == "LAND":
             return (False, "")
-        # A dm-promoted row's mailing was set := property AT promotion (the
-        # enricher's DM address doesn't survive the polish round-trip, so
-        # Step 4 falls back to the property for direct mail). Comparing that
-        # mailing against the property just reads back our own fallback — it
-        # says nothing about where the DM lives. Prosser 26E000777-120 Week
-        # 31: wife Leslie is at 3200 Barr Rd per the court file, yet the row
-        # was dropped "heir-occupied" on the synthetic equality. Skip both
-        # mailing-based checks for these rows; beneficiary / App-heir /
-        # deed-co-owner signals below are real evidence and still apply.
-        mail_synthetic = "dm-promoted-pr" in (r.get("Match Reason") or "")
+        # A mailing our own fallback set := property (Step 1.95's fill, or a
+        # DM promotion whose address lookup whiffed) carries the
+        # "mailing-from-property" marker. Comparing that mailing against the
+        # property just reads back our own fallback — it says nothing about
+        # where the person lives. Prosser 26E000777-120 Week 31: wife Leslie
+        # is at 3200 Barr Rd per the court file, yet the row was dropped
+        # "heir-occupied" on the synthetic equality. Skip both mailing-based
+        # checks for these rows; beneficiary / App-heir / deed-co-owner
+        # signals below are real evidence and still apply.
+        #
+        # 2026-08-13: keyed on "mailing-from-property" rather than
+        # "dm-promoted-pr" — promoted rows can now carry a REAL people-search
+        # address (pr-people-search / pr-tracerfy), and when that real address
+        # IS the property, it's genuine heir-occupancy evidence that this DQ
+        # must judge (spouse exception still applies).
+        mail_synthetic = "mailing-from-property" in (r.get("Match Reason") or "")
         mail = norm_addr(r.get("Mailing Address"))
         if mail and not mail_synthetic and _heir_addr_match(prop_norm, mail):
             # Spouse exception BEFORE the drop: a same-surname PR who
@@ -5638,8 +5665,9 @@ def promote_dm_to_pr(row: dict) -> dict | None:
     """If DM Name is populated (obituary enricher found a verified-living
     heir) and the row has no court PR, promote the DM to PR contact.
 
-    Prefers the DM's mailing address if available; otherwise falls back to
-    property address so direct mail still reaches the lead.
+    Name-only: the caller (prep_for_datasift) looks up the DM's real mailing
+    via _lookup_dm_real_mailing and only falls back to the property address
+    when every tier whiffs.
 
     Returns dict with promoted fields or None if no usable DM.
     """
@@ -5928,9 +5956,11 @@ def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:
             except Exception:
                 addr = None
             if addr and addr.get("street"):
-                warn_now, msg = tracerfy_budget.record_hit()
-                if warn_now:
-                    print(f"  {msg}")
+                # Disk-cache hits were billed the night they were fetched.
+                if not addr.pop("cached", False):
+                    warn_now, msg = tracerfy_budget.record_hit()
+                    if warn_now:
+                        print(f"  {msg}")
                 tag_reason(r, "tracerfy")
 
         first, last = _split_person_name(dm_name)
@@ -5994,7 +6024,105 @@ def populate_zillow_urls(rows: list[dict]) -> int:
     return n
 
 
-def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]:
+def _clear_property_fallback_markers(r: dict) -> None:
+    """Remove the synthetic-mailing bookkeeping once a REAL address lands:
+    the 'mailing-from-property' Match Reason token (Step 4.05's DQ and
+    nc_phone_backfill's overwrite rule both key on it) and the
+    'Verify: No PR Address' tag (Oren's manual-review flag for rows we
+    could only mail at the property)."""
+    reason = r.get("Match Reason") or ""
+    kept = [p.strip() for p in reason.split("|")
+            if p.strip() and p.strip() != "mailing-from-property"]
+    r["Match Reason"] = " | ".join(kept)
+    tags = [t.strip() for t in (r.get("Tags") or "").split(",")
+            if t.strip() and t.strip() != "Verify: No PR Address"]
+    r["Tags"] = ", ".join(tags)
+
+
+# Per-run ceiling on LIVE (non-cached) DM-address lookups across the Step 4
+# heal pass + Step 1.93 retries. A live waterfall attempt runs ~45-70s (5
+# county GIS calls + several Firecrawl renders); the first night after this
+# ships has ~22 backlogged rows, and the polish has been deadline-killed
+# twice this week already (Parties throttle). Rows past the cap simply wait
+# — the disk cache means each night burns the cap on rows not yet tried.
+# Cache hits are free and never count. NC_DM_HEAL_MAX=0 disables the retries
+# entirely (fresh promotions still look up).
+_DM_HEAL_MAX = int(os.environ.get("NC_DM_HEAL_MAX", "15"))
+_dm_heal_live_used = 0
+_LIVE_LOOKUP_MIN_SECS = 2.0  # calls faster than this were served from cache
+
+
+def _dm_heal_budget_left() -> bool:
+    return _dm_heal_live_used < _DM_HEAL_MAX
+
+
+def _dm_heal_note_elapsed(elapsed: float) -> None:
+    global _dm_heal_live_used
+    if elapsed >= _LIVE_LOOKUP_MIN_SECS:
+        _dm_heal_live_used += 1
+
+
+def _lookup_dm_real_mailing(r: dict, name: str) -> tuple[dict | None, str]:
+    """People-search waterfall for a promoted DM's real mailing address.
+
+    Same tier chain as Step 1.93 (county GIS -> Serper/Firecrawl/LLM, then
+    Tracerfy under the weekly budget). Disk-cached inside the enricher
+    (.nc_dm_addr_cache.json), so nightly re-polish of the same week costs
+    nothing after the first attempt.
+
+    Returns (addr, reason_tag) — reason_tag is 'pr-people-search' or
+    'pr-tracerfy' (the tokens nc_phone_backfill treats as upgradeable
+    guesses, so a court-PDF address can still overwrite later), or
+    (None, "") when every tier whiffed.
+    """
+    try:
+        import config as cfg
+        from obituary_enricher import _lookup_dm_address, _lookup_dm_address_tracerfy
+        import tracerfy_budget
+    except Exception as e:  # pragma: no cover
+        print(f"  DM-address lookup unavailable ({e}) — property fallback will apply")
+        return (None, "")
+    city = (r.get("Property City") or "").strip()
+    county = (r.get("County") or "").strip()
+    addr = None
+    try:
+        addr = _lookup_dm_address(name, city, cfg.ANTHROPIC_API_KEY,
+                                  state="NC", county=county)
+    except Exception as e:
+        print(f"    DM-address lookup error for {name!r}: {e}")
+        addr = None
+    if addr and addr.get("street"):
+        return (addr, "pr-people-search")
+    if bool(getattr(cfg, "TRACERFY_API_KEY", "")) and tracerfy_budget.can_spend():
+        try:
+            tf = _lookup_dm_address_tracerfy(
+                name, city,
+                address=r.get("Property Address", "") or "",
+                zip_code=r.get("Property Zip", "") or "",
+                state="NC",
+            )
+        except Exception:
+            tf = None
+        if tf and tf.get("street"):
+            if not tf.pop("cached", False):
+                warn_now, msg = tracerfy_budget.record_hit()
+                if warn_now:
+                    print(f"  {msg}")
+            return (tf, "pr-tracerfy")
+    return (None, "")
+
+
+def _apply_dm_real_mailing(r: dict, addr: dict, reason_tag: str) -> None:
+    """Install a looked-up DM address as the row's mailing + bookkeeping."""
+    r["Mailing Address"] = addr["street"]
+    r["Mailing City"] = addr.get("city") or (r.get("Property City") or "")
+    r["Mailing State"] = addr.get("state") or "NC"
+    r["Mailing Zip"] = addr.get("zip") or ""
+    _clear_property_fallback_markers(r)
+    tag_reason(r, reason_tag)
+
+
+def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int, int]:
     """For rows with a parcel + no court-named executor:
       1. If an obituary-verified DM exists (DM Name populated by the
          enricher), promote the DM to PR contact — real person, court-
@@ -6005,13 +6133,22 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
       3. If neither exists, fall back to 'Heirs of [Decedent]' with the
          property as mailing address.
 
-    Returns (kept_rows, dropped_no_parcel, dm_promoted, beneficiary_promoted, generic_heirs).
+    DM promotion (1) now looks up the DM's REAL mailing address first
+    (2026-08-13 — Week 32 shipped 74/80 rows mailing to the property, and
+    skip trace whiffs on a person traced at an address they don't live at).
+    Property fallback only applies when every lookup tier misses; rows a
+    prior night promoted with the fallback get a heal retry (disk-cached,
+    so re-polish nights cost nothing until the miss TTL expires).
+
+    Returns (kept_rows, dropped_no_parcel, dm_promoted, beneficiary_promoted,
+    generic_heirs, dm_mailing_healed).
     """
     kept = [r for r in rows if (r.get("Parcel ID") or "").strip()]
     dropped = len(rows) - len(kept)
     dm_promoted = 0
     promoted = 0
     heirs = 0
+    healed = 0
     for r in kept:
         # A previously-written "Heirs of <Decedent>" is this function's OWN
         # fallback, not a court-named PR — treat it as still-unfilled so a
@@ -6039,6 +6176,28 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
                 and ("second-pass-obit-name-only" in _reason
                      or "dm-promoted-pr" in _reason)):
             _pr_is_fallback = True
+        # Heal pass: a row promoted on a PRIOR night whose address lookup
+        # whiffed (or predates the lookup entirely) is still mailing to the
+        # property. Retry — the disk cache makes repeat nights free, and a
+        # late-indexed people-search page can resolve it days later.
+        if (_pr and not _pr_is_fallback
+                and "dm-promoted-pr" in _reason
+                and "mailing-from-property" in _reason):
+            if not _dm_heal_budget_left():
+                continue  # live-lookup cap hit — this row waits for tomorrow
+            _hfirst = (r.get("First Name") or "").strip()
+            _hlast = (r.get("Last Name") or "").strip()
+            _hname = f"{_hfirst} {_hlast}".strip() if (_hfirst and _hlast) else _pr
+            _t0 = time.time()
+            addr, atag = _lookup_dm_real_mailing(r, _hname)
+            _dm_heal_note_elapsed(time.time() - _t0)
+            if addr:
+                _apply_dm_real_mailing(r, addr, atag)
+                healed += 1
+                print(f"  DM-MAILING HEALED {r.get('County')}/{r.get('Deceased Owner')}: "
+                      f"{_hname} -> {addr['street']}, {r['Mailing City']} "
+                      f"{r['Mailing Zip']} [{atag}]")
+            continue
         if _pr and not _pr_is_fallback:
             continue
         decedent = (r.get("Deceased Owner") or "").strip()
@@ -6051,26 +6210,39 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Personal Representative"] = dm["name"]
             r["First Name"] = dm["first"]
             r["Last Name"] = dm["last"]
-            # DM mailing address isn't preserved through the polish CSV
-            # round-trip — fall back to property address so direct mail
-            # still reaches the property (lead can be skip-traced in
-            # DataSift post-upload).
-            if (r.get("Property Address") or "").strip():
-                r["Mailing Address"] = r["Property Address"]
-            if (r.get("Property City") or "").strip():
-                r["Mailing City"] = r["Property City"]
-            r["Mailing State"] = "NC"
-            if (r.get("Property Zip") or "").strip():
-                r["Mailing Zip"] = r["Property Zip"]
-            # Same synthetic-mailing marker Step 1.95 uses: (a) DataSift skip
-            # trace matches name+address, and a DM who doesn't live at the
-            # property whiffs — 7 of Weeks 32-33's phoneless rows were traced
-            # at a synthesized mailing; (b) the marker lets nc_phone_backfill
-            # upgrade to the court-PDF address when one lands.
-            tag_reason(r, "mailing-from-property")
-            _t = (r.get("Tags") or "").strip()
-            if "Verify: No PR Address" not in _t:
-                r["Tags"] = (_t + ", " if _t else "") + "Verify: No PR Address"
+            # The DM's mailing address from the scrape-time enricher doesn't
+            # survive the polish CSV round-trip — so look it up NOW (county
+            # GIS -> people search -> Tracerfy, disk-cached). Week 32 shipped
+            # 74/80 rows mailing to the property because this fell straight
+            # to the fallback; skip trace whiffs on a person traced at an
+            # address they don't live at.
+            addr, atag = _lookup_dm_real_mailing(r, dm["name"])
+            if addr:
+                _apply_dm_real_mailing(r, addr, atag)
+                print(f"  DM-MAILING FOUND {r.get('County')}/{decedent}: "
+                      f"{dm['name']} -> {addr['street']}, {r['Mailing City']} "
+                      f"{r['Mailing Zip']} [{atag}]")
+            else:
+                # Every tier whiffed — property fallback so direct mail still
+                # goes out (addressed to the DM by name).
+                if (r.get("Property Address") or "").strip():
+                    r["Mailing Address"] = r["Property Address"]
+                if (r.get("Property City") or "").strip():
+                    r["Mailing City"] = r["Property City"]
+                r["Mailing State"] = "NC"
+                if (r.get("Property Zip") or "").strip():
+                    r["Mailing Zip"] = r["Property Zip"]
+                # Same synthetic-mailing marker Step 1.95 uses: (a) DataSift
+                # skip trace matches name+address, and a DM who doesn't live
+                # at the property whiffs — 7 of Weeks 32-33's phoneless rows
+                # were traced at a synthesized mailing; (b) the marker lets
+                # nc_phone_backfill upgrade to the court-PDF address when one
+                # lands, and the Step 4 heal pass retry the lookup on later
+                # nights.
+                tag_reason(r, "mailing-from-property")
+                _t = (r.get("Tags") or "").strip()
+                if "Verify: No PR Address" not in _t:
+                    r["Tags"] = (_t + ", " if _t else "") + "Verify: No PR Address"
             tag_reason(r, "dm-promoted-pr")
             if _pr_is_fallback:
                 # Rescued from a stuck "Heirs of" row — worth surfacing, since
@@ -6130,7 +6302,7 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Mailing Zip"] = r["Property Zip"]
         tag_reason(r, "heirs-of-fallback")
         heirs += 1
-    return kept, dropped, dm_promoted, promoted, heirs
+    return kept, dropped, dm_promoted, promoted, heirs, healed
 
 
 # Low-confidence parcel review band (2B). The scrape/enrichment path accepts a
@@ -7096,10 +7268,10 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     print(f"  Re-blanked after late attach: {n_reassert}")
 
     print("Step 4: filter to has-parcel; promote DM/beneficiary or apply 'Heirs of' fallback")
-    kept, dropped, dm_promoted, promoted, heirs = prep_for_datasift(rows)
+    kept, dropped, dm_promoted, promoted, heirs, dm_healed = prep_for_datasift(rows)
     print(f"  Rows in: {len(rows)}  Dropped (no parcel): {dropped}  "
           f"DM-promoted: {dm_promoted}  Beneficiary-promoted: {promoted}  "
-          f"Generic Heirs-of: {heirs}  Out: {len(kept)}")
+          f"Generic Heirs-of: {heirs}  DM mailings healed: {dm_healed}  Out: {len(kept)}")
 
     # Step 4.05: the heir-occupancy DQ, re-run for PRs that only came into
     # existence at Step 4.

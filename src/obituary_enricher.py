@@ -325,6 +325,126 @@ def _heir_cache_put(name: str, city: str, state: str, result: dict) -> None:
         _heir_cache_write()
 
 
+# ── Persistent cross-run DM-address cache ────────────────────────────
+# 2026-08-13: the polish re-runs each in-progress week nightly from the merged
+# CSV, wiping every prior night's polish result — so every DM/PR address
+# lookup (Step 1.93 people search, Step 4.5 second-pass obit, Step 4 DM
+# promotion) re-paid its Serper + Firecrawl + Haiku calls for the SAME person
+# every night, and a Tracerfy hit re-billed $0.10/night for the life of the
+# week. Same failure class as the obit/heir caches above.
+#
+# FOUND addresses are remembered NC_DM_ADDR_CACHE_TTL_DAYS (default 30 —
+# people move rarely); misses NC_DM_ADDR_CACHE_MISS_TTL_DAYS (default 4,
+# matching the obit cache: an infra failure (Firecrawl 500, Serper outage)
+# is indistinguishable from a true miss at this layer, so a short TTL bounds
+# the damage of freezing a solvable lookup; 0 disables miss-caching).
+# NC_DM_ADDR_CACHE_DISABLE=1 bypasses entirely; delete the file to clear.
+# Tracerfy results share the store under a "tracerfy|" key prefix so a paid
+# hit is billed once, not nightly.
+_DM_ADDR_CACHE_PATH = Path("output") / ".nc_dm_addr_cache.json"
+_DM_ADDR_CACHE_VERSION = 1
+_DM_ADDR_CACHE_TTL_DAYS = int(os.environ.get("NC_DM_ADDR_CACHE_TTL_DAYS", "30"))
+_DM_ADDR_CACHE_MISS_TTL_DAYS = int(os.environ.get("NC_DM_ADDR_CACHE_MISS_TTL_DAYS", "4"))
+_DM_ADDR_CACHE_DISABLED = os.environ.get("NC_DM_ADDR_CACHE_DISABLE", "") == "1"
+_dm_addr_cache_store: dict | None = None  # None = not yet loaded
+_dm_addr_cache_lock = threading.Lock()
+_dm_addr_cache_hits = 0  # this-process counter for run summaries
+
+
+def _dm_addr_cache_key(name: str, city: str, county: str, state: str,
+                       tier: str = "") -> str:
+    prefix = f"{tier}|" if tier else ""
+    return (f"{prefix}{(state or '').strip().upper()}|{(county or '').strip().upper()}"
+            f"|{(city or '').strip().upper()}|{(name or '').strip().lower()}")
+
+
+def _dm_addr_entry_fresh(entry: dict, now: "datetime") -> bool:
+    ttl = (_DM_ADDR_CACHE_TTL_DAYS if entry.get("found")
+           else _DM_ADDR_CACHE_MISS_TTL_DAYS)
+    if ttl <= 0:
+        return False
+    try:
+        return datetime.fromisoformat(entry.get("ts", "")) >= now - timedelta(days=ttl)
+    except (ValueError, TypeError):
+        return False
+
+
+def _dm_addr_cache_load() -> dict:
+    """Load (once) the on-disk cache, pruning expired/foreign-version entries."""
+    global _dm_addr_cache_store
+    if _dm_addr_cache_store is not None:
+        return _dm_addr_cache_store
+    _dm_addr_cache_store = {}
+    if _DM_ADDR_CACHE_DISABLED:
+        return _dm_addr_cache_store
+    try:
+        data = json.loads(_DM_ADDR_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _dm_addr_cache_store
+    if not isinstance(data, dict) or data.get("_version") != _DM_ADDR_CACHE_VERSION:
+        return _dm_addr_cache_store  # schema changed → start fresh
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return _dm_addr_cache_store
+    now = datetime.now()
+    for k, v in entries.items():
+        if isinstance(v, dict) and _dm_addr_entry_fresh(v, now):
+            _dm_addr_cache_store[k] = v
+    return _dm_addr_cache_store
+
+
+def _dm_addr_cache_write() -> None:
+    """Atomic write-through (crash-safe; mirrors the obit cache)."""
+    try:
+        _DM_ADDR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _DM_ADDR_CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"_version": _DM_ADDR_CACHE_VERSION,
+                        "entries": _dm_addr_cache_store}),
+            encoding="utf-8",
+        )
+        tmp.replace(_DM_ADDR_CACHE_PATH)
+    except (OSError, TypeError) as e:
+        logger.warning("dm-addr cache: could not write %s: %s", _DM_ADDR_CACHE_PATH, e)
+
+
+def _dm_addr_cache_get(name: str, city: str, county: str, state: str,
+                       tier: str = "") -> dict | None:
+    """Return a fresh cached lookup result, or None.
+
+    A FOUND entry returns the address dict {street, city, state, zip, source};
+    a fresh MISS returns {} (callers treat empty street as a miss and must NOT
+    re-search). None = never tried / expired — go do the live lookup."""
+    global _dm_addr_cache_hits
+    if _DM_ADDR_CACHE_DISABLED:
+        return None
+    with _dm_addr_cache_lock:
+        entry = _dm_addr_cache_load().get(
+            _dm_addr_cache_key(name, city, county, state, tier))
+        if not entry or not _dm_addr_entry_fresh(entry, datetime.now()):
+            return None
+        _dm_addr_cache_hits += 1
+        return dict(entry.get("result") or {})
+
+
+def _dm_addr_cache_put(name: str, city: str, county: str, state: str,
+                       result: dict | None, tier: str = "") -> None:
+    """Persist a lookup outcome (write-through). Empty/None result = miss."""
+    if _DM_ADDR_CACHE_DISABLED:
+        return
+    found = bool(result and result.get("street"))
+    if not found and _DM_ADDR_CACHE_MISS_TTL_DAYS <= 0:
+        return
+    with _dm_addr_cache_lock:
+        store = _dm_addr_cache_load()
+        store[_dm_addr_cache_key(name, city, county, state, tier)] = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "found": found,
+            "result": dict(result) if result else {},
+        }
+        _dm_addr_cache_write()
+
+
 def _notice_state(notice: "NoticeData") -> str:
     """Return the notice's 2-letter state code, defaulting to 'TN' for
     legacy notices where state wasn't populated."""
@@ -1761,6 +1881,13 @@ def _lookup_dm_address_tracerfy(name: str, city: str,
 
     Uses POST /v1/api/trace/lookup/ (synchronous, single-record).
     Cost: 5 credits ($0.10) per hit, 0 on miss. Rate limit: 500 RPM.
+
+    Disk-cached under a "tracerfy" tier key (anchor address rides in the
+    county slot — the property address disambiguates same-name people, so
+    it belongs in the key). A cached HIT means the $0.10 was already paid
+    on a prior night; re-billing it nightly for the life of the week was
+    the whole point of the cache. Errors and 402 (no credits) are NOT
+    cached — those must retry once the API / balance recovers.
     """
     import config as cfg
 
@@ -1774,6 +1901,18 @@ def _lookup_dm_address_tracerfy(name: str, city: str,
     first_name = parts[0]
     last_name = parts[-1]
     state_code = (state or "TN").strip().upper()
+
+    _anchor = (address or zip_code or "").strip()
+    cached = _dm_addr_cache_get(name, city, _anchor, state_code, tier="tracerfy")
+    if cached is not None:
+        if cached.get("street"):
+            logger.info("    Tracerfy cache hit: %s -> %s, %s",
+                        name, cached["street"], cached.get("city", ""))
+            # "cached" tells callers NOT to tracerfy_budget.record_hit() —
+            # the $0.10 was spent the night the entry was written.
+            return {**cached, "cached": True}
+        logger.debug("Tracerfy cache: fresh miss for %s — not re-tracing", name)
+        return None
 
     try:
         resp = requests.post(
@@ -1807,18 +1946,22 @@ def _lookup_dm_address_tracerfy(name: str, city: str,
         data = resp.json()
 
         if not data.get("hit") or not data.get("persons"):
+            _dm_addr_cache_put(name, city, _anchor, state_code, None, tier="tracerfy")
             return None
 
         person = data["persons"][0]
         mail = person.get("mailing_address") or {}
         street = (mail.get("street") or "").strip()
         if street:
-            return {
+            result = {
                 "street": street,
                 "city": (mail.get("city") or "").strip(),
                 "state": (mail.get("state") or state_code).strip(),
                 "zip": (mail.get("zip") or "").strip(),
             }
+            _dm_addr_cache_put(name, city, _anchor, state_code, result, tier="tracerfy")
+            return result
+        _dm_addr_cache_put(name, city, _anchor, state_code, None, tier="tracerfy")
         return None
     except Exception as e:
         logger.debug("Tracerfy instant lookup failed for %s: %s", name, e)
@@ -2071,6 +2214,40 @@ def _lookup_dm_address_county_gis(
 
 
 def _lookup_dm_address(
+    name: str, city: str, api_key: str, tracerfy_tier1: bool = False,
+    state: str = "TN", county: str = "",
+) -> dict:
+    """Cached front for _lookup_dm_address_uncached (see its docstring).
+
+    The nightly polish re-runs the same rows every night from scratch, so
+    without this cache the SAME person's people-search (Serper + Firecrawl +
+    Haiku) re-ran nightly for the life of the week. Found addresses live
+    NC_DM_ADDR_CACHE_TTL_DAYS; misses NC_DM_ADDR_CACHE_MISS_TTL_DAYS.
+    tracerfy_tier1 variants cache under a separate key — different tier
+    chain, different answer.
+    """
+    if not name or not name.strip():
+        return {"street": "", "city": "", "state": "", "zip": "", "source": ""}
+    tier = "tier1" if tracerfy_tier1 else ""
+    cached = _dm_addr_cache_get(name, city, county, state, tier=tier)
+    if cached is not None:
+        if cached.get("street"):
+            logger.info("    DM-addr cache hit: %s -> %s, %s [%s]",
+                        name, cached["street"], cached.get("city", ""),
+                        cached.get("source", ""))
+        else:
+            logger.debug("DM-addr cache: fresh miss for %s — not re-searching", name)
+        return {"street": "", "city": "", "state": "", "zip": "", "source": "",
+                **cached}
+    result = _lookup_dm_address_uncached(
+        name, city, api_key, tracerfy_tier1=tracerfy_tier1,
+        state=state, county=county,
+    )
+    _dm_addr_cache_put(name, city, county, state, result, tier=tier)
+    return result
+
+
+def _lookup_dm_address_uncached(
     name: str, city: str, api_key: str, tracerfy_tier1: bool = False,
     state: str = "TN", county: str = "",
 ) -> dict:
@@ -3843,6 +4020,7 @@ def enrich_obituary_data(
                         address=notice.address, zip_code=notice.zip, state=state,
                     )
                     if tracerfy_result and tracerfy_result.get("street"):
+                        tracerfy_result.pop("cached", None)
                         dm.update(tracerfy_result)
                         dm_addr_sources["inline_tracerfy"] = (
                             dm_addr_sources.get("inline_tracerfy", 0) + 1
