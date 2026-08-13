@@ -39,6 +39,20 @@ except ImportError:
 
 OUTPUT = Path("output")
 LOGS = Path("logs")
+# Running deep-prospecting ledger (repo root, committed). Every DP run —
+# whether it produced a research doc or just an address/phone fix — appends a
+# row here; the report's DEEP PROSPECTING section reads it (Oren, 2026-08-12).
+DP_LOG = Path("dp_log.csv")
+
+
+def read_dp_log() -> list[dict]:
+    if not DP_LOG.exists():
+        return []
+    try:
+        with DP_LOG.open(newline="", encoding="utf-8-sig") as f:
+            return [r for r in csv.DictReader(f) if (r.get("Case No.") or "").strip()]
+    except OSError:
+        return []
 
 
 # ── Discovery ────────────────────────────────────────────────────────
@@ -416,6 +430,34 @@ def render_report(
             lines.append(f"    now: {e['parcel_today']:18}  {e['addr_today']}")
         if len(pc) > 15:
             lines.append(f"  ... and {len(pc) - 15} more")
+    lines.append("")
+
+    # Deep prospecting — running ledger (dp_log.csv) + doc count. Requested by
+    # Oren 2026-08-12: a running log of DP runs, included in the daily report.
+    dp_rows = read_dp_log()
+    lines.append("DEEP PROSPECTING")
+    if not dp_rows:
+        lines.append("  (no DP runs logged yet — dp_log.csv missing or empty)")
+    else:
+        n_docs = len(list((OUTPUT / "reports").glob("DP_*.md")))
+        by_outcome = Counter((r.get("Outcome") or "?").strip() for r in dp_rows)
+        outcome_str = ", ".join(f"{n} {k}" for k, n in by_outcome.most_common())
+        lines.append(f"  Runs logged: {len(dp_rows)}   Research docs: {n_docs}   ({outcome_str})")
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        recent = [r for r in dp_rows if (r.get("Date") or "") >= cutoff]
+        if recent:
+            lines.append(f"  Last 7 days ({len(recent)}):")
+            for r in recent[-12:]:
+                note = (r.get("Notes") or "").strip().replace("\n", " ")
+                lines.append(f"    {r.get('Date','')}  {r.get('Case No.',''):16}  "
+                             f"{(r.get('Decedent') or '')[:26]:26}  {r.get('Outcome',''):8}  "
+                             f"{note[:58]}")
+        open_rows = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
+        if open_rows:
+            lines.append(f"  Still open ({len(open_rows)}):")
+            for r in open_rows:
+                lines.append(f"    {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:30]:30}  "
+                             f"{(r.get('Notes') or '')[:60]}")
     lines.append("")
 
     # Heir-transfer — off by default (Oren, 2026-07-18). The review XLSX still

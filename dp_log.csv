@@ -1,0 +1,19 @@
+Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
+2026-08-02,31,26E002835-590,Mecklenburg,Dixon,L3,resolved,output/reports/DP_Week31_Dixon_26E002835-590.md,
+2026-08-02,31,26E000740-480,Iredell,Hill,L3,resolved,output/reports/DP_Week31_Hill_26E000740-480.md,
+2026-08-02,31,26E001011-350,Gaston,Lineberger,L3,resolved,output/reports/DP_Week31_Lineberger_26E001011-350.md,
+2026-08-02,31,26E001008-350,Gaston,Pendleton,L3,resolved,output/reports/DP_Week31_Pendleton_26E001008-350.md,
+2026-08-02,31,26E000776-790,Rowan,Yow,L3,resolved,output/reports/DP_Week31_Yow_26E000776-790.md,
+2026-08-06,32,26E002844-590,Mecklenburg,"Baker, Joseph Cephus",L3,resolved,output/reports/DP_Week32_Baker_26E002844-590.md,"4 of 5 parcels were other Joseph Bakers; real parcel 6034 Shining Oak Ln; PR Shirley H. Baker (wife). 8/12: stranger record deleted, corrected record uploaded + traced"
+2026-08-06,32,26E002916-590,Mecklenburg,"Holbrook, Donald Keith",L3,resolved,output/reports/DP_Week32_Holbrook_26E002916-590.md,"9-parcel estate; 2 co-equal off-site children must both sign"
+2026-08-12,32,26E001041-350,Gaston,"Preidt, Suzanne Josephine",L3,resolved,output/reports/DP_Week32_Preidt_26E001041-350.md,"Court PR Julia Stone (sister, Angola IN); 'Kaiya' was a grandchild; trust flag; son occupies property"
+2026-08-12,32,26E000801-790,Rowan,"Williams, Dortha Conner",L3,resolved,output/reports/DP_Week32_Williams_26E000801-790.md,"Court PR Joseph Michael Conner, China Grove"
+2026-08-12,33,26E002976-590,Mecklenburg,"Robertson, Evelyn Ann",L3,resolved,output/reports/DP_Week33_Robertson_26E002976-590.md,"PR Ann Fiery (daughter); deed-confirmed 4336 Silo Ln; 2 out-of-state sibling signers + per-stirpes branch"
+2026-08-12,33,26E000811-790,Rowan,"Shands, Sadie Sescelia",L3,open,output/reports/DP_Week33_Shands_26E000811-790.md,"No executor on file, no obituary; vacant-lot cluster; re-check via nightly Parties"
+2026-08-12,33,26E000808-790,Rowan,"Mahaffey, Clive Loyd",L1,partial,output/reports/DP_Week33_Mahaffey_26E000808-790.md,"PR Phil unlocatable; DM2 Dale Mahaffey found (Union Grove) + Tracerfy phone pushed to record"
+2026-08-12,33,26E000492-540,Lincoln,"Brown, Kimberly Grahl",L1,partial,output/reports/DP_Week33_Brown_26E000492-540.md,"PR Ashlynn Stanley unlocatable; DM2 Gary Ray Grahl found (Iron Station) + Tracerfy mobile pushed"
+2026-08-12,33,26E000785-480,Iredell,"Dickens, Christian Meguel",L1,open,output/reports/DP_Week33_Dickens_26E000785-480.md,"All lookups missed; property is in Yadkin Co (outside GIS coverage); mail-only"
+2026-08-12,32,26E000485-540,Lincoln,"Allen, Jerry Andrew",L1,open,output/reports/DP_Week32_Allen_26E000485-540.md,"Teddy Allen unlocatable; property in Cleveland Co (outside GIS coverage); mail-only"
+2026-08-12,32,26E002853-590,Mecklenburg,"Hatcher, Ellis Jr",L2,resolved,output/reports/DP_Week32_Hatcher_26E002853-590.md,"Deed tax-mailing cracked it: Beth (Elizabeth W) Hatcher at 5705 Verducci Ln Waxhaw; Tracerfy mobile; mailing fixed + re-traced"
+2026-08-12,33,26E000780-480,Iredell,"Flammer, Joan T.",L1,resolved,,"No doc - address fix only: PR Nicollette Wodecki deed-confirmed at 208 Wickersham Dr Statesville; mailing fixed + re-traced"
+2026-08-12,32,26E000795-790,Rowan,"Foster, Wayne Calvin Sr",L1,resolved,,"No doc - address fix only: widow Martha B. Foster deed-confirmed at 815 Peach Orchard Rd Salisbury (parcel titled FOSTER WAYNE C SR HEIRS | FOSTER MARTHA B = second estate parcel); mailing fixed + re-traced"
