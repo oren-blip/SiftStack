@@ -58,6 +58,53 @@ def _latest_week_csv(week: int) -> Path | None:
     return Path(cands[-1]) if cands else None
 
 
+# Queue written by fix_addresses_and_prep.queue_pr_push: cases whose "Heirs of"
+# contact healed to a real name AFTER the case was already uploaded (the upload
+# ledger blocks re-upload, so without this push DataSift keeps the dead name).
+PR_PUSH_QUEUE = Path("output") / "pr_push_queue.txt"
+
+
+def load_queue() -> set[str]:
+    if not PR_PUSH_QUEUE.exists():
+        return set()
+    return {ln.strip() for ln in
+            PR_PUSH_QUEUE.read_text(encoding="utf-8").splitlines() if ln.strip()}
+
+
+def clear_from_queue(cases: set[str]) -> None:
+    if not cases or not PR_PUSH_QUEUE.exists():
+        return
+    keep = [ln for ln in PR_PUSH_QUEUE.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and ln.strip() not in cases]
+    PR_PUSH_QUEUE.write_text("".join(k + "\n" for k in keep), encoding="utf-8")
+
+
+def weeks_for_cases(cases: set[str]) -> dict[int, set[str]]:
+    """Map queued Case Nos to the ISO week(s) whose workbook carries them, by
+    scanning the latest dm_enriched CSV per week."""
+    out: dict[int, set[str]] = {}
+    seen_weeks: set[int] = set()
+    for p in sorted(glob.glob("output/nc_estates_ftm_*_week*_dm_enriched.csv"),
+                    reverse=True):
+        m = re.search(r"_week(\d+)_dm_enriched", p)
+        if not m:
+            continue
+        wk = int(m.group(1))
+        if wk in seen_weeks:
+            continue  # sorted desc by filename timestamp — first hit is latest
+        seen_weeks.add(wk)
+        try:
+            with open(p, newline="", encoding="utf-8-sig") as f:
+                wk_cases = {(r.get("Case No.") or "").strip()
+                            for r in csv.DictReader(f)}
+        except OSError:
+            continue
+        hit = cases & wk_cases
+        if hit:
+            out.setdefault(wk, set()).update(hit)
+    return out
+
+
 def find_upgrades(export_csv: Path, week: int) -> list[dict]:
     """Export rows whose owner is 'Heirs ...' matched to workbook rows that
     now carry a real court PR."""
@@ -96,6 +143,17 @@ def find_upgrades(export_csv: Path, week: int) -> list[dict]:
                     mismatches.append({"case": wb.get("Case No.", ""),
                                        "address": (r.get("Property address") or "").strip(),
                                        "ds": ds_name, "wb": pr})
+                continue
+            # A workbook contact without BOTH a first and last name is a bare
+            # token a prior night shipped before the single-token guard
+            # existed (Kaiya / Preidt 26E001041-350). Pushing it would swap
+            # one un-skip-traceable name for another — leave the record as
+            # Heirs until the workbook carries a full name.
+            if not ((wb.get("First Name") or "").strip()
+                    and (wb.get("Last Name") or "").strip()):
+                logger.warning("  %s: workbook PR %r has no usable first+last "
+                               "split — NOT pushing (un-traceable)",
+                               wb.get("Case No.", ""), pr)
                 continue
             out.append({
                 "case": wb.get("Case No.", ""),
@@ -243,15 +301,24 @@ async def _trace_owner(page, up: dict) -> bool:
     return True
 
 
-async def run(week: int, *, dry_run: bool, trace: bool, headless: bool,
-              fix_cases: set[str] | None = None) -> int:
+async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
+              fix_cases: set[str] | None = None,
+              skip_cases: set[str] | None = None) -> int:
     fix_cases = fix_cases or set()
+    skip_cases = skip_cases or set()
+    # Queued cases (pipeline-healed after upload) are pre-approved overwrites:
+    # the queue is only written when the WORKBOOK name is the newer truth, so
+    # a DataSift-vs-workbook mismatch on a queued case is exactly the change
+    # we're here to push, not a hand-edit to protect.
+    queued = load_queue()
+    fix_cases |= queued
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
         logger.error("DATASIFT_EMAIL / DATASIFT_PASSWORD not set")
         return 2
-    tag = f"NC Estates Week {week} {datetime.now().year}"
+    rc = 0
+    pushed: set[str] = set()
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 800})
@@ -260,74 +327,118 @@ async def run(week: int, *, dry_run: bool, trace: bool, headless: bool,
             if not await login(page, email, password):
                 logger.error("login failed")
                 return 1
-            res = await export_phone_enrichment(page, filter_tag=tag)
-            if not res.get("success") or not res.get("download_path"):
-                logger.error("export failed: %s", res.get("message"))
-                return 1
-            ups, mismatches = find_upgrades(Path(res["download_path"]), week)
-            if fix_cases:
-                ups += [{"case": m["case"], "address": m["address"],
-                         "old": m["ds"], "pr": m["wb"],
-                         "first": m["wb"].split()[0],
-                         "last": m["wb"].split()[-1],
-                         "mail_street": "", "mail_city": "",
-                         "mail_state": "NC", "mail_zip": ""}
-                        for m in mismatches if m["case"] in fix_cases]
-                mismatches = [m for m in mismatches if m["case"] not in fix_cases]
-            for m in mismatches:
-                logger.warning("MISMATCH (not auto-fixed) %s: DataSift has %r, "
-                               "workbook PR is %r — approve with --fix-case %s",
-                               m["case"], m["ds"], m["wb"], m["case"])
-            if not ups:
-                logger.info("No PR upgrades pending — every uploaded record "
-                            "already matches the workbook contact.")
-                return 0
-            logger.info("%d PR upgrade(s) pending:", len(ups))
-            for u in ups:
-                logger.info("  %s  %s -> %s  (%s)", u["case"], u["old"], u["pr"],
-                            u["address"])
-            if dry_run:
-                return 0
-            done = 0
-            for u in ups:
-                try:
-                    if not await _open_owner_page(page, u["address"]):
-                        logger.warning("  %s: record not found by address %r",
-                                       u["case"], u["address"])
-                        continue
-                    if not await _edit_owner(page, u):
-                        continue
-                except Exception as e:  # noqa: BLE001 — one bad record must not kill the run
-                    logger.warning("  %s: upgrade failed (%s)", u["case"], e)
+            for week in weeks:
+                tag = f"NC Estates Week {week} {datetime.now().year}"
+                logger.info("=== Week %d (%s) ===", week, tag)
+                res = await export_phone_enrichment(page, filter_tag=tag)
+                if not res.get("success") or not res.get("download_path"):
+                    logger.error("export failed: %s", res.get("message"))
+                    rc = 1
                     continue
-                logger.info("  %s: contact updated to %s", u["case"], u["pr"])
-                if trace:
-                    if await _trace_owner(page, u):
-                        logger.info("  %s: Skip Trace Owner fired", u["case"])
-                    else:
-                        logger.warning("  %s: Skip Trace Owner button not found",
-                                       u["case"])
-                done += 1
-            logger.info("PR upgrades applied: %d/%d. Re-run text_touch_step "
-                        "--week %d to refresh greetings.", done, len(ups), week)
-            return 0 if done == len(ups) else 1
+                ups, mismatches = find_upgrades(Path(res["download_path"]), week)
+                if skip_cases:
+                    skipped = [u for u in ups if u["case"] in skip_cases]
+                    for u in skipped:
+                        logger.info("  %s: skipped by --skip-case (%s -> %s)",
+                                    u["case"], u["old"], u["pr"])
+                    ups = [u for u in ups if u["case"] not in skip_cases]
+                if fix_cases:
+                    ups += [{"case": m["case"], "address": m["address"],
+                             "old": m["ds"], "pr": m["wb"],
+                             "first": m["wb"].split()[0],
+                             "last": m["wb"].split()[-1],
+                             "mail_street": "", "mail_city": "",
+                             "mail_state": "NC", "mail_zip": ""}
+                            for m in mismatches if m["case"] in fix_cases]
+                    mismatches = [m for m in mismatches if m["case"] not in fix_cases]
+                for m in mismatches:
+                    logger.warning("MISMATCH (not auto-fixed) %s: DataSift has %r, "
+                                   "workbook PR is %r — approve with --fix-case %s",
+                                   m["case"], m["ds"], m["wb"], m["case"])
+                if not ups:
+                    logger.info("Week %d: no PR upgrades pending — every uploaded "
+                                "record already matches the workbook contact.", week)
+                    continue
+                logger.info("%d PR upgrade(s) pending:", len(ups))
+                for u in ups:
+                    logger.info("  %s  %s -> %s  (%s)", u["case"], u["old"], u["pr"],
+                                u["address"])
+                if dry_run:
+                    continue
+                done = 0
+                for u in ups:
+                    try:
+                        if not await _open_owner_page(page, u["address"]):
+                            logger.warning("  %s: record not found by address %r",
+                                           u["case"], u["address"])
+                            continue
+                        if not await _edit_owner(page, u):
+                            continue
+                    except Exception as e:  # noqa: BLE001 — one bad record must not kill the run
+                        logger.warning("  %s: upgrade failed (%s)", u["case"], e)
+                        continue
+                    logger.info("  %s: contact updated to %s", u["case"], u["pr"])
+                    if trace:
+                        if await _trace_owner(page, u):
+                            logger.info("  %s: Skip Trace Owner fired", u["case"])
+                        else:
+                            logger.warning("  %s: Skip Trace Owner button not found",
+                                           u["case"])
+                    done += 1
+                    if u["case"] in queued:
+                        pushed.add(u["case"])
+                logger.info("Week %d: PR upgrades applied: %d/%d. Re-run "
+                            "text_touch_step --week %d to refresh greetings.",
+                            week, done, len(ups), week)
+                if done != len(ups):
+                    rc = 1
         finally:
             await browser.close()
+    if pushed:
+        clear_from_queue(pushed)
+        logger.info("Cleared %d pushed case(s) from %s: %s",
+                    len(pushed), PR_PUSH_QUEUE, ", ".join(sorted(pushed)))
+    left = load_queue()
+    if left and not dry_run:
+        logger.warning("Still queued (not covered by the weeks run): %s",
+                       ", ".join(sorted(left)))
+    return rc
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--week", type=int, required=True)
+    ap.add_argument("--week", type=int, action="append", default=[],
+                    help="ISO week to sweep (repeatable: --week 32 --week 33)")
+    ap.add_argument("--queued", action="store_true",
+                    help="Derive the weeks from output/pr_push_queue.txt (cases "
+                         "whose contact healed after upload) and push those. "
+                         "Combines with --week.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-trace", action="store_true")
     ap.add_argument("--fix-case", action="append", default=[],
                     help="Case No. whose DataSift-vs-workbook name MISMATCH is "
                          "approved to overwrite (repeatable)")
+    ap.add_argument("--skip-case", action="append", default=[],
+                    help="Case No. to exclude from this push even if detected "
+                         "(repeatable) — e.g. a bad workbook name not to ship")
     ap.add_argument("--headless", action="store_true")
     args = ap.parse_args()
-    return asyncio.run(run(args.week, dry_run=args.dry_run,
+    weeks = list(dict.fromkeys(args.week))
+    if args.queued:
+        qweeks = weeks_for_cases(load_queue())
+        for wk, cases in sorted(qweeks.items()):
+            logger.info("Queue: week %d carries %s", wk, ", ".join(sorted(cases)))
+            if wk not in weeks:
+                weeks.append(wk)
+        if not qweeks and not weeks:
+            logger.info("PR-push queue is empty — nothing to do.")
+            return 0
+    if not weeks:
+        ap.error("--week N (or --queued) is required")
+    return asyncio.run(run(sorted(weeks), dry_run=args.dry_run,
                            trace=not args.no_trace, headless=args.headless,
-                           fix_cases=set(args.fix_case)))
+                           fix_cases=set(args.fix_case),
+                           skip_cases=set(args.skip_case)))
 
 
 if __name__ == "__main__":

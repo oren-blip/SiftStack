@@ -55,6 +55,36 @@ FINISH_SELECTOR = ('button:has-text("Finish Upload"), '
                    'button:has-text("Submit")')
 
 
+def _trace_scope_from_csv(csv_path: Path) -> tuple[str | None, int, int]:
+    """Read the per-upload trace-scope tag back out of the CSV's Tags column.
+
+    The export stamps "Skip Trace <run stamp> [WN]" on every row whose contact
+    is a real person, and "Needs DP" (with NO trace tag) on "Heirs of"
+    placeholder rows. Returns (trace_tag, rows_with_tag, needs_dp_rows);
+    trace_tag is None for pre-2026-08-12 CSVs, which fall back to the batch tag.
+    """
+    import csv as _csv
+    try:
+        from nc_datasift_export import NEEDS_DP_TAG, TRACE_TAG_PREFIX
+    except ImportError:
+        NEEDS_DP_TAG, TRACE_TAG_PREFIX = "Needs DP", "Skip Trace "
+    trace_tag, n_traceable, n_needs_dp = None, 0, 0
+    try:
+        with csv_path.open(newline="", encoding="utf-8-sig") as f:
+            for row in _csv.DictReader(f):
+                tags = [t.strip() for t in (row.get("Tags") or "").split(",")]
+                row_trace = next((t for t in tags if t.startswith(TRACE_TAG_PREFIX)), None)
+                if row_trace:
+                    trace_tag = trace_tag or row_trace
+                    n_traceable += 1
+                if NEEDS_DP_TAG in tags:
+                    n_needs_dp += 1
+    except OSError as e:
+        logger.warning("Could not re-read %s for trace scoping (%s) — falling "
+                       "back to the batch tag.", csv_path.name, e)
+    return trace_tag, n_traceable, n_needs_dp
+
+
 async def _wait_for_wizard_close(page, timeout_ms: int = 60000) -> bool:
     """True once the Review heading is hidden (wizard closed = upload committed)."""
     try:
@@ -248,6 +278,11 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                     logger.warning("Phones-by-address push failed (%s)", e)
 
             # ── Fire DataSift's own skip trace on just this week's rows ──
+            # Scope to the CSV's per-row "Skip Trace <stamp>" tag when present:
+            # the export withholds that tag from "Heirs of" placeholder rows
+            # (tagged "Needs DP" instead), so a non-person like "Heirs Shands"
+            # never burns a paid trace. Older CSVs without the tag fall back
+            # to the batch tag (traces every uploaded row, as before).
             traced = False
             if committed and skip_trace:
                 if week is None:
@@ -255,8 +290,21 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                                    "per-week tag, so SKIPPING it to avoid tracing the whole list. "
                                    "Pass --week N (or --no-skip-trace to silence this).")
                 else:
-                    traced = await _skip_trace_week(page, list_name, batch_tag,
-                                                    skiptrace_settle_s)
+                    trace_tag, n_traceable, n_needs_dp = _trace_scope_from_csv(csv_path)
+                    if trace_tag:
+                        logger.info("Trace scope from CSV: tag %r covers %d row(s); "
+                                    "%d 'Heirs of' placeholder row(s) excluded (Needs DP).",
+                                    trace_tag, n_traceable, n_needs_dp)
+                        traced = await _skip_trace_week(page, list_name, trace_tag,
+                                                        skiptrace_settle_s)
+                    elif n_needs_dp:
+                        logger.info("All %d uploaded row(s) are 'Heirs of' placeholders — "
+                                    "SKIPPING the paid skip trace entirely (a trace on "
+                                    "a non-person name can never return a phone).",
+                                    n_needs_dp)
+                    else:
+                        traced = await _skip_trace_week(page, list_name, batch_tag,
+                                                        skiptrace_settle_s)
         finally:
             await browser.close()
 

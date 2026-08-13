@@ -32,6 +32,42 @@ _PARCEL_PROPERTY_FIELDS = (
 )
 
 
+PR_PUSH_QUEUE = Path("output") / "pr_push_queue.txt"
+
+
+def queue_pr_push(row: dict) -> None:
+    """Queue an already-uploaded case whose contact just healed for a DataSift
+    push (pr_upgrade_step.py --queued).
+
+    A 'Heirs of' contact upgraded to a real name AFTER the case was uploaded
+    never reaches DataSift on its own: the upload ledger (correctly) blocks
+    re-upload, so the record keeps the dead 'Heirs' contact and its skip trace
+    parks in the '01. Skipped No Numbers' preset forever. Weeks 32-33: Bryan
+    26E000806-790, Rodriguez 26E002870-590, Burch 26E001042-350 and Baker
+    26E002844-590 all healed locally and sat unpushed until a manual sweep.
+    """
+    case = (row.get("Case No.") or "").strip()
+    if not case:
+        return
+    try:
+        from nc_datasift_export import load_upload_ledger
+        if case not in load_upload_ledger():
+            return  # not uploaded yet — the next upload carries the fix itself
+        existing: set[str] = set()
+        if PR_PUSH_QUEUE.exists():
+            existing = {ln.strip() for ln in
+                        PR_PUSH_QUEUE.read_text(encoding="utf-8").splitlines()}
+        if case in existing:
+            return
+        PR_PUSH_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        with PR_PUSH_QUEUE.open("a", encoding="utf-8") as f:
+            f.write(case + "\n")
+        print(f"  PR-PUSH QUEUED {case}: healed contact is only local — push it "
+              f"with: python pr_upgrade_step.py --queued")
+    except Exception as e:  # noqa: BLE001 — queue bookkeeping must never kill polish
+        print(f"  PR-push queue write failed for {case}: {e}")
+
+
 def tag_reason(row: dict, code: str) -> None:
     """Append a short audit code to row['Match Reason'].
 
@@ -5983,11 +6019,21 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             r["Mailing State"] = "NC"
             if (r.get("Property Zip") or "").strip():
                 r["Mailing Zip"] = r["Property Zip"]
+            # Same synthetic-mailing marker Step 1.95 uses: (a) DataSift skip
+            # trace matches name+address, and a DM who doesn't live at the
+            # property whiffs — 7 of Weeks 32-33's phoneless rows were traced
+            # at a synthesized mailing; (b) the marker lets nc_phone_backfill
+            # upgrade to the court-PDF address when one lands.
+            tag_reason(r, "mailing-from-property")
+            _t = (r.get("Tags") or "").strip()
+            if "Verify: No PR Address" not in _t:
+                r["Tags"] = (_t + ", " if _t else "") + "Verify: No PR Address"
             tag_reason(r, "dm-promoted-pr")
             if _pr_is_fallback:
                 # Rescued from a stuck "Heirs of" row — worth surfacing, since
                 # these are the ones that were dead in DataSift's Needs Skipped.
                 tag_reason(r, "heirs-of-upgraded-to-named-heir")
+                queue_pr_push(r)
                 print(f"  HEIRS-OF UPGRADED {r.get('County')}/{decedent}: "
                       f"{_pr} -> {dm['name']}"
                       f"{' (' + dm['relationship'] + ')' if dm.get('relationship') else ''}")
@@ -6021,6 +6067,7 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int]
             tag_reason(r, "beneficiary-promoted-pr")
             if _pr_is_fallback:
                 tag_reason(r, "heirs-of-upgraded-to-named-heir")
+                queue_pr_push(r)
                 print(f"  HEIRS-OF UPGRADED {r.get('County')}/{decedent}: "
                       f"{_pr} -> {ben['name']} (beneficiary)")
             promoted += 1

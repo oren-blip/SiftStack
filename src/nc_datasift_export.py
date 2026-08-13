@@ -83,6 +83,31 @@ COURT_PHONE_TAG = "court-verified-phone"
 # CRM never implies these came from Tracerfy or DataSift skip trace.
 ENFORMION_PHONE_TAG = "enformion-phone"
 
+# Tag for rows whose contact is the "Heirs of <Decedent>" placeholder. Skip
+# trace matches a PERSON by name — nobody is named "Heirs", so every paid
+# trace of these rows is guaranteed-empty spend, and worse, the trace marks
+# them "already skipped" so they park in the '01. Skipped No Numbers' preset
+# looking finished instead of surfacing as needs-research. These rows get
+# this tag INSTEAD of the per-upload trace-scope tag, so the post-upload
+# skip trace never sees them (Weeks 32-33: 7 of 17 phoneless rows were paid
+# traces of "Heirs Shands" / "Heirs Baker" / etc.).
+NEEDS_DP_TAG = "Needs DP"
+
+# Per-upload trace-scope tag prefix. write_datasift_upload_csv stamps
+# "Skip Trace <run stamp> [WN]" onto every NON-placeholder row; then
+# upload_netnew_datasift.py reads the tag back out of the CSV and scopes the
+# paid post-upload skip trace to it (instead of the batch tag, which covers
+# the Heirs rows too).
+TRACE_TAG_PREFIX = "Skip Trace "
+
+
+def is_heirs_placeholder(r: dict) -> bool:
+    """True when the row's contact is the 'Heirs of <Decedent>' fallback, not
+    a real person (FTM row: First Name is literally 'Heirs')."""
+    if (r.get("First Name") or "").strip().lower() == "heirs":
+        return True
+    return (r.get("Personal Representative") or "").strip().lower().startswith("heirs of")
+
 
 def _tags_for_week(week: int | None, year: int) -> str:
     tags = ["Courthouse Data"]
@@ -91,7 +116,7 @@ def _tags_for_week(week: int | None, year: int) -> str:
     return ",".join(tags)   # DataSift CSV tag separator is a comma
 
 
-def _row_to_datasift(r: dict, tags: str) -> dict:
+def _row_to_datasift(r: dict, tags: str, trace_tag: str | None = None) -> dict:
     out: dict[str, str] = {}
     for header, src in _FIELD_MAP:
         if src is not None:
@@ -143,7 +168,25 @@ def _row_to_datasift(r: dict, tags: str) -> dict:
     extra = [t for marker, t in (("pdf-phone", COURT_PHONE_TAG),
                                  ("enformion-phone", ENFORMION_PHONE_TAG))
              if marker in mr]
-    out["Tags"] = ",".join([tags] + extra)
+    # Carry the FTM row's own workflow tags through to DataSift. These are
+    # Oren's lead flags ("Lot Cluster", "Surviving Spouse?", "Multi-Signer
+    # (N)", "Verify: No PR Address", ...) — before 2026-08-12 this column was
+    # silently dropped, so none of them were filterable in DataSift.
+    extra += [t.strip() for t in (r.get("Tags") or "").split(",") if t.strip()]
+    # Placeholder contacts get "Needs DP" INSTEAD of the trace-scope tag, so
+    # the paid post-upload skip trace never wastes a charge on a non-person.
+    if is_heirs_placeholder(r):
+        extra.append(NEEDS_DP_TAG)
+    elif trace_tag:
+        extra.append(trace_tag)
+    seen: set[str] = set()
+    all_tags = []
+    for t in tags.split(",") + extra:
+        t = t.strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            all_tags.append(t)
+    out["Tags"] = ",".join(all_tags)
     return out
 
 
@@ -281,11 +324,19 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tags = _tags_for_week(week, year)
+    # Per-upload trace-scope tag: unique per pipeline run AND per week file
+    # (the nightly writes week32 + week33 files with the same run stamp — a
+    # date-only tag would make the second upload's skip trace re-charge the
+    # first batch). upload_netnew_datasift.py reads this back from the CSV.
+    m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{6})", path.stem)
+    stamp = f"{m.group(1)} {m.group(2)}" if m else \
+        __import__("datetime").datetime.now().strftime("%Y-%m-%d %H%M%S")
+    trace_tag = f"{TRACE_TAG_PREFIX}{stamp}" + (f" W{week}" if week else "")
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            w.writerow(_row_to_datasift(r, tags))
+            w.writerow(_row_to_datasift(r, tags, trace_tag))
 
     if write_netnew:
         arc = load_manual_archive()
@@ -310,7 +361,7 @@ def write_datasift_upload_csv(rows: list[dict], path: str | Path,
             w = csv.DictWriter(f, fieldnames=DATASIFT_UPLOAD_COLUMNS, extrasaction="ignore")
             w.writeheader()
             for r in netnew_rows:
-                w.writerow(_row_to_datasift(r, tags))
+                w.writerow(_row_to_datasift(r, tags, trace_tag))
         # Sidecar manifest: the upload CSV itself has no Case No. column, so
         # upload_netnew_datasift.py reads THIS to append the committed cases
         # to the upload ledger.
