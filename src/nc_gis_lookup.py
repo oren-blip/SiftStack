@@ -458,6 +458,40 @@ def _is_later_generation(dec_suffix: str, owner_suffix: str) -> bool:
     return o > d
 
 
+def _normalize_compound_first(d_first: str, d_middle: str,
+                              o_tokens: list[str]) -> list[str]:
+    """Reconcile compound first names written as ONE token on one side and
+    TWO on the other, in either direction:
+
+      * Deed fused:  court "Irish, Jo Ann Scott" vs deed "IRISH JOANN SCOTT
+        TRUSTEE" (Cabarrus 26E000837-120 — scored 0.4 and the case shipped
+        parcel-less). When a deed token exactly equals d_first + the first
+        middle word, split it back into the two court tokens.
+      * Deed split:  court "Smith, Joann B" vs deed "SMITH JO ANN B". When
+        two ADJACENT deed tokens concatenate exactly to d_first, merge them.
+
+    Exact-concatenation equality is the whole guard: a genuinely different
+    "JOANN" can only fuse when the court name is literally JO + ANN, and the
+    surname gate has already passed before this runs. Middle names are left
+    to the existing middle-check, which sees the rewritten token list.
+    """
+    mid_words = [w for w in (d_middle or "").split() if w]
+    if mid_words:
+        fused = d_first + mid_words[0]
+        if fused in o_tokens:
+            out: list[str] = []
+            for t in o_tokens:
+                if t == fused:
+                    out.extend((d_first, mid_words[0]))
+                else:
+                    out.append(t)
+            return out
+    for i in range(len(o_tokens) - 1):
+        if o_tokens[i] + o_tokens[i + 1] == d_first:
+            return o_tokens[:i] + [d_first] + o_tokens[i + 2:]
+    return o_tokens
+
+
 def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = "") -> float:
     """Score a single (non-joint) owner name against the decedent."""
     # Suffix disambiguation: Sr vs Jr (or any generational difference)
@@ -494,6 +528,9 @@ def _name_match_score_one(decedent: str, owner_fullname: str, dec_suffix: str = 
         return 0.0
     if not d_first:
         return 0.6
+    if d_first not in o_set:
+        o_tokens = _normalize_compound_first(d_first, d_middle, o_tokens)
+        o_set = set(o_tokens)
 
     first_full_match = d_first in o_set
     first_initial_match = False
@@ -2920,7 +2957,11 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 19  # bumped 2026-08-13. v19: Gaston RES + 'Auxiliary Improvement' (lot with shed/garage, no dwelling) now is_vacant_land=True / is_residential=False + simplify_use_code -> Vacant Land. Cached candidates carry the old flags baked in (Putnam 26E001064-350's $32K aux lot was cached is_residential=True), so bump per the v13 precedent. Prior: v18 2026-07-23. v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump.
+_PERSIST_VERSION = 20  # bumped 2026-08-13 (2nd bump today). v20: compound-first-name
+# normalization in _name_match_score_one — "IRISH JOANN SCOTT TRUSTEE" now scores
+# 1.00 against court "Irish, Jo Ann Scott" (was 0.4; Cabarrus 26E000837-120 shipped
+# parcel-less). Cached candidates carry old scores baked in, so bump per precedent.
+# Prior: v19: Gaston RES + 'Auxiliary Improvement' (lot with shed/garage, no dwelling) now is_vacant_land=True / is_residential=False + simplify_use_code -> Vacant Land. Cached candidates carry the old flags baked in (Putnam 26E001064-350's $32K aux lot was cached is_residential=True), so bump per the v13 precedent. Prior: v18 2026-07-23. v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump. Gaston RES + 'Auxiliary Improvement' (lot with shed/garage, no dwelling) now is_vacant_land=True / is_residential=False + simplify_use_code -> Vacant Land. Cached candidates carry the old flags baked in (Putnam 26E001064-350's $32K aux lot was cached is_residential=True), so bump per the v13 precedent. Prior: v18 2026-07-23. v17: _name_match_score_one scores a full-first+full-last match with a CONFLICTING middle at 0.6 (review band) instead of 0.4, so cases like Lackey 26E000718-480 surface for verification instead of dropping parcel-less. v18: short entity suffixes (LP/PA/CO/PC/LC/PL) no longer count as a first initial — "BEAVER LP" was scoring 0.70 against "Beaver, Linda Gale" and outranking four real Linda Beavers (26E000762-790). Cached candidates carry the old scores baked in, so each change needs its own bump.
 # v13 (same day, earlier pass): stopped flattening " | " between co-owners before
 # scoring; stopped treating a lone "V" as a generational suffix; graded
 # _middle_match_strength; Gaston code=RES + desc='Vacant' -> Vacant Land.
