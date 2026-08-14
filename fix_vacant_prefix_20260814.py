@@ -70,8 +70,13 @@ FIXES = [
     # record self-consistent: stamp the parcel/value/acres OF THE ADDRESS IT
     # SHOWS (Catawba-verified 2026-08-14). Which parcel the estate record
     # should ultimately represent is Oren's call — flagged in the report.
-    ("26E000934-170", "3610 Old Catawba Rd", "Huitt",
-     None, "376220900384", "420500.00", 4.71),
+    # ("26E000934-170", "3610 Old Catawba Rd", "Huitt",
+    #  None, "376220900384", "420500.00", 4.71),   # DONE 8/14 (2nd run)
+    # Hoffman: uploaded 8/14 morning WITH the 0-prefix (typed Vacant Land) but
+    # BEFORE the parcel-note widening ran a full cycle — Oren flagged the
+    # record has no parcel number. Street already correct; stamp parcel only.
+    ("26E001081-350", "0 Redbud Dr", "Hoffman",
+     None, "116881", "12140.00", 3.31),
 ]
 
 

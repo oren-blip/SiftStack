@@ -311,6 +311,7 @@ REASON_GLOSSARY: dict[str, str] = {
     "pr-tracerfy": "PR's contact found via Tracerfy skip trace",
     "tracerfy": "Contact found via Tracerfy skip trace",
     "mailing-from-property": "PR mailing filled from the property address (so mail still lands)",
+    "mailing-from-prior-main": "PR mailing kept at the estate home the main parcel was swapped away from",
     "mailing-addr-split": "Mailing address split out of a combined field",
     "second-pass-obit-full": "Heir/PR found on a second obituary pass (full-name match)",
     "second-pass-obit-name-only": "Heir/PR found on a second obituary pass (name-only match)",

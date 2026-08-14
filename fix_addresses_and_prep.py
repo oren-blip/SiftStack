@@ -4329,6 +4329,27 @@ def _norm_addr_simple(s: str) -> str:
     return "".join(ch for ch in (s or "").upper() if ch.isalnum())
 
 
+def _addr_mailable(addr: str) -> bool:
+    """True when a street string could actually receive mail: non-blank,
+    not the "No Address" placeholder, and carries a real civic number
+    (Oren's "0 <street>" vacant-lot convention and bare numberless streets
+    have no mailbox)."""
+    a = (addr or "").strip()
+    return bool(a and a.lower() != "no address" and a != "0"
+                and not a.startswith("0 ") and a[0].isdigit())
+
+
+def _property_mailable(r: dict) -> bool:
+    """True when the row's main property can receive mail: mailable street
+    AND not a vacant lot (a vacant parcel with an assigned civic number
+    still has no mailbox). Oren 2026-08-14 (Hoffman 26E001081-350): a
+    vacant-lot mailing both kills the mail piece AND poisons skip trace —
+    DataSift matches a person by name+address, and nobody lives at the lot."""
+    if not _addr_mailable(r.get("Property Address") or ""):
+        return False
+    return "vacant" not in (r.get("Property use") or "").lower()
+
+
 def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
     """For rows where a Personal Rep / Executor / Interested Person is named
     but their mailing address was not in the court record, fall back to
@@ -4338,6 +4359,12 @@ def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
     This matches the user's manual workflow. Phase 2 (future): replace
     with the PR's actual mailing or the heir's mailing once deep
     prospecting (obituary + skip trace) finds them.
+
+    NEVER stamps a vacant lot / numberless address (2026-08-14, Hoffman
+    26E001081-350: the vacant main "0 REDBUD DR" became the PR mailing).
+    Those rows keep a BLANK mailing — the Step 4 heal / people-search
+    tiers attempt blank-mailing rows every night, and the Verify tag
+    keeps them surfaced for manual review.
 
     Returns the number of rows updated. Skips 'Heirs of' rows (their
     mailing was already set this way by the Heirs-of transform).
@@ -4353,6 +4380,14 @@ def fill_missing_pr_mailing_from_property(rows: list[dict]) -> int:
         prop_addr = (r.get("Property Address") or "").strip()
         if not prop_addr:
             continue  # no property to fall back to
+        if not _property_mailable(r):
+            # Vacant lot / numberless main — no mailbox there. Leave the
+            # mailing blank (heal pass retries nightly) but keep the row
+            # surfaced for review.
+            tags = (r.get("Tags") or "").strip()
+            if "Verify: No PR Address" not in tags:
+                r["Tags"] = (tags + ", " if tags else "") + "Verify: No PR Address"
+            continue
         r["Mailing Address"] = prop_addr
         if (r.get("Property City") or "").strip():
             r["Mailing City"] = r["Property City"]
@@ -5013,6 +5048,17 @@ def _apply_sibling_swap(row: dict, best, old_pid: str, *,
     """
     dec = (row.get("Deceased Owner") or "").strip()
     county = (row.get("County") or "").strip()
+    # Capture the OLD main's address before overwriting: when the row has no
+    # real PR mailing, the prior main (the heir-occupied home on a DQ swap,
+    # or the estate residence on an over-cap swap) is a far better mail/skip-
+    # trace anchor than what Step 1.95 would otherwise stamp — the NEW main,
+    # which on these swaps is usually a vacant lot with no mailbox (Hoffman
+    # 26E001081-350: PR mailing shipped as "0 REDBUD DR").
+    _old_addr = (row.get("Property Address") or "").strip()
+    _old_city = (row.get("Property City") or "").strip()
+    _old_zip = (row.get("Property Zip") or "").strip()
+    _old_mail_missing = (not (row.get("Mailing Address") or "").strip()
+                         or "mailing-from-property" in (row.get("Match Reason") or ""))
     street, city, zipc = _candidate_to_address_parts(best)
     # Vacant/landlocked parcels often have no situs in GIS — fall back to
     # the user's manual convention rather than dumping the mailing-style
@@ -5079,6 +5125,24 @@ def _apply_sibling_swap(row: dict, best, old_pid: str, *,
         n = (row.get("Notes") or "").strip()
         if "VERIFY SWAP" not in n.upper():
             row["Notes"] = (n + ("\n" if n else "") + vmark).strip()
+    # Mailing preservation: no real PR mailing + the old main was a mailable
+    # house -> mail there, addressed to the PR by name. On a DQ swap the DQ
+    # evidence says the family LIVES at the old main; on an over-cap swap
+    # it's the estate residence. Either beats blank, and both beat the new
+    # main (usually a mailbox-less vacant lot).
+    if _old_mail_missing and _addr_mailable(_old_addr):
+        row["Mailing Address"] = _old_addr
+        row["Mailing City"] = _old_city
+        row["Mailing State"] = "NC"
+        row["Mailing Zip"] = _old_zip
+        _clear_property_fallback_markers(row)
+        tag_reason(row, "mailing-from-prior-main")
+        occupied = reason_tag == "swap-on-dq"
+        _add_note(row, f"[PR MAILING = prior main {_old_addr} ("
+                       + ("family occupies it per the heir-occupied evidence"
+                          if occupied else "estate residence left on over-cap swap")
+                       + ") — court record had no PR address]")
+        print(f"  {log_label} mailing preserved from prior main: {_old_addr}")
     print(f"  {log_label} {county}/{dec}: {old_pid} -> {best.pid} ({new_use or '?'})")
     return True
 
@@ -6224,22 +6288,24 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int,
                       f"{r['Mailing Zip']} [{atag}]")
             else:
                 # Every tier whiffed — property fallback so direct mail still
-                # goes out (addressed to the DM by name).
-                if (r.get("Property Address") or "").strip():
+                # goes out (addressed to the DM by name). NEVER a vacant lot /
+                # numberless main (no mailbox; poisons skip trace) — those
+                # keep a blank mailing for the nightly heal to retry.
+                if _property_mailable(r):
                     r["Mailing Address"] = r["Property Address"]
-                if (r.get("Property City") or "").strip():
-                    r["Mailing City"] = r["Property City"]
-                r["Mailing State"] = "NC"
-                if (r.get("Property Zip") or "").strip():
-                    r["Mailing Zip"] = r["Property Zip"]
-                # Same synthetic-mailing marker Step 1.95 uses: (a) DataSift
-                # skip trace matches name+address, and a DM who doesn't live
-                # at the property whiffs — 7 of Weeks 32-33's phoneless rows
-                # were traced at a synthesized mailing; (b) the marker lets
-                # nc_phone_backfill upgrade to the court-PDF address when one
-                # lands, and the Step 4 heal pass retry the lookup on later
-                # nights.
-                tag_reason(r, "mailing-from-property")
+                    if (r.get("Property City") or "").strip():
+                        r["Mailing City"] = r["Property City"]
+                    r["Mailing State"] = "NC"
+                    if (r.get("Property Zip") or "").strip():
+                        r["Mailing Zip"] = r["Property Zip"]
+                    # Same synthetic-mailing marker Step 1.95 uses: (a) DataSift
+                    # skip trace matches name+address, and a DM who doesn't live
+                    # at the property whiffs — 7 of Weeks 32-33's phoneless rows
+                    # were traced at a synthesized mailing; (b) the marker lets
+                    # nc_phone_backfill upgrade to the court-PDF address when one
+                    # lands, and the Step 4 heal pass retry the lookup on later
+                    # nights.
+                    tag_reason(r, "mailing-from-property")
                 _t = (r.get("Tags") or "").strip()
                 if "Verify: No PR Address" not in _t:
                     r["Tags"] = (_t + ", " if _t else "") + "Verify: No PR Address"

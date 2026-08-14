@@ -494,6 +494,7 @@ def _apply_pr_address(r: dict, addr: dict, case: str, name: str, dry_run: bool) 
     Only overwrites a mailing we ourselves synthesized or guessed:
       * blank
       * `mailing-from-property` — the "mail to the decedent's house" backstop
+      * `mailing-from-prior-main` — the estate home kept through a sibling swap
       * `pr-people-search` / `pr-tracerfy` — third-party guesses
     A mailing that came from Odyssey's Parties API with no tag is court-supplied
     already and is left alone. A PDF address identical to the property address
@@ -502,7 +503,8 @@ def _apply_pr_address(r: dict, addr: dict, case: str, name: str, dry_run: bool) 
     reason = r.get("Match Reason") or ""
     existing = (r.get("Mailing Address") or "").strip()
     synthesized = any(t in reason for t in
-                      ("mailing-from-property", "pr-people-search", "pr-tracerfy"))
+                      ("mailing-from-property", "mailing-from-prior-main",
+                       "pr-people-search", "pr-tracerfy"))
     if existing and not synthesized:
         return 0
     if _norm_addr(addr["street"]) == _norm_addr(r.get("Property Address")):
@@ -524,7 +526,8 @@ def _apply_pr_address(r: dict, addr: dict, case: str, name: str, dry_run: bool) 
         r["Mailing Zip"] = addr["zip"]
     # The property fallback / people-search guess is no longer what's on the row.
     kept = [p.strip() for p in reason.split("|") if p.strip() and p.strip() not in
-            ("mailing-from-property", "pr-people-search", "pr-tracerfy")]
+            ("mailing-from-property", "mailing-from-prior-main",
+             "pr-people-search", "pr-tracerfy")]
     kept.append("pdf-pr-address")
     r["Match Reason"] = " | ".join(kept)
     # Step 1.95 tags these rows for manual address hunting; we just found it.
