@@ -142,12 +142,22 @@ def _row_to_datasift(r: dict, tags: str, trace_tag: str | None = None) -> dict:
     # Vacant lots have no street-numbered address ("KING WILKINSON RD"), so
     # DataSift's address-based enrichment can't resolve their parcel and leaves
     # it blank — even though our pipeline found it. The parcel column isn't
-    # uploaded (DataSift ignores an uploaded APN), so surface it in Notes for
-    # vacant-land rows only, where it's the sole way to keep the number, along
-    # with a LandPortal deep link to the parcel (Oren works vacant lots there).
-    # See Painter 26E000440-540 (Week 29): pipeline had 3665410548, DataSift blank.
+    # uploaded (DataSift ignores an uploaded APN), so surface it in Notes,
+    # along with a LandPortal deep link to the parcel (Oren works vacant lots
+    # there). See Painter 26E000440-540 (Week 29): pipeline had 3665410548,
+    # DataSift blank.
+    # Week 33 widening: gate on the ADDRESS being unresolvable (blank, "No
+    # Address", "0 "-prefixed, or numberless street) instead of on Property
+    # use — county GIS mistypes numberless lots as SFR (Iredell Black
+    # 26E000781-480, Ward 26E000790-480; Gaston Ricardo 26E001058-350), and
+    # those shipped with no parcel number anywhere in the record.
     parcel = (r.get("Parcel ID") or "").strip()
-    if parcel and "vacant" in (r.get("Property use") or "").lower():
+    _addr = out.get("Property Street Address", "").strip()
+    _unresolvable = (not _addr or _addr.lower() == "no address"
+                     or _addr.startswith("0 ") or _addr == "0"
+                     or not _addr[0].isdigit())
+    if parcel and ("vacant" in (r.get("Property use") or "").lower()
+                   or _unresolvable):
         note = out.get("Notes", "").strip()
         additions = []
         if parcel not in note:

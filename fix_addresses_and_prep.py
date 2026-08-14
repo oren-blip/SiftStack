@@ -6698,13 +6698,24 @@ def prefix_numberless_vacant_streets(rows: list[dict]) -> int:
     Willis 26E000442-540, Lane 26E000446-540) all shipped without the prefix
     while Oren's sheet has "0 Green Leaf Ln". See
     [[feedback_vacant_lot_zero_prefix]].
+
+    Week 33 widening: NOT gated on Property use anymore. County GIS mistypes
+    numberless lots as SFR (Gaston 'Auxiliary Improvement' class, Iredell lake
+    lots Black 26E000781-480 'SHADY COVE RD' / Ward 26E000790-480 'TROUTMAN
+    SHOALS RD', Gaston Ricardo 26E001058-350 'HEATHER LN' — five $7K "SFR"
+    lots), and those shipped to DataSift with neither the 0-prefix nor a
+    parcel number. A numberless situs means "no civic number" regardless of
+    the typed use, which is exactly what the 0-prefix marks. Non-vacant rows
+    additionally require a street-suffix match so leaked city/state strings
+    ("Maiden NC 28650") don't get prefixed.
     """
     n = 0
     for r in rows:
         pa = (r.get("Property Address") or "").strip()
         if not pa or pa[0].isdigit() or pa.lower() == "no address":
             continue
-        if "vacant" not in (r.get("Property use") or "").lower():
+        use = (r.get("Property use") or "").lower()
+        if "vacant" not in use and not _STREET_SUFFIX_RE.search(pa):
             continue
         r["Property Address"] = f"0 {pa}"
         n += 1
