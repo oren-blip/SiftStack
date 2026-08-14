@@ -178,6 +178,7 @@ async def upload_csv(
     finish: bool = True,
     pull_date: str | None = None,
     extra_tags: list[str] | None = None,
+    tags_override: list[str] | None = None,
 ) -> dict:
     """Upload a CSV file to DataSift via the 7-step upload wizard.
 
@@ -633,7 +634,16 @@ async def upload_csv(
     # extra_tags: caller-supplied additions — used for the per-upload BATCH tag
     # that scopes the post-upload skip trace / Trestle / text-touch steps to
     # just this batch (daily uploads must not re-process prior days' records).
-    csv_tags = _tags_from_csv(csv_path) or ["Courthouse Data"]
+    # Wizard tags apply UNIFORMLY to every record in the upload. _tags_from_csv
+    # reads only the FIRST row, so on a mixed-tag CSV rows 2+ silently lose
+    # their tags AND inherit row 1's (2026-08-14: every record got 'Needs DP',
+    # none got the skip-trace scope tag). Callers with mixed-tag CSVs must pass
+    # tags_override with only the tags COMMON to all rows and push the rest
+    # per-row afterwards (see upload_netnew_datasift._push_per_row_tags).
+    if tags_override is not None:
+        csv_tags = list(tags_override)
+    else:
+        csv_tags = _tags_from_csv(csv_path) or ["Courthouse Data"]
     csv_tags += [t for t in (extra_tags or []) if t not in csv_tags]
     logger.info("Wizard: Add tags — %s", csv_tags)
     for _t in csv_tags:
