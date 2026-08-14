@@ -97,8 +97,12 @@ def is_target_row(row: dict) -> bool:
     Targets: blank Personal Representative OR a "Heirs of <Decedent>"
     placeholder, with no DM Name already filled and a real decedent name.
     """
-    if (row.get("DM Name") or "").strip():
+    dm = (row.get("DM Name") or "").strip().lower()
+    if dm and not dm.startswith(("estate of", "heirs of")):
         return False  # already has a discovered decision maker
+    # ("Estate of"/"Heirs of" DMs are placeholders, not people — the
+    # enricher's old estate fallback wrote a bare "Estate of" on no-PR rows,
+    # which made exactly the rows that need research look already-done.)
     decedent = (row.get("Deceased Owner") or "").strip()
     if not decedent or "IN THE MATTER" in decedent.upper():
         return False
@@ -145,6 +149,10 @@ def build_trace_notice(row: dict) -> tuple[NoticeData | None, str, str]:
         return n, "Phone 1", "Phone 1 Tier"
 
     dm = (row.get("DM Name") or "").strip()
+    # Never pay to trace a placeholder — "Estate of"/"Heirs of" is not a
+    # person, so Tracerfy/Trestle spend on it is guaranteed-empty.
+    if dm.lower().startswith(("estate of", "heirs of")):
+        dm = ""
     if dm:
         n = NoticeData(
             notice_type="probate", county=county, state="NC", date_added=date_added,

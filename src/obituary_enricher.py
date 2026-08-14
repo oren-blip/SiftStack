@@ -3936,9 +3936,21 @@ def enrich_obituary_data(
                         error_info["missing_flags"].append("snippet_only")
                     joint_owner_dm_count += 1
 
-        # Path 5: Estate-of fallback — no survivors, mail to property address
-        if not has_survivors and not ranked_dms:
-            estate_name = f"Estate of {notice.owner_name}"
+        # Path 5: Estate-of fallback — no survivors, mail to property address.
+        # PROBATE ROWS ARE EXCLUDED (2026-08-14): for probate, owner_name is
+        # the PR/executor — blank on exactly the no-PR cases that reach this
+        # fallback, so it shipped a literal "Estate of " (no name) into the
+        # DM field (2-5 rows/week: Williams 420 Southcircle, Adams
+        # 26E002995-590, Dunlap 26E003003-590, ...). Worse, ANY placeholder
+        # DM makes the row look "already researched" — it blocks
+        # nc_deep_prospect.is_target_row, the deed co-owner DM step, and
+        # promote_dm_to_pr treats it as degenerate anyway. Probate rows
+        # already get the "Heirs of <Decedent>" contact + Needs DP tagging
+        # downstream, which is strictly better than a fake DM.
+        if (not has_survivors and not ranked_dms
+                and notice.notice_type != "probate"
+                and notice.owner_name.strip()):
+            estate_name = f"Estate of {notice.owner_name.strip()}"
             ranked_dms = [{
                 "name": estate_name,
                 "relationship": "estate",

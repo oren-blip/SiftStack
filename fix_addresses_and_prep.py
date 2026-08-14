@@ -4187,7 +4187,7 @@ def promote_deed_coowner_to_dm(
         if first and first != "Heirs":
             continue  # already has a court-named PR
         dm = (r.get("DM Name") or "").strip().lower()
-        if dm and dm != "estate of":
+        if dm and not dm.startswith("estate of"):
             continue  # already have a decision maker (obituary, etc.)
         pid = (r.get("Parcel ID") or "").strip()
         dec = (r.get("Deceased Owner") or "").strip()
@@ -6953,9 +6953,25 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     # Back-compat: pre-rename CSVs used "Executor Full Name". Normalize to
     # the current "Personal Representative" so downstream logic only sees
     # one column name. Idempotent — no-op when column is already renamed.
+    n_estate_scrubbed = 0
     for r in rows:
         if "Executor Full Name" in r and "Personal Representative" not in r:
             r["Personal Representative"] = r.pop("Executor Full Name")
+        # Scrub the enricher's old "Estate of" DM placeholder (usually a BARE
+        # "Estate of" — owner_name is blank on the no-PR probate rows that hit
+        # that fallback). It shipped as garbage in DataSift's Decision Maker
+        # field AND made the row look researched, hiding it from
+        # nc_deep_prospect / the co-owner DM step. The enricher no longer
+        # emits it for probate (2026-08-14); this cleans rows re-read from
+        # prior nights' CSVs. No real person is named "Estate of ...".
+        _dm = (r.get("DM Name") or "").strip().lower()
+        if _dm.startswith("estate of"):
+            r["DM Name"] = ""
+            if (r.get("DM Relationship") or "").strip().lower() == "estate":
+                r["DM Relationship"] = ""
+            n_estate_scrubbed += 1
+    if n_estate_scrubbed:
+        print(f"  Scrubbed 'Estate of' DM placeholders: {n_estate_scrubbed}")
     print(f"Loaded {len(rows)} rows")
 
     print("Step -1.5: apply late-arriving case-doc data (wills/applications fetched on prior runs)")
