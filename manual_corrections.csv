@@ -483,3 +483,51 @@ Renner, Kayleigh Lynn - 1162 S Hubert Cir W, Martinsville, IN 46151"
 26E000811-790,Mailing Zip,21223
 26E000811-790,Phone 1,(410) 669-0706
 26E000811-790,Tag,enformion-phone
+26E000919-170,Phone 1,8285149008
+26E000919-170,Phone 1 Tier,Dial First
+26E000919-170,DM Phone,8285149008
+26E000919-170,DM Phone Tier,Dial First
+26E001070-350,DM Name,Richard S Peche
+26E001070-350,DM Relationship,son (verify)
+26E001070-350,DM Phone,7042401226
+26E001070-350,DM Phone Tier,Dial First
+26E001070-350,DM 2 Name,David Lynn Peche
+26E001070-350,DM 2 Relationship,son (verify)
+26E001070-350,DM 3 Name,Gary Wayne Peche
+26E001070-350,DM 3 Relationship,son (verify)
+26E002977-590,DM Name,Henry Doug Silverthorne
+26E002977-590,DM Relationship,family (verify: husband or father)
+26E002977-590,DM Phone,7045780549
+26E002977-590,DM Phone Tier,Dial First
+26E002977-590,DM 2 Name,Julie Shay Silverthorne
+26E002977-590,DM 2 Relationship,family (verify)
+26E002977-590,DM 3 Name,Mark Douglas Silverthorne
+26E002977-590,DM 3 Relationship,family (verify)
+26E003002-590,DM Name,Jerry Charles Jenkins
+26E003002-590,DM Relationship,husband (deed co-owner)
+26E003002-590,DM Phone,8438103766
+26E003002-590,DM Phone Tier,Dial First
+26E003002-590,DM 2 Name,Anthony Jon Jenkins
+26E003002-590,DM 2 Relationship,son (verify)
+26E002941-590,DM Name,Cassandra Lovette Cuthbertson
+26E002941-590,DM Relationship,spouse (graph)
+26E002941-590,DM Phone,7045984895
+26E002941-590,DM Phone Tier,Dial Fourth
+26E002941-590,DM 2 Name,Hana Syiedah Kabwe
+26E002941-590,DM 2 Relationship,possible daughter (verify)
+# Truett 26E001062-350 (8/14 skipped-no-numbers sweep): PR Kimberly Hawkins
+# unlocatable - Enformion candidate at 2460 Glyncastle Way rejected (zero
+# family overlap in relatives graph). DM2 Crystal Gail Byers matched EXACTLY
+# at her court-listed address 1522 Long Branch Rd, Grover NC. Phone is HERS.
+26E001062-350,Phone 1,(704) 419-9546
+26E001062-350,Tag,enformion-phone
+# Abernathy 26E000788-480 (8/14): PR is Tanya ABERNATHY Jackson - middle name
+# is the decedent surname; confirmed at court mailing 6767 Beam Lumber Rd Vale.
+26E000788-480,Phone 1,(828) 308-3222
+26E000788-480,Tag,enformion-phone
+# Canipe 26E001076-350 (8/14): PR Douglas William Canipe lives at 115 Sunny Ln
+# Cherryville (the estate street); relatives graph contains decedent Gail +
+# DM2 Jeffry Canipe = identity certain. Replaces dead "0 SUNNY LN" mailing.
+26E001076-350,Mailing Address,115 Sunny Ln
+26E001076-350,Phone 1,(704) 478-0081
+26E001076-350,Tag,enformion-phone

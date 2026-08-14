@@ -85,6 +85,161 @@ def _trace_scope_from_csv(csv_path: Path) -> tuple[str | None, int, int]:
     return trace_tag, n_traceable, n_needs_dp
 
 
+_ADDR_COLS = ["Property Street Address", "Property City",
+              "Property State", "Property ZIP Code"]
+
+# Single-user account — tasks go to Oren.
+_OREN_USER_UUID = "f8f08dd8-e17c-4e69-a033-5f9f7446bf02"
+
+
+async def _create_needs_dp_tasks(page, csv_path: Path) -> None:
+    """POST a 'Needs DP' task onto each uploaded placeholder row's record.
+
+    Rows tagged "Needs DP" (contact is "Heirs of <Decedent>") skip the paid
+    trace, so their defined next step is deep-prospecting research. The task
+    makes that queue visible in the task presets (the preset alternative hit
+    the account's "Filter presets limit reached!" cap, 2026-08-14). Routes
+    from app.reisift.io main.min.js: POST /api/internal/task/ with
+    assigned_to_property; record found via the search API by exact street.
+    Non-fatal throughout — a missed task is logged, never blocks the upload.
+    """
+    import csv as _csv
+    from datetime import datetime, timedelta, timezone
+
+    import requests as _rq
+    try:
+        from nc_datasift_export import NEEDS_DP_TAG
+    except ImportError:
+        NEEDS_DP_TAG = "Needs DP"
+    try:
+        with csv_path.open(newline="", encoding="utf-8-sig") as f:
+            rows = [r for r in _csv.DictReader(f)
+                    if NEEDS_DP_TAG in {t.strip() for t in
+                                        (r.get("Tags") or "").split(",")}]
+    except OSError as e:
+        logger.warning("Needs DP tasks: could not re-read %s (%s)", csv_path.name, e)
+        return
+    if not rows:
+        return
+    try:
+        token = await page.evaluate("() => localStorage.getItem('rs_token')")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Needs DP tasks: no API token from page (%s) — skipped.", e)
+        return
+    h = {"authorization": f"Bearer {token}", "content-type": "application/json",
+         "accept": "application/json", "origin": "https://app.reisift.io",
+         "referer": "https://app.reisift.io/", "user-agent": "Mozilla/5.0",
+         "x-reisift-ui-version": "2022.02.01.7"}
+    api = "https://apiv2.reisift.io"
+    # End-of-day Eastern, 3 days out (observed task convention: T03:59:59.999Z
+    # is the previous day's midnight Eastern).
+    due = (datetime.now(timezone.utc) + timedelta(days=4)).strftime(
+        "%Y-%m-%dT03:59:59.999000Z")
+    made = missed = 0
+    for r in rows:
+        street = (r.get("Property Street Address") or "").strip()
+        try:
+            sr = _rq.post(f"{api}/api/internal/property/",
+                          headers={**h, "x-http-method-override": "GET"},
+                          json={"query": {"must": {"search": street}}}, timeout=30)
+            hits = [rec for rec in (sr.json().get("results") or [])
+                    if ((rec.get("address") or {}).get("street") or "")
+                    .strip().lower() == street.lower()] if sr.status_code == 200 else []
+            if len(hits) != 1:
+                logger.warning("Needs DP task: %r -> %d record match(es) — "
+                               "create the task by hand.", street, len(hits))
+                missed += 1
+                continue
+            tr = _rq.post(f"{api}/api/internal/task/", headers=h, timeout=30,
+                          json={"title": "Needs DP — deep prospecting queued",
+                                "all_day": True, "due_date": due,
+                                "event_type": "task",
+                                "assigned_to_user": _OREN_USER_UUID,
+                                "assigned_to_property": hits[0].get("uuid")})
+            if tr.status_code in (200, 201):
+                made += 1
+            else:
+                logger.warning("Needs DP task POST for %r -> HTTP %d",
+                               street, tr.status_code)
+                missed += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Needs DP task for %r failed (%s)", street, e)
+            missed += 1
+    logger.info("Needs DP tasks: %d created, %d need hand follow-up.", made, missed)
+
+
+def _tag_groups(csv_path: Path) -> tuple[list[str], dict[str, list[dict]]]:
+    """Split the CSV's Tags column into (common_tags, per_row_tags).
+
+    common_tags: tags present on EVERY row (safe to apply wizard-level, which
+    tags all records uniformly). per_row_tags: tag -> rows carrying it, for
+    tags only SOME rows have — these must be pushed per-row after the main
+    upload (wizard-level would stamp them on the wrong records; 2026-08-14).
+    """
+    import csv as _csv
+    with csv_path.open(newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    sets = [{t.strip() for t in (r.get("Tags") or "").split(",") if t.strip()}
+            for r in rows]
+    common_set = set.intersection(*sets) if sets else set()
+    # keep first-seen order for the wizard
+    common: list[str] = []
+    for r in rows:
+        for t in (r.get("Tags") or "").split(","):
+            t = t.strip()
+            if t and t in common_set and t not in common:
+                common.append(t)
+    per_tag: dict[str, list[dict]] = {}
+    for r, s in zip(rows, sets):
+        for t in sorted(s - common_set):
+            per_tag.setdefault(t, []).append(r)
+    return common, per_tag
+
+
+async def _push_per_row_tags(p, headless: bool,
+                             per_tag: dict[str, list[dict]]) -> bool:
+    """Push each non-common tag onto only its rows: one mini 'Add Data'
+    upsert-by-address per tag, each in a FRESH browser (back-to-back wizard
+    runs on one page fail with 'Could not find file input element';
+    fresh-browser-per-upload is the proven pattern from fix_tags_20260814).
+    """
+    email = os.environ.get("DATASIFT_EMAIL", "")
+    password = os.environ.get("DATASIFT_PASSWORD", "")
+    ok = True
+    # Skip-trace scope tag first: the paid steps downstream depend on it.
+    order = sorted(per_tag, key=lambda t: (not t.startswith("Skip Trace"), t))
+    for tag in order:
+        rows = per_tag[tag]
+        safe = "".join(c if c.isalnum() else "_" for c in tag)[:40]
+        out = Path("output") / f"tagpush_{safe}.csv"
+        import csv as _csv
+        with out.open("w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(_ADDR_COLS + ["Tags"])
+            for r in rows:
+                w.writerow([r.get(c, "") for c in _ADDR_COLS] + [tag])
+        logger.info("Per-row tag push: %r onto %d record(s)...", tag, len(rows))
+        browser = await p.chromium.launch(headless=headless)
+        page = await (await browser.new_context(
+            viewport={"width": 1280, "height": 800})).new_page()
+        try:
+            if not await login(page, email, password):
+                logger.error("Per-row tag push: login failed for %r", tag)
+                ok = False
+                continue
+            up = await upload_csv(page, out, mode="add", list_name="PROBATE",
+                                  existing_list=True, finish=True)
+            if up.get("success"):
+                logger.info("Per-row tag push: %r done.", tag)
+            else:
+                logger.error("Per-row tag push FAILED for %r: %s — push %s "
+                             "by hand.", tag, up.get("message"), out)
+                ok = False
+        finally:
+            await browser.close()
+    return ok
+
+
 async def _wait_for_wizard_close(page, timeout_ms: int = 60000) -> bool:
     """True once the Review heading is hidden (wizard closed = upload committed)."""
     try:
@@ -105,14 +260,21 @@ async def _skip_trace_week(page, list_name: str, tag: str,
     logger.info("Upload committed. Waiting %ds for DataSift to import the rows "
                 "before skip trace (so the tag filter finds them)...", settle_s)
     await page.wait_for_timeout(settle_s * 1000)
-    # A brand-new batch tag can take a few minutes to appear in the tag-filter
-    # dropdown (indexing lag — Week 31: first attempt at +2 min found nothing,
-    # a retry at +8 min succeeded). Retry before giving up.
-    for attempt in range(3):
+    # A brand-new tag takes up to ~35 MIN to appear in the tag-filter dropdown
+    # (2026-08-14: mini-upload at 12:37 was first filterable ~13:11; the old
+    # 3-attempt/8-min budget could never reach that). Retry every 5 min for
+    # ~45 min, reloading the page each round — a failed attempt leaves the
+    # filter panel in a state where 'Search for tags' is no longer found.
+    for attempt in range(8):
         if attempt:
-            logger.info("Tag %r not filterable yet — waiting 2 min and retrying "
-                        "(%d/2)...", tag, attempt)
-            await page.wait_for_timeout(120000)
+            logger.info("Tag %r not filterable yet — waiting 5 min and retrying "
+                        "(%d/7)...", tag, attempt)
+            await page.wait_for_timeout(300000)
+        try:
+            await page.reload(wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Page reload before attempt failed (%s)", e)
         logger.info("Skip tracing this upload's rows only (tag=%r)...", tag)
         res = await skip_trace_records(page, list_name, filter_tag=tag)
         if res.get("success"):
@@ -129,7 +291,8 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
               skip_trace: bool = True, skiptrace_settle_s: int = 90,
               tier_step: bool = True, tier_settle_s: int = 600,
               text_touches: bool = True, touch_sender: str = "Oren",
-              batch_tag_override: str | None = None) -> None:
+              batch_tag_override: str | None = None,
+              backfill: bool = True) -> None:
     email = os.environ.get("DATASIFT_EMAIL", "")
     password = os.environ.get("DATASIFT_PASSWORD", "")
     if not email or not password:
@@ -165,13 +328,23 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             batch_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else \
                 __import__("datetime").datetime.now().strftime("%Y-%m-%d")
             batch_tag = batch_tag_override or f"NC Upload {batch_date}"
+            # Wizard tags are uniform across the whole upload: apply only the
+            # tags EVERY row shares; per-row tags are pushed after commit
+            # (2026-08-14 bug: row 1's tags used to stamp all records).
+            common_tags, per_row_tags = _tag_groups(csv_path)
+            if per_row_tags:
+                logger.info("Mixed-tag CSV: %d common tag(s) at the wizard %s; "
+                            "%d tag(s) pushed per-row after commit: %s",
+                            len(common_tags), common_tags, len(per_row_tags),
+                            {t: len(r) for t, r in per_row_tags.items()})
             logger.info("Uploading %s into existing list '%s' (stopping at Review; "
                         "pull date %s; batch tag %r)...",
                         csv_path.name, list_name, pull_date or "today", batch_tag)
             result = await upload_csv(page, csv_path, mode="add",
                                       list_name=list_name, existing_list=True,
                                       finish=False, pull_date=pull_date,
-                                      extra_tags=[batch_tag])
+                                      extra_tags=[batch_tag],
+                                      tags_override=common_tags)
             if not result.get("success"):
                 logger.error("Wizard did not reach Review: %s", result.get("message"))
                 return
@@ -277,6 +450,15 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Phones-by-address push failed (%s)", e)
 
+            # ── Per-row tags (tags not shared by every row) ──
+            # Fresh browser per tag upload; the skip-trace scope tag goes
+            # first because the paid steps below filter on it.
+            if committed and per_row_tags:
+                if not await _push_per_row_tags(p, headless, per_row_tags):
+                    logger.warning("Some per-row tag pushes failed — the "
+                                   "tagpush_*.csv files in output/ can be "
+                                   "uploaded by hand (Add Data -> PROBATE).")
+
             # ── Fire DataSift's own skip trace on just this week's rows ──
             # Scope to the CSV's per-row "Skip Trace <stamp>" tag when present:
             # the export withholds that tag from "Heirs of" placeholder rows
@@ -305,6 +487,16 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                     else:
                         traced = await _skip_trace_week(page, list_name, batch_tag,
                                                         skiptrace_settle_s)
+
+            # ── Needs DP tasks: a visible next step for placeholder rows ──
+            # "Heirs of" rows are never traced (Needs DP tag instead), so
+            # without this they'd sit phoneless in "01. Skipped No Numbers"
+            # with nothing scheduled. A filter preset was Oren's first choice
+            # but the account is at "Filter presets limit reached!" (8/14),
+            # so each row gets a DataSift task instead — surfaces in the
+            # task presets; the DP push completes it when research resolves.
+            if committed:
+                await _create_needs_dp_tasks(page, csv_path)
         finally:
             await browser.close()
 
@@ -354,6 +546,34 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
                        "running the skip trace by hand, run: "
                        "python trestle_tier_step.py --week %d", week)
 
+    # ── Tier backfill sweep (approved Oren 2026-08-14): the batch tier step
+    # above only scores THIS upload's phones. Phones that entered records any
+    # other way since the last upload — DP pushes, per-record "Skip Trace
+    # Owner" re-traces, trace results landing after the settle window — never
+    # get dial-priority tags. Sweep the list for them, scoped to a rolling
+    # 90-day Created window (actively-called records only). The persistent
+    # score cache makes re-seen phones free; a normal sweep costs pennies,
+    # and --max-cost aborts before spending if it ever finds a big backlog.
+    if backfill:
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            from trestle_backfill_step import run as backfill_run
+            since = (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
+            logger.info("Tier backfill sweep (records created since %s)...", since)
+            brc = await backfill_run(list_name=list_name, all_records=False,
+                                     csv_path=None, apply=True,
+                                     headless=headless, max_cost=1.0,
+                                     created_since=since)
+            if brc == 0:
+                logger.info("Tier backfill sweep complete.")
+            else:
+                logger.warning("Tier backfill sweep exited %d — run by hand: "
+                               "python trestle_backfill_step.py --apply "
+                               "--created-since %s", brc, since)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Tier backfill sweep failed (%s) — run by hand: "
+                           "python trestle_backfill_step.py --apply", e)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -385,6 +605,10 @@ def main():
                          "DataSift's new phones are on the records)")
     ap.add_argument("--no-text-touches", action="store_true",
                     help="Don't write Text Touch 1-4 SMS drafts after the tier step")
+    ap.add_argument("--no-backfill", action="store_true",
+                    help="Skip the post-upload tier backfill sweep (default: sweep "
+                         "the list for phones missing dial-priority tags — DP "
+                         "pushes, re-traces — rolling 90-day window, $1 cost cap)")
     ap.add_argument("--touch-sender", default="Oren",
                     help="First name signing the text touches (default: Oren)")
     ap.add_argument("--batch-tag", default=None,
@@ -403,7 +627,8 @@ def main():
                     tier_settle_s=args.tier_settle,
                     text_touches=not args.no_text_touches,
                     touch_sender=args.touch_sender,
-                    batch_tag_override=args.batch_tag))
+                    batch_tag_override=args.batch_tag,
+                    backfill=not args.no_backfill))
 
 
 if __name__ == "__main__":
