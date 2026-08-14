@@ -101,8 +101,11 @@ def _last_name_token(person: dict) -> str:
 
 
 def _best_match(resp: dict, last: str, city: str, zip_code: str) -> dict | None:
-    """Pick the person whose surname matches as a WHOLE token, preferring one
-    whose address history overlaps the anchor (zip first, then city)."""
+    """Pick the person whose surname matches as a WHOLE token AND whose
+    address history touches the anchor (zip or city). A same-named stranger
+    elsewhere in the state must NOT put phones on our record — proven by the
+    2026-08-13 accuracy test (wrong 'Ashlyn Stanley' in Sanford would have
+    passed a surname-only filter)."""
     persons = (resp.get("persons") or resp.get("people")
                or resp.get("results") or [])
     want = (last or "").strip().split()[-1].lower()
@@ -123,6 +126,11 @@ def _best_match(resp: dict, last: str, city: str, zip_code: str) -> dict | None:
         return s
 
     cands.sort(key=overlap, reverse=True)
+    if overlap(cands[0]) == 0:
+        logger.info("Enformion match rejected — no address overlap with "
+                    "anchor %s %s (candidate %r)", city, zip_code,
+                    _last_name_token(cands[0]))
+        return None
     return cands[0]
 
 

@@ -365,9 +365,9 @@ def main():
                     help="ISO week — scopes the post-upload skip trace to this week's "
                          "tag ('NC Estates Week N YYYY'). Without it, skip trace is skipped.")
     ap.add_argument("--year", type=int, default=2026)
-    ap.add_argument("--review-wait", type=float, default=5.0,
+    ap.add_argument("--review-wait", type=float, default=0.0,
                     help="Minutes to wait for a manual Finish before auto-finishing "
-                         "(default 5; 0 = finish immediately)")
+                         "(default 0 = finish immediately; Oren 2026-08-13)")
     ap.add_argument("--no-auto-finish", action="store_true",
                     help="Never auto-click Finish; close uncommitted if no human acts")
     ap.add_argument("--no-skip-trace", action="store_true",

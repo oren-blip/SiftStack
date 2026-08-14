@@ -242,7 +242,18 @@ Darrell Dean Russell - 202 S. Central Avenue, Belmont, NC 28012"
 # output/reports/DP_Week32_Holbrook_26E002916-590.md). Donald Keith Holbrook,
 # DOD 2026-05-19, sole owner of 9 parcels, NO surviving spouse on deed or in
 # the obituary -> the two children take everything and BOTH must sign.
-# Mailing intentionally left as-is: neither child's own address is known yet.
+# Mailing retargeted 2026-08-13 (Oren approved): neither child's own address is
+# known, so the pipeline had defaulted mailing = main parcel (115 S Church St).
+# Better target per the DP report: 9934 Hyde Glen Ct — decedent's residence,
+# itself an estate parcel (PID 02903252), and where the tax bills for ALL 9
+# parcels already go. Most likely to reach whoever is settling the estate.
+26E002916-590,Mailing Address,9934 Hyde Glen Ct
+26E002916-590,Mailing City,Charlotte
+26E002916-590,Mailing State,NC
+26E002916-590,Mailing Zip,28262
+# Property ZIP had inherited the deed's tax-mailing ZIP (28262 = Charlotte,
+# Hyde Glen Ct) instead of the situs ZIP — 115 S Church St Huntersville is 28078.
+26E002916-590,Property Zip,28078
 26E002916-590,First Name,Jennifer
 26E002916-590,Last Name,Pratt
 26E002916-590,Personal Representative,Jennifer H. Pratt
@@ -438,3 +449,37 @@ Renner, Kayleigh Lynn - 1162 S Hubert Cir W, Martinsville, IN 46151"
 26E002853-590,Mailing City,Waxhaw
 26E002853-590,Mailing State,NC
 26E002853-590,Mailing Zip,28173
+# Hatcher 26E002853-590: Property Zip had inherited the deed's tax-mailing ZIP
+# (28173 Waxhaw — the owners' home) like Holbrook 26E002916-590. Real situs:
+# 10015 Franklin Dr is east Charlotte 28215 (Polaris centroid reverse-geocoded
+# 2026-08-13; parcel PID 11131125, municipality CHARLOTTE).
+26E002853-590,Property Zip,28215
+# --- 2026-08-13 Enformion accuracy test results (Oren approved "yes to all") ---
+# Mahaffey 26E000808-790: Enformion cracked the PR our waterfall couldn't.
+# Phillip Lee Mahaffey, 61, at 850 Luther Barger Rd # Q Salisbury 28146 (the
+# estate's own street, current 7/1/2026). Identity certain: his relatives list
+# contains decedent Clive L Mahaffey + DM2 Dale Travis Mahaffey. DataSift
+# record PATCHed same day (fix_mahaffey_20260813.py).
+26E000808-790,Mailing Address,850 Luther Barger Rd # Q
+26E000808-790,Mailing City,Salisbury
+26E000808-790,Mailing State,NC
+26E000808-790,Mailing Zip,28146
+26E000808-790,Phone 1,(704) 279-0798
+26E000808-790,Tag,enformion-phone
+# Shands 26E000811-790: no PR, no obituary — Enformion solved WHY: Sadie's
+# household is Baltimore MD (Adolphus Rd Salisbury only in address history).
+# Heir lead Patricia Anne Shands, 65 (likely daughter): her current address
+# 546 N Payson St appears in Sadie's own history and her relatives list
+# includes Sadie. Promote her to the contact slot (same pattern as the
+# obit-verified heir promotions above).
+26E000811-790,First Name,Patricia
+26E000811-790,Last Name,Shands
+26E000811-790,Personal Representative,Patricia Anne Shands
+26E000811-790,DM Name,Patricia Anne Shands
+26E000811-790,DM Relationship,family (Enformion relatives graph; Sadie's household)
+26E000811-790,Mailing Address,546 N Payson St
+26E000811-790,Mailing City,Baltimore
+26E000811-790,Mailing State,MD
+26E000811-790,Mailing Zip,21223
+26E000811-790,Phone 1,(410) 669-0706
+26E000811-790,Tag,enformion-phone

@@ -31,3 +31,14 @@
 26E002810-590   05717212   Smith, Donald Corben — Eagles Landing Dr owner is DONALD SMITH | DENISE RICHARDS-SMITH, a different living Donald Smith (SMS reply confirmed wrong person; Claude verified 2026-08-10)
 26E002810-590   21156209   Smith, Donald Corben — $1.02M parcel owner DONALD SMITH | NICOLE SMITH, no middle-initial match; original over-cap main that triggered the bad swap (Claude verified 2026-08-10)
 26E002820-590   19331268   Wash, Janet Vazquez — 2606 Circa Dr owner JANET COMFORT WASH (age 72) is a different, LIVING Janet Wash: registered Mecklenburg voter at that address, active on Facebook Jul 2026. Decedent Janet VAZQUEZ Wash d. 5/2/2024 age 62 (dignitymemorial obit; father Fidel Vazquez confirms maiden name) (Claude verified 2026-08-11)
+
+# --- Ricardo 26E001058-350 (Oren verified via Gaston GIS 2026-08-13) ---
+# Decedent RICARDO, JOHN JOSEPH. All 5 parcels in the Heather Ln / Lamplighter Ln
+# cluster belong to RICARDO KENNETH JOHN (Kenneth John Ricardo), a DIFFERENT,
+# living Ricardo whose tax mail goes to 255 W 6th Street, Elkhorn City, KY.
+# The 60% low-confidence matcher hit on the shared JOHN + RICARDO tokens.
+26E001058-350   177271   Ricardo, John Joseph — main parcel (Heather Ln); owner RICARDO KENNETH JOHN, mails to Elkhorn City KY
+26E001058-350   177272   Ricardo, John Joseph — Heather Ln lot, same wrong owner (Oren's GIS screenshot)
+26E001058-350   177262   Ricardo, John Joseph — Heather Ln lot, same wrong owner
+26E001058-350   177277   Ricardo, John Joseph — 239 Lamplighter Ln, same wrong owner (Oren's GIS screenshot)
+26E001058-350   177278   Ricardo, John Joseph — 237 Lamplighter Ln, same wrong owner

@@ -22,6 +22,7 @@ import csv
 import os
 import re
 import smtplib
+import subprocess
 import sys
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -135,7 +136,10 @@ _DROP_PATTERNS = {
     "commercial":    re.compile(r"Dropped commercial: (\d+)"),
     "archive_dupe":  re.compile(r"Dropped archive-duplicate rows: (\d+)"),
     "non_pending":   re.compile(r"Dropped non-Pending: (\d+)"),
-    "repick":        re.compile(r"REPICK "),
+    # Real events print "REPICK {county}/{decedent}: ..." — require the slash so
+    # the report's own "Smart-picker REPICK events: N" line (the report text is
+    # echoed into nc_daily_run.log by the nightly bat) doesn't count itself.
+    "repick":        re.compile(r"REPICK \S+/"),
     "refound":       re.compile(r"Re-found correct parcels: (\d+)"),
     "under_min_value": re.compile(r"Dropped under-min-value: (\d+)"),
 }
@@ -191,7 +195,12 @@ def pipeline_runtime_min(log_path: Path) -> float | None:
         except (OSError, UnicodeDecodeError):
             continue
     starts = re.findall(r"Daily run started.*?(\d{2}):(\d{2}):(\d{2})", text)
-    ends = re.findall(r"Daily run done.*?(\d{2}):(\d{2}):(\d{2})", text)
+    # Only accept a done marker AFTER the last start — a deadline-killed run
+    # never prints one, and pairing it with an older run's end fabricates a
+    # plausible-looking but bogus runtime.
+    last_start = text.rfind("Daily run started")
+    ends = re.findall(r"Daily run done.*?(\d{2}):(\d{2}):(\d{2})",
+                      text[last_start:]) if last_start >= 0 else []
     if not starts or not ends:
         return None
     h1, m1, s1 = map(int, starts[-1])
@@ -343,6 +352,77 @@ def _is_eyeball_reason(tag: str) -> bool:
     return any(tag.startswith(p) for p in _EYEBALL_PREFIXES)
 
 
+def _tab_week(r: dict) -> int:
+    """ISO week number of the workbook tab a row came from (0 if unknown)."""
+    m = re.search(r"Week (\d+)", str(r.get("_tab") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _is_heirs_of(r: dict) -> bool:
+    return (r.get("Personal Representative") or "").strip().lower().startswith("heirs of")
+
+
+def _has_named_contact(r: dict) -> bool:
+    name = ((r.get("First Name") or "") + (r.get("Last Name") or "")).strip() \
+        or (r.get("Personal Representative") or "").strip()
+    return bool(name) and not _is_heirs_of(r)
+
+
+def _has_phone(r: dict) -> bool:
+    return bool((r.get("Phone 1") or "").strip() or (r.get("DM Phone") or "").strip())
+
+
+def eyeball_cases(rows: list[dict]) -> list[tuple[dict, list[str]]]:
+    """Rows whose Match Reason carries at least one uncertain (eyeball) tag."""
+    out: list[tuple[dict, list[str]]] = []
+    for r in rows:
+        tags = [t.strip() for t in (r.get("Match Reason") or "").split("|") if t.strip()]
+        eye = [t for t in tags if _is_eyeball_reason(t)]
+        if eye:
+            out.append((r, eye))
+    return out
+
+
+def _why(tag: str) -> str:
+    """Glossary description with the trailing '— eyeball'-style nag stripped
+    (the section these lines appear in already says they need a look)."""
+    desc = _describe_reason(tag) or tag
+    head, sep, tail = desc.rpartition("—")
+    if sep and ("eyeball" in tail or "double-check" in tail):
+        return head.strip()
+    return desc
+
+
+def git_fixes_since(day: date) -> list[str]:
+    """Commit subjects since `day` — the week's pipeline work, for the
+    'what got done' section. 'Ddd<TAB>subject' lines; [] if git unavailable."""
+    try:
+        r = subprocess.run(
+            ["git", "log", f"--since={day.isoformat()} 00:00", "--no-merges",
+             "--pretty=%cd\t%s", "--date=format:%a"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(Path(__file__).parent.parent))
+        if r.returncode != 0:
+            return []
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def datasift_upload_status(rows: list[dict]) -> tuple[int, int]:
+    """(already uploaded, awaiting upload) for this week's rows, from the
+    NETNEW upload ledger. (-1, -1) if the ledger can't be read."""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from nc_datasift_export import load_upload_ledger  # noqa: E402
+        ledger = load_upload_ledger()
+    except Exception:
+        return -1, -1
+    in_ds = sum(1 for r in rows
+                if (r.get("Case No.") or "").strip().upper() in ledger)
+    return in_ds, len(rows) - in_ds
+
+
 def render_report(
     workbook_path: Path | None,
     workbook_rows: list[dict],
@@ -354,157 +434,62 @@ def render_report(
     runtime_min: float | None,
     include_heir_transfer: bool = False,
 ) -> str:
-    today_str = date.today().strftime("%a %b %d, %Y")
+    today = date.today()
+    today_str = today.strftime("%a %b %d, %Y")
+    wd = today.weekday()
+    day_note = f"court day {wd + 1} of 5" if wd < 5 else "weekend catch-up run"
+    monday = today - timedelta(days=wd)
     diffs = compute_diffs(today_csv_rows, yesterday_csv_rows)
     new_today = diffs["new"]
 
-    # Headlines
-    total = len(workbook_rows)
+    # Weekly lens (Oren, 2026-08-14): the current week's polished CSV IS this
+    # week's inventory — lead with it, demote day-to-day churn and plumbing.
+    week_rows = today_csv_rows
+    this_week_total = len(week_rows)
+    wk_counts = Counter(_tab_week(r) for r in workbook_rows)
+    wk_counts.pop(0, None)
+    prev_weeks = sorted(w for w in wk_counts if w < week_n)
+    prev_week = prev_weeks[-1] if prev_weeks else None
+    prev_total = wk_counts.get(prev_week, 0) if prev_week is not None else 0
 
-    counties = Counter((r.get("County") or "").strip() for r in workbook_rows)
+    ready = [r for r in week_rows
+             if _has_named_contact(r) and (r.get("Property Address") or "").strip()]
+    with_phone = [r for r in week_rows if _has_phone(r)]
+    heirs_of = [r for r in week_rows if _is_heirs_of(r)]
+    eyeballs = eyeball_cases(week_rows)
+    in_ds, awaiting = datasift_upload_status(week_rows)
 
     lines: list[str] = []
-    lines.append(f"NC Probate Pipeline — Daily Report")
-    lines.append(f"  {today_str}")
+    lines.append(f"NC Probate Pipeline — Week {week_n}")
+    lines.append(f"  {today_str} — {day_note}")
     lines.append("=" * 60)
     lines.append("")
-    lines.append("HEADLINES")
-    lines.append(f"  Workbook:           {workbook_path.name if workbook_path else '(missing!)'}")
-    lines.append(f"  Total cases:        {total}")
-    lines.append(f"  New today:          {len(new_today)}")
-    eyeball_n = sum(n for tag, n in diffs["reason_today"].items() if _is_eyeball_reason(tag))
-    lines.append(f"  Cases to eyeball:   {eyeball_n}   (uncertain matches — see >> rows below)")
-    if runtime_min is not None:
-        lines.append(f"  Pipeline runtime:   {runtime_min:.0f} min")
+
+    lines.append("THIS WEEK AT A GLANCE")
+    cmp_note = f"    (Week {prev_week} finished at {prev_total})" if prev_week else ""
+    lines.append(f"  Cases this week:      {this_week_total}{cmp_note}")
+    lines.append(f"  Added today:          {len(new_today)}")
+    lines.append(f"  Ready to work:        {len(ready)}    have a property + a named person to contact")
+    # Phones mostly arrive AFTER upload (DataSift skip trace) — only show the
+    # in-CSV count when deep prospecting actually put numbers on rows, so a 0
+    # here doesn't read as "no phones anywhere".
+    if with_phone:
+        lines.append(f"  Have a phone number:  {len(with_phone)}    (from court docs / deep prospecting)")
+    lines.append(f"  \"Heirs of\" rows:      {len(heirs_of)}    no named contact yet — deep-prospecting queue")
+    lines.append(f"  Check these:          {len(eyeballs)}    uncertain matches — listed below")
+    if in_ds >= 0:
+        lines.append(f"  In DataSift already:  {in_ds}    ({awaiting} waiting for the next upload)")
     lines.append("")
-    lines.append(f"  By county:")
-    for c, n in counties.most_common():
+    county_this = Counter((r.get("County") or "").strip() for r in week_rows)
+    county_prev = Counter((r.get("County") or "").strip() for r in workbook_rows
+                          if prev_week is not None and _tab_week(r) == prev_week)
+    lines.append("  By county:           this wk   last wk")
+    for c, _n in county_this.most_common():
         label = c if c else "(blank)"
-        lines.append(f"    {label:14} {n}")
-    lines.append("")
-
-    # New cases
-    lines.append("NEW CASES TODAY")
-    if not new_today:
-        lines.append("  (none — workbook unchanged)")
-    else:
-        for r in new_today[:50]:
-            cn = (r.get("Case No.") or "").strip()
-            cty = (r.get("County") or "").strip()
-            dec = (r.get("Deceased Owner") or "").strip()
-            prop = (r.get("Property Address") or "(no parcel)").strip()
-            lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
-        if len(new_today) > 50:
-            lines.append(f"  ... and {len(new_today) - 50} more")
-    lines.append("")
-
-    # Dropped since yesterday — regression signal. A case that was here
-    # yesterday and isn't now means a polish step removed it. Could be a
-    # legitimate drop (newly-failed audit, newly-detected heir-occupied)
-    # or a regression to investigate.
-    dropped = diffs["dropped"]
-    lines.append("DROPPED SINCE YESTERDAY")
-    if not dropped:
-        lines.append("  (none)")
-    else:
-        for r in dropped[:25]:
-            cn = (r.get("Case No.") or "").strip()
-            cty = (r.get("County") or "").strip()
-            dec = (r.get("Deceased Owner") or "").strip()
-            prop = (r.get("Property Address") or "(no parcel)").strip()
-            lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
-        if len(dropped) > 25:
-            lines.append(f"  ... and {len(dropped) - 25} more")
-    lines.append("")
-
-    # Parcel changed since yesterday — same case, different parcel now.
-    # Usually a smart-picker repick or a new sibling found a better main.
-    pc = diffs["parcel_changed"]
-    lines.append("PARCEL CHANGED SINCE YESTERDAY")
-    if not pc:
-        lines.append("  (none)")
-    else:
-        for e in pc[:15]:
-            lines.append(f"  {e['case_no']:18}  {e['county']:12}  {e['decedent'][:30]:30}")
-            lines.append(f"    was: {e['parcel_yesterday']:18}  {e['addr_yesterday']}")
-            lines.append(f"    now: {e['parcel_today']:18}  {e['addr_today']}")
-        if len(pc) > 15:
-            lines.append(f"  ... and {len(pc) - 15} more")
-    lines.append("")
-
-    # Deep prospecting — running ledger (dp_log.csv) + doc count. Requested by
-    # Oren 2026-08-12: a running log of DP runs, included in the daily report.
-    dp_rows = read_dp_log()
-    lines.append("DEEP PROSPECTING")
-    if not dp_rows:
-        lines.append("  (no DP runs logged yet — dp_log.csv missing or empty)")
-    else:
-        n_docs = len(list((OUTPUT / "reports").glob("DP_*.md")))
-        by_outcome = Counter((r.get("Outcome") or "?").strip() for r in dp_rows)
-        outcome_str = ", ".join(f"{n} {k}" for k, n in by_outcome.most_common())
-        lines.append(f"  Runs logged: {len(dp_rows)}   Research docs: {n_docs}   ({outcome_str})")
-        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        recent = [r for r in dp_rows if (r.get("Date") or "") >= cutoff]
-        if recent:
-            lines.append(f"  Last 7 days ({len(recent)}):")
-            for r in recent[-12:]:
-                note = (r.get("Notes") or "").strip().replace("\n", " ")
-                lines.append(f"    {r.get('Date','')}  {r.get('Case No.',''):16}  "
-                             f"{(r.get('Decedent') or '')[:26]:26}  {r.get('Outcome',''):8}  "
-                             f"{note[:58]}")
-        open_rows = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
-        if open_rows:
-            lines.append(f"  Still open ({len(open_rows)}):")
-            for r in open_rows:
-                lines.append(f"    {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:30]:30}  "
-                             f"{(r.get('Notes') or '')[:60]}")
-    lines.append("")
-
-    # Heir-transfer — off by default (Oren, 2026-07-18). The review XLSX still
-    # generates in output/; it's just no longer summarized here or emailed.
-    # Re-enable with `daily_report.py --include-heir-transfer`.
-    if include_heir_transfer:
-        lines.append("HEIR-TRANSFER FLAGS (review file)")
-        if not heir_transfer_rows:
-            lines.append("  (none flagged)")
-        else:
-            # Count unique decedents
-            unique_decedents = {(r.get("County"), r.get("Case No.")) for r in heir_transfer_rows}
-            lines.append(f"  {len(unique_decedents)} decedent(s) with {len(heir_transfer_rows)} candidate parcel(s) flagged")
-            # Group by case; show first 5
-            by_case: dict[tuple, list[dict]] = {}
-            for r in heir_transfer_rows:
-                key = (r.get("County"), r.get("Case No."), r.get("Deceased Owner"))
-                by_case.setdefault(key, []).append(r)
-            for (cty, cn, dec), cands in list(by_case.items())[:5]:
-                lines.append(f"  {cn}  {cty}  {dec}  ({len(cands)} candidate parcels)")
-            if len(by_case) > 5:
-                lines.append(f"  ... and {len(by_case) - 5} more decedents")
-        lines.append("")
-
-    # Polish drops
-    lines.append("POLISH DROPS")
-    drop_labels = [
-        ("over_500k",     "Over $500K (buy-box cap)"),
-        ("under_min_value", "Under $10K (standalone scrap parcel)"),
-        ("heir_occupied", "Heir-occupied (PR mailing = property)"),
-        ("commercial",    "Commercial/industrial"),
-        ("no_parcel",     "No parcel found in county GIS"),
-        ("archive_dupe",  "Cross-week archive duplicate"),
-        ("non_pending",   "Case status not Pending"),
-    ]
-    any_drops = False
-    for key, label in drop_labels:
-        n = polish_stats.get(key, 0)
-        if n:
-            lines.append(f"  {label:40} {n}")
-            any_drops = True
-    if not any_drops:
-        lines.append("  (no drops recorded)")
-    if polish_stats.get("repick"):
-        lines.append(f"  Smart-picker REPICK events:               {polish_stats['repick']}")
-    if polish_stats.get("refound"):
-        lines.append(f"  Step 0.5 Re-found correct parcels:        {polish_stats['refound']}")
+        lines.append(f"    {label:16} {county_this.get(c, 0):>7}   {county_prev.get(c, 0):>7}")
+    for c in sorted(set(county_prev) - set(county_this)):
+        label = c if c else "(blank)"
+        lines.append(f"    {label:16} {0:>7}   {county_prev[c]:>7}")
     lines.append("")
 
     # A county GIS that went down during the polish. Its rows lost their parcel
@@ -522,6 +507,102 @@ def render_report(
             lines.append(f"  Rows for these counties are INCOMPLETE in week(s) "
                          f"{_o.get('weeks', [])} — they will be recovered on the "
                          f"next clean run, and the week won't be archived until then.")
+            lines.append("")
+    except Exception:
+        pass
+
+    # What got done — the week's progress in plain terms: cases in, contacts
+    # found, deep-prospecting worked by hand, pipeline fixes shipped (git).
+    dp_rows = read_dp_log()
+    monday_iso = monday.isoformat()
+    dp_resolved_wk = [r for r in dp_rows
+                      if (r.get("Date") or "") >= monday_iso
+                      and (r.get("Outcome") or "").strip() in ("resolved", "partial")]
+    fixes = git_fixes_since(monday)
+    lines.append(f"WHAT GOT DONE THIS WEEK (since Mon {monday.strftime('%b %d')})")
+    lines.append(f"  {this_week_total} new estate cases found and matched to property")
+    phone_note = f"; {len(with_phone)} already have a phone number" if with_phone else ""
+    lines.append(f"  {len(ready)} are mail-ready with a named contact{phone_note}")
+    if dp_resolved_wk:
+        lines.append(f"  {len(dp_resolved_wk)} deep-prospecting cases worked by hand:")
+        for r in dp_resolved_wk:
+            note = (r.get("Notes") or "").strip().replace("\n", " ")
+            lines.append(f"    {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:24]:24}  {note[:64]}")
+    if fixes:
+        lines.append(f"  {len(fixes)} pipeline improvement(s) shipped:")
+        for fx in fixes[:10]:
+            day_abbr, _, subj = fx.partition("\t")
+            lines.append(f"    {day_abbr:4} {subj[:90]}")
+        if len(fixes) > 10:
+            lines.append(f"    ... and {len(fixes) - 10} more")
+    lines.append("")
+
+    # New cases
+    lines.append("NEW CASES TODAY")
+    if not new_today:
+        lines.append("  (none — workbook unchanged)")
+    else:
+        for r in new_today[:50]:
+            cn = (r.get("Case No.") or "").strip()
+            cty = (r.get("County") or "").strip()
+            dec = (r.get("Deceased Owner") or "").strip()
+            prop = (r.get("Property Address") or "(no parcel)").strip()
+            lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
+        if len(new_today) > 50:
+            lines.append(f"  ... and {len(new_today) - 50} more")
+    lines.append("")
+
+    # Uncertain matches — the actual rows (with Case No.), not just tag counts.
+    lines.append("CHECK THESE — UNCERTAIN MATCHES (this week)")
+    if not eyeballs:
+        lines.append("  (none — every match this week is solid)")
+    else:
+        lines.append("  (the matcher made a judgment call — worth a look before mailing)")
+        for r, tags in eyeballs[:20]:
+            cn = (r.get("Case No.") or "").strip()
+            cty = (r.get("County") or "").strip()
+            dec = (r.get("Deceased Owner") or "").strip()
+            prop = (r.get("Property Address") or "(no parcel)").strip()
+            lines.append(f"  >> {cn:18}  {cty:12}  {dec[:28]:28}  {prop}")
+            for t in tags:
+                lines.append(f"       why: {_why(t)}")
+        if len(eyeballs) > 20:
+            lines.append(f"  ... and {len(eyeballs) - 20} more — sort the workbook's Match Reason column")
+    lines.append("")
+
+    # Deep prospecting still open — the hand-work queue. Resolved runs moved
+    # up into WHAT GOT DONE; the full ledger summary rides along as a footnote.
+    open_rows = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
+    lines.append("DEEP PROSPECTING — STILL OPEN")
+    if not open_rows:
+        lines.append("  (nothing open)")
+    else:
+        for r in open_rows:
+            lines.append(f"  {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:30]:30}  "
+                         f"{(r.get('Notes') or '')[:60]}")
+    if dp_rows:
+        n_docs = len(list((OUTPUT / "reports").glob("DP_*.md")))
+        by_outcome = Counter((r.get("Outcome") or "?").strip() for r in dp_rows)
+        outcome_str = ", ".join(f"{n} {k}" for k, n in by_outcome.most_common())
+        lines.append(f"  (ledger: {len(dp_rows)} runs, {n_docs} research docs — {outcome_str})")
+    lines.append("")
+
+    # Documents the court still hasn't scanned for high-priority leads. We retry
+    # nightly for months, but if the Application/Will never appears the only way
+    # to the executor name is a manual courthouse pull — surface the oldest so
+    # Oren can grab them by hand.
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        import case_doc_queue as _cdq  # noqa: E402
+        from ecourts_scraper import cases_needing_docs as _cnd  # noqa: E402
+        stale_docs = _cdq.long_pending_high_priority(set(_cnd()), min_age_days=21)
+        if stale_docs:
+            lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
+            for e in stale_docs[:15]:
+                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
+                             f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
+            if len(stale_docs) > 15:
+                lines.append(f"  ... and {len(stale_docs) - 15} more")
             lines.append("")
     except Exception:
         pass
@@ -547,25 +628,44 @@ def render_report(
     except Exception:
         pass
 
-    # Documents the court still hasn't scanned for high-priority leads. We retry
-    # nightly for months, but if the Application/Will never appears the only way
-    # to the executor name is a manual courthouse pull — surface the oldest so
-    # Oren can grab them by hand.
-    try:
-        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-        import case_doc_queue as _cdq  # noqa: E402
-        from ecourts_scraper import cases_needing_docs as _cnd  # noqa: E402
-        stale_docs = _cdq.long_pending_high_priority(set(_cnd()), min_age_days=21)
-        if stale_docs:
-            lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
-            for e in stale_docs[:15]:
-                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
-                             f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
-            if len(stale_docs) > 15:
-                lines.append(f"  ... and {len(stale_docs) - 15} more")
-            lines.append("")
-    except Exception:
-        pass
+    # Day-to-day churn — one compact section (weekly lens). Dropped rows are
+    # still the regression signal; parcel changes are usually a smart-picker
+    # repick or a new sibling parcel winning main.
+    dropped = diffs["dropped"]
+    pc = diffs["parcel_changed"]
+    lines.append("CHANGES SINCE YESTERDAY'S RUN")
+    if not dropped and not pc:
+        lines.append("  (steady — nothing dropped, no parcels changed)")
+    if dropped:
+        lines.append(f"  Dropped ({len(dropped)}) — in yesterday's sheet, gone tonight:")
+        for r in dropped[:15]:
+            cn = (r.get("Case No.") or "").strip()
+            cty = (r.get("County") or "").strip()
+            dec = (r.get("Deceased Owner") or "").strip()
+            prop = (r.get("Property Address") or "(no parcel)").strip()
+            lines.append(f"    {cn:18}  {cty:12}  {dec[:30]:30}  {prop}")
+        if len(dropped) > 15:
+            lines.append(f"    ... and {len(dropped) - 15} more")
+    if pc:
+        lines.append(f"  Parcel changed ({len(pc)}) — same case, different parcel picked:")
+        for e in pc[:10]:
+            lines.append(f"    {e['case_no']:18}  {e['county']:12}  {e['decedent'][:30]:30}")
+            lines.append(f"      was: {e['parcel_yesterday']:18}  {e['addr_yesterday']}")
+            lines.append(f"      now: {e['parcel_today']:18}  {e['addr_today']}")
+        if len(pc) > 10:
+            lines.append(f"    ... and {len(pc) - 10} more")
+    lines.append("")
+
+    # Week-over-week pace from the workbook tabs (current week still filling).
+    lines.append("WEEK-OVER-WEEK PACE")
+    recent_weeks = sorted(wk_counts)[-6:]
+    max_n = max((wk_counts[w] for w in recent_weeks), default=1) or 1
+    for w in recent_weeks:
+        n = wk_counts[w]
+        bar = "#" * max(1, round(n / max_n * 28))
+        tail = "   <- in progress" if w == week_n else ""
+        lines.append(f"  Week {w:<3} {n:>4}  {bar}{tail}")
+    lines.append("")
 
     # Tracerfy spend (when funded). One-line summary of this week's burn
     # vs cap — useful for catching runaway costs before they hit the cap.
@@ -580,11 +680,59 @@ def render_report(
     except Exception:
         pass
 
+    # Heir-transfer — off by default (Oren, 2026-07-18). The review XLSX still
+    # generates in output/; it's just no longer summarized here or emailed.
+    # Re-enable with `daily_report.py --include-heir-transfer`.
+    if include_heir_transfer:
+        lines.append("HEIR-TRANSFER FLAGS (review file)")
+        if not heir_transfer_rows:
+            lines.append("  (none flagged)")
+        else:
+            # Count unique decedents
+            unique_decedents = {(r.get("County"), r.get("Case No.")) for r in heir_transfer_rows}
+            lines.append(f"  {len(unique_decedents)} decedent(s) with {len(heir_transfer_rows)} candidate parcel(s) flagged")
+            # Group by case; show first 5
+            by_case: dict[tuple, list[dict]] = {}
+            for r in heir_transfer_rows:
+                key = (r.get("County"), r.get("Case No."), r.get("Deceased Owner"))
+                by_case.setdefault(key, []).append(r)
+            for (cty, cn, dec), cands in list(by_case.items())[:5]:
+                lines.append(f"  {cn}  {cty}  {dec}  ({len(cands)} candidate parcels)")
+            if len(by_case) > 5:
+                lines.append(f"  ... and {len(by_case) - 5} more decedents")
+        lines.append("")
+
+    # Fine print — plumbing numbers, scoped to tonight's run (parse_polish_log
+    # is called with since=now so these aren't the all-history sums anymore).
+    lines.append("TONIGHT'S RUN — FINE PRINT")
+    lines.append(f"  Workbook:          {workbook_path.name if workbook_path else '(missing!)'}")
+    lines.append(f"  All weeks total:   {len(workbook_rows)} cases")
+    if runtime_min is not None:
+        lines.append(f"  Runtime:           {runtime_min:.0f} min")
+    drop_labels = [
+        ("over_500k",       "Dropped — over $500K (buy-box cap)"),
+        ("under_min_value", "Dropped — under $10K (scrap parcel)"),
+        ("heir_occupied",   "Dropped — heir-occupied (PR mailing = property)"),
+        ("commercial",      "Dropped — commercial/industrial"),
+        ("no_parcel",       "Dropped — no parcel found in county GIS"),
+        ("archive_dupe",    "Dropped — cross-week archive duplicate"),
+        ("non_pending",     "Dropped — case no longer Pending"),
+    ]
+    for key, label in drop_labels:
+        n = polish_stats.get(key, 0)
+        if n:
+            lines.append(f"  {label:48} {n}")
+    if polish_stats.get("repick"):
+        lines.append(f"  Smart-picker REPICK events:                      {polish_stats['repick']}")
+    if polish_stats.get("refound"):
+        lines.append(f"  Step 0.5 re-found correct parcels:               {polish_stats['refound']}")
+    lines.append("")
+
     # Match Reason distribution — how each kept row got to its current state.
     # (scrape direct) = parcel + PR from court directly (high confidence,
     # no polish-step fallback fired). Other tags name the fallback step.
     reason_today = diffs["reason_today"]
-    lines.append("MATCH REASON DISTRIBUTION (today's polished output)")
+    lines.append("HOW THIS WEEK'S ROWS WERE MATCHED (fine print)")
     lines.append("  (how each kept case got its property + contact — '>>' = worth an eyeball)")
     if not reason_today:
         lines.append("  (no rows in today's CSV)")
@@ -619,7 +767,8 @@ def _highlight_body(text: str) -> str:
     (both are rendered elsewhere in the shell)."""
     lines = text.split("\n")
     try:
-        start = next(i for i, l in enumerate(lines) if l.strip() == "HEADLINES")
+        start = next(i for i, l in enumerate(lines)
+                     if l.strip() == "THIS WEEK AT A GLANCE")
     except StopIteration:
         start = 0
     end = len(lines)
@@ -646,6 +795,8 @@ def _highlight_body(text: str) -> str:
                        f'padding:0 12px 5px;border-bottom:1px solid #e4e8eb;">{esc}</div>')
         elif stripped.startswith(">>"):
             out.append(f'<div style="{mono}background:#fff8e1;color:#7a5300;">{esc}</div>')
+        elif stripped.startswith("why:"):
+            out.append(f'<div style="{mono}color:#8a919a;">{esc}</div>')
         else:
             out.append(f'<div style="{mono}color:#3a3f45;">{esc}</div>')
     return "\n".join(out)
@@ -653,7 +804,7 @@ def _highlight_body(text: str) -> str:
 
 def _stat_tile(number, label, accent_bg, accent_fg) -> str:
     return (
-        f'<td style="width:33.3%;padding:6px;" valign="top">'
+        f'<td style="width:25%;padding:6px;" valign="top">'
         f'<div style="background:{accent_bg};border-radius:8px;padding:14px 12px;text-align:center;">'
         f'<div style="font-size:30px;font-weight:800;color:{accent_fg};line-height:1;">{number}</div>'
         f'<div style="font-size:10.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;'
@@ -662,8 +813,8 @@ def _stat_tile(number, label, accent_bg, accent_fg) -> str:
     )
 
 
-def render_html_email(text: str, *, total: int, new_count: int, eyeball_n: int,
-                      counties, week_n: int) -> str:
+def render_html_email(text: str, *, this_week: int, new_count: int, ready: int,
+                      eyeball_n: int, counties, week_n: int) -> str:
     d = date.today()
     date_str = d.strftime("%A, %B ") + str(d.day) + d.strftime(", %Y")
     gen = next((l for l in reversed(text.split("\n")) if l.startswith("Generated ")), "")
@@ -671,9 +822,10 @@ def render_html_email(text: str, *, total: int, new_count: int, eyeball_n: int,
     # Stat tiles — eyeball tile turns amber only when there's something to check.
     eye_bg, eye_fg = (("#fff8e1", "#b45309") if eyeball_n else ("#eef1f4", "#374151"))
     tiles = (
-        _stat_tile(total, "Total cases", "#eef1f4", "#111827")
+        _stat_tile(this_week, "This week", "#eef1f4", "#111827")
         + _stat_tile(new_count, "New today", "#e7f4ea", _GREEN)
-        + _stat_tile(eyeball_n, "To eyeball", eye_bg, eye_fg)
+        + _stat_tile(ready, "Ready to work", "#e7f4ea", _GREEN)
+        + _stat_tile(eyeball_n, "To check", eye_bg, eye_fg)
     )
 
     chips = ""
@@ -691,14 +843,14 @@ def render_html_email(text: str, *, total: int, new_count: int, eyeball_n: int,
 <tr><td align="center">
 <table role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <tr><td style="background:{_GREEN};padding:22px 24px;">
-    <div style="color:#ffffff;font-size:19px;font-weight:800;letter-spacing:.2px;">NC Probate Pipeline</div>
-    <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">Daily Report &middot; Week {week_n} &middot; {date_str}</div>
+    <div style="color:#ffffff;font-size:19px;font-weight:800;letter-spacing:.2px;">NC Probate Pipeline &middot; Week {week_n}</div>
+    <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">{date_str}</div>
   </td></tr>
   <tr><td style="padding:14px 18px 4px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{tiles}</tr></table>
   </td></tr>
   <tr><td style="padding:6px 24px 2px;">
-    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county</div>
+    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county &mdash; this week</div>
     <div>{chips}</div>
   </td></tr>
   <tr><td style="padding:8px 12px 4px;">
@@ -855,7 +1007,9 @@ def main(argv: list[str] | None = None) -> int:
     heir_rows = read_heir_transfer(heir_path)
 
     polish_log = LOGS / "nc_daily_run.log"
-    polish_stats = parse_polish_log(polish_log)
+    # since=now truncates the log at the last "=== Daily run started" marker so
+    # drop counts reflect tonight's run, not the whole log history.
+    polish_stats = parse_polish_log(polish_log, since=datetime.now())
     runtime = pipeline_runtime_min(polish_log)
 
     report = render_report(
@@ -886,15 +1040,17 @@ def main(argv: list[str] | None = None) -> int:
         attachments.append(wb_path)
 
     new_count = _count_new_cases(today_rows, yesterday_rows)
-    subject = f"NC Probate Daily — Week {week_n} — {new_count} new"
+    subject = (f"NC Probate Wk {week_n} — {new_count} new today, "
+               f"{len(today_rows)} this week")
 
-    # Build the HTML email from the same report text + headline stats.
-    _diffs = compute_diffs(today_rows, yesterday_rows)
-    _eyeball = sum(n for tag, n in _diffs["reason_today"].items() if _is_eyeball_reason(tag))
-    _counties = Counter((r.get("County") or "").strip() for r in workbook_rows).most_common()
+    # Build the HTML email from the same report text + this-week stats.
+    _eyeball = len(eyeball_cases(today_rows))
+    _ready = sum(1 for r in today_rows
+                 if _has_named_contact(r) and (r.get("Property Address") or "").strip())
+    _counties = Counter((r.get("County") or "").strip() for r in today_rows).most_common()
     html = render_html_email(
-        report, total=len(workbook_rows), new_count=len(_diffs["new"]),
-        eyeball_n=_eyeball, counties=_counties, week_n=week_n,
+        report, this_week=len(today_rows), new_count=new_count,
+        ready=_ready, eyeball_n=_eyeball, counties=_counties, week_n=week_n,
     )
 
     ok, msg = send_email(subject, report, attachments=attachments, html=html)
