@@ -1351,7 +1351,40 @@ _CASE_DETAIL_CACHE: dict = {}
 _PARTIES_MAX_CALLS = int(os.environ.get("NC_PARTIES_MAX_CALLS", "120") or 120)
 _PARTIES_MIN_GAP = float(os.environ.get("NC_PARTIES_MIN_GAP", "2") or 2)
 _PARTIES_GIVE_UP_AFTER = int(os.environ.get("NC_PARTIES_GIVE_UP_AFTER", "8") or 8)
+_PARTIES_MIN_AGE_DAYS = int(os.environ.get("NC_PARTIES_MIN_AGE_DAYS", "1") or 1)
 _parties_state = {"calls": 0, "consec_throttled": 0, "last_call": 0.0, "dead": False}
+
+
+def _case_too_young_for_parties(row: dict) -> bool:
+    """Filing-day party lag (Walsh 26E002826-590): a case filed TODAY almost
+    never has its parties indexed yet — the court catches up by the next
+    morning — so a Parties call on it burns a ~55s throttle slot to learn
+    nothing. Skip cases younger than NC_PARTIES_MIN_AGE_DAYS (default 1 =
+    skip same-day filings only; 0 disables). Skipped rows stay in the target
+    set and are asked on the next nightly."""
+    if _PARTIES_MIN_AGE_DAYS <= 0:
+        return False
+    from nc_gis_lookup import _iso_date
+    filed = _iso_date(row.get("File Date"))
+    if not filed:
+        return False
+    try:
+        age = (datetime.now().date() - datetime.strptime(filed, "%Y-%m-%d").date()).days
+    except ValueError:
+        return False
+    return age < _PARTIES_MIN_AGE_DAYS
+
+
+def _drop_young_cases(targets: list[dict], step_label: str) -> list[dict]:
+    """Split young filings out of a Parties target list, with a visible count
+    (never a silent cap)."""
+    keep = [r for r in targets if not _case_too_young_for_parties(r)]
+    skipped = len(targets) - len(keep)
+    if skipped:
+        print(f"  ({step_label}: skipped {skipped} case(s) filed within the last "
+              f"{_PARTIES_MIN_AGE_DAYS} day(s) — court hasn't indexed parties yet; "
+              f"asked again next run)")
+    return keep
 
 
 def parties_budget_available() -> bool:
@@ -1444,6 +1477,7 @@ def parcel_fallback_from_decedent_address(rows: list[dict]) -> int:
                and (r.get("Case ID (hex)") or "").strip()
                and (r.get("Deceased Owner") or "").strip()
                and (r.get("County") or "").strip()]
+    targets = _drop_young_cases(targets, "decedent-address fallback")
     if not targets:
         return 0
 
@@ -1600,6 +1634,7 @@ def recover_parcel_via_corroborated_name(rows: list[dict]) -> int:
                and (r.get("Case ID (hex)") or "").strip()
                and (r.get("Deceased Owner") or "").strip()
                and (r.get("County") or "").strip()]
+    targets = _drop_young_cases(targets, "corroborated-name rescue")
     if not targets:
         return 0
 
@@ -3623,6 +3658,7 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
 
     targets = [r for r in rows
                if _blank_pr(r) and (r.get("Case ID (hex)") or "").strip()]
+    targets = _drop_young_cases(targets, "parties backfill")
 
     # Order + cap. Widening the gate to beneficiaries-missing rows took Week 31
     # from ~18 to 40 targets, and a throttled Parties call costs ~55s (see
