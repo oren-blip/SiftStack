@@ -1402,8 +1402,21 @@ def parties_budget_available() -> bool:
 
 def _parties_call(client, case_hex: str, *, retries: int = 2):
     """Every Parties fetch in polish goes through here: paced, counted, and
-    circuit-broken. Returns a CaseDetail, or None when unavailable."""
-    if not case_hex or not parties_budget_available():
+    circuit-broken. Returns a CaseDetail, or None when unavailable.
+
+    Checks the cross-run disk cache first (written by the midday
+    nc_parties_topup.py job) — a hit costs nothing: no budget, no pacing,
+    no throttle slot."""
+    if not case_hex:
+        return None
+    from parties_cache import cache_get, cache_put
+    from ecourts_case_api import CaseDetail
+    cached = cache_get(case_hex)
+    if cached is not None:
+        client.last_throttled = False
+        print(f"  (Parties cache hit: {case_hex[:10]}…)")
+        return CaseDetail(case_id=case_hex, parties=cached)
+    if not parties_budget_available():
         return None
     gap = time.time() - _parties_state["last_call"]
     if gap < _PARTIES_MIN_GAP:
@@ -1417,6 +1430,7 @@ def _parties_call(client, case_hex: str, *, retries: int = 2):
     throttled = bool(getattr(client, "last_throttled", False))
     if detail is not None and getattr(detail, "parties", None):
         _parties_state["consec_throttled"] = 0
+        cache_put(case_hex, detail.parties)
     elif throttled:
         _parties_state["consec_throttled"] += 1
         if _parties_state["consec_throttled"] >= _PARTIES_GIVE_UP_AFTER:
