@@ -394,6 +394,121 @@ def _why(tag: str) -> str:
     return desc
 
 
+def get_stale_docs() -> list[dict]:
+    """High-priority cases whose court docs still aren't scanned (21+ days)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        import case_doc_queue as _cdq  # noqa: E402
+        from ecourts_scraper import cases_needing_docs as _cnd  # noqa: E402
+        return _cdq.long_pending_high_priority(set(_cnd()), min_age_days=21)
+    except Exception:
+        return []
+
+
+def get_late_doc_updates() -> list[dict]:
+    """Archived-week rows that just got a real named contact (last 7 days)."""
+    try:
+        import json as _json
+        entries = _json.loads((OUTPUT / ".late_doc_updates.json")
+                              .read_text(encoding="utf-8")).get("entries", [])
+        cut = (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
+        return [e for e in entries if e.get("found_iso", "") >= cut]
+    except Exception:
+        return []
+
+
+def _cases_preview(rows: list[dict], key: str, n: int = 3) -> str:
+    """First n case numbers as a comma string — Oren looks cases up by number."""
+    cases = [c for c in ((r.get(key) or "").strip() for r in rows) if c][:n]
+    out = ", ".join(cases)
+    if len(rows) > n:
+        out += f" (+{len(rows) - n} more)"
+    return out
+
+
+def tracerfy_budget_line() -> str:
+    """This week's Tracerfy burn vs cap, or '' if unavailable/unfunded."""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from tracerfy_budget import budget_summary  # noqa: E402
+        return budget_summary() or ""
+    except Exception:
+        return ""
+
+
+def summarize_week_improvements(monday: date) -> list[str]:
+    """Plain-English bullets describing the week's pipeline improvements.
+
+    Reads this week's commit subjects + bodies and asks Haiku to group them
+    into a few non-technical bullets ("what changed and why it matters").
+    Disk-cached on the commit-set hash, so it costs at most ONE small call
+    per night (standing directive: keep LLM cost very low). Returns [] when
+    git/LLM is unavailable — callers fall back to raw commit subjects.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", f"--since={monday.isoformat()} 00:00", "--no-merges",
+             "--pretty=%h%x1f%s%x1f%b%x1e"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(Path(__file__).parent.parent))
+        raw = r.stdout if r.returncode == 0 else ""
+    except Exception:
+        raw = ""
+    commits: list[tuple[str, str, str]] = []
+    for chunk in raw.split("\x1e"):
+        parts = chunk.strip("\n").split("\x1f")
+        if len(parts) >= 2 and parts[0].strip():
+            body = parts[2].strip() if len(parts) > 2 else ""
+            commits.append((parts[0].strip(), parts[1].strip(), body))
+    if not commits:
+        return []
+
+    import hashlib
+    import json as _json
+    key = hashlib.sha1("|".join(h for h, _, _ in commits).encode()).hexdigest()
+    cache_path = OUTPUT / ".report_changes_cache.json"
+    try:
+        cached = _json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("key") == key and cached.get("bullets"):
+            return list(cached["bullets"])
+    except Exception:
+        pass
+
+    commit_lines = []
+    for _h, subj, body in commits[:30]:
+        first_para = body.split("\n\n")[0].replace("\n", " ").strip()[:400]
+        commit_lines.append(f"- {subj}" + (f" :: {first_para}" if first_para else ""))
+    prompt = (
+        "You write the \"what improved this week\" section of a nightly status "
+        "email for Oren, a solo real-estate investor whose automated pipeline "
+        "finds probate leads and preps them for direct mail and cold calls.\n\n"
+        "This week's code changes (subject :: details):\n"
+        + "\n".join(commit_lines)
+        + "\n\nRewrite as 3-7 short bullets. Group related changes into one "
+        "bullet. Each bullet says what changed and why it matters to his "
+        "leads, mail, or calls — in plain English a non-programmer gets. "
+        "No file names, no jargon, no commit hashes. Most impactful first.\n\n"
+        'Return JSON only: {"bullets": ["...", "..."]}'
+    )
+    bullets: list[str] = []
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        import llm_client  # noqa: E402
+        resp = llm_client.chat_json(prompt, max_tokens=700)
+        if resp and isinstance(resp.get("bullets"), list):
+            bullets = [str(b).strip() for b in resp["bullets"] if str(b).strip()][:8]
+    except Exception:
+        bullets = []
+    if not bullets:
+        return []
+    try:
+        cache_path.write_text(_json.dumps({"key": key, "bullets": bullets}),
+                              encoding="utf-8")
+    except OSError:
+        pass
+    return bullets
+
+
 def git_fixes_since(day: date) -> list[str]:
     """Commit subjects since `day` — the week's pipeline work, for the
     'what got done' section. 'Ddd<TAB>subject' lines; [] if git unavailable."""
@@ -434,7 +549,12 @@ def render_report(
     polish_stats: dict,
     runtime_min: float | None,
     include_heir_transfer: bool = False,
+    condensed: bool = False,
+    improvements: list[str] | None = None,
 ) -> str:
+    """Render the report. condensed=True builds the short email body (the
+    most important items only, with a pointer to the attached full report);
+    condensed=False builds the full .txt with every fine-print section."""
     today = date.today()
     today_str = today.strftime("%a %b %d, %Y")
     wd = today.weekday()
@@ -512,9 +632,40 @@ def render_report(
     except Exception:
         pass
 
+    # What to work on next — the priority queue, ranked. Hand-entry work that
+    # nothing else surfaces comes first; volume queues last. Only non-empty
+    # items get a number; case numbers up front (Oren looks cases up by number).
+    dp_rows = read_dp_log()
+    open_dp = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
+    stale_docs = get_stale_docs()
+    late_docs = get_late_doc_updates()
+    prios: list[str] = []
+    if late_docs:
+        prios.append("Type these into DataSift by hand — archived cases just got a "
+                     f"named contact: {_cases_preview(late_docs, 'case_number')}")
+    if stale_docs:
+        prios.append("Next courthouse trip — pull the unscanned docs for: "
+                     f"{_cases_preview(stale_docs, 'case_number')}")
+    if eyeballs:
+        prios.append(f"Double-check {len(eyeballs)} uncertain matches before "
+                     "mailing (worst listed below)")
+    if open_dp:
+        prios.append(f"Finish {len(open_dp)} open deep-prospecting case(s): "
+                     f"{_cases_preview(open_dp, 'Case No.')}")
+    if in_ds >= 0 and awaiting > 0:
+        prios.append(f"{awaiting} polished rows are waiting for the next DataSift upload")
+    if heirs_of:
+        prios.append(f'{len(heirs_of)} "Heirs of" rows still need a named contact '
+                     "(deep-prospecting queue)")
+    lines.append("WHAT TO WORK ON NEXT")
+    if not prios:
+        lines.append("  (nothing urgent — pipeline is clean)")
+    for i, p in enumerate(prios, 1):
+        lines.append(f"  {i}. {p}")
+    lines.append("")
+
     # What got done — the week's progress in plain terms: cases in, contacts
     # found, deep-prospecting worked by hand, pipeline fixes shipped (git).
-    dp_rows = read_dp_log()
     monday_iso = monday.isoformat()
     dp_resolved_wk = [r for r in dp_rows
                       if (r.get("Date") or "") >= monday_iso
@@ -525,38 +676,63 @@ def render_report(
     phone_note = f"; {len(with_phone)} already have a phone number" if with_phone else ""
     lines.append(f"  {len(ready)} are mail-ready with a named contact{phone_note}")
     if dp_resolved_wk:
-        lines.append(f"  {len(dp_resolved_wk)} deep-prospecting cases worked by hand:")
-        for r in dp_resolved_wk:
-            note = (r.get("Notes") or "").strip().replace("\n", " ")
-            lines.append(f"    {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:24]:24}  {note[:64]}")
-    if fixes:
-        lines.append(f"  {len(fixes)} pipeline improvement(s) shipped:")
-        for fx in fixes[:10]:
+        if condensed:
+            lines.append(f"  {len(dp_resolved_wk)} deep-prospecting cases worked by "
+                         "hand (case detail in the attached report)")
+        else:
+            lines.append(f"  {len(dp_resolved_wk)} deep-prospecting cases worked by hand:")
+            for r in dp_resolved_wk:
+                note = (r.get("Notes") or "").strip().replace("\n", " ")
+                lines.append(f"    {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:24]:24}  {note[:64]}")
+    # Improvements: plain-English grouped bullets (LLM, cached) when available;
+    # raw commit subjects otherwise. The full report also keeps the commit list
+    # underneath as the audit trail.
+    import textwrap
+    if improvements:
+        lines.append("  Pipeline improvements this week — what changed and why it matters:")
+        for b in improvements:
+            for j, seg in enumerate(textwrap.wrap(b, width=86)):
+                lines.append(f"    {'*' if j == 0 else ' '} {seg}")
+    if fixes and (not condensed or not improvements):
+        n_show = 6 if condensed else 15
+        lines.append(f"  {len(fixes)} commit(s) shipped:")
+        for fx in fixes[:n_show]:
             day_abbr, _, subj = fx.partition("\t")
             lines.append(f"    {day_abbr:4} {subj[:90]}")
-        if len(fixes) > 10:
-            lines.append(f"    ... and {len(fixes) - 10} more")
+        if len(fixes) > n_show:
+            lines.append(f"    ... and {len(fixes) - n_show} more")
     lines.append("")
 
     # New cases
     lines.append("NEW CASES TODAY")
+    n_new_cap = 15 if condensed else 50
     if not new_today:
         lines.append("  (none — workbook unchanged)")
     else:
-        for r in new_today[:50]:
+        for r in new_today[:n_new_cap]:
             cn = (r.get("Case No.") or "").strip()
             cty = (r.get("County") or "").strip()
             dec = (r.get("Deceased Owner") or "").strip()
             prop = (r.get("Property Address") or "(no parcel)").strip()
             lines.append(f"  {cn:18}  {cty:12}  {dec[:32]:32}  ->  {prop}")
-        if len(new_today) > 50:
-            lines.append(f"  ... and {len(new_today) - 50} more")
+        if len(new_today) > n_new_cap:
+            lines.append(f"  ... and {len(new_today) - n_new_cap} more")
     lines.append("")
 
     # Uncertain matches — the actual rows (with Case No.), not just tag counts.
+    # Condensed: one line per case (why inline, address left to the workbook).
     lines.append("CHECK THESE — UNCERTAIN MATCHES (this week)")
     if not eyeballs:
         lines.append("  (none — every match this week is solid)")
+    elif condensed:
+        lines.append("  (the matcher made a judgment call — worth a look before mailing)")
+        for r, tags in eyeballs[:8]:
+            cn = (r.get("Case No.") or "").strip()
+            cty = (r.get("County") or "").strip()
+            dec = (r.get("Deceased Owner") or "").strip()
+            lines.append(f"  >> {cn:18}  {cty:12}  {dec[:24]:24}  {_why(tags[0])}")
+        if len(eyeballs) > 8:
+            lines.append(f"  ... and {len(eyeballs) - 8} more — full list in the attached report")
     else:
         lines.append("  (the matcher made a judgment call — worth a look before mailing)")
         for r, tags in eyeballs[:20]:
@@ -571,90 +747,77 @@ def render_report(
             lines.append(f"  ... and {len(eyeballs) - 20} more — sort the workbook's Match Reason column")
     lines.append("")
 
-    # Deep prospecting still open — the hand-work queue. Resolved runs moved
-    # up into WHAT GOT DONE; the full ledger summary rides along as a footnote.
-    open_rows = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
-    lines.append("DEEP PROSPECTING — STILL OPEN")
-    if not open_rows:
-        lines.append("  (nothing open)")
-    else:
-        for r in open_rows:
-            lines.append(f"  {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:30]:30}  "
-                         f"{(r.get('Notes') or '')[:60]}")
-    if dp_rows:
-        n_docs = len(list((OUTPUT / "reports").glob("DP_*.md")))
-        by_outcome = Counter((r.get("Outcome") or "?").strip() for r in dp_rows)
-        outcome_str = ", ".join(f"{n} {k}" for k, n in by_outcome.most_common())
-        lines.append(f"  (ledger: {len(dp_rows)} runs, {n_docs} research docs — {outcome_str})")
-    lines.append("")
+    # Deep prospecting still open — the hand-work queue. The condensed email
+    # already surfaces these in WHAT TO WORK ON NEXT; detail is full-report only.
+    if not condensed:
+        lines.append("DEEP PROSPECTING — STILL OPEN")
+        if not open_dp:
+            lines.append("  (nothing open)")
+        else:
+            for r in open_dp:
+                lines.append(f"  {r.get('Case No.',''):16}  {(r.get('Decedent') or '')[:30]:30}  "
+                             f"{(r.get('Notes') or '')[:60]}")
+        if dp_rows:
+            n_docs = len(list((OUTPUT / "reports").glob("DP_*.md")))
+            by_outcome = Counter((r.get("Outcome") or "?").strip() for r in dp_rows)
+            outcome_str = ", ".join(f"{n} {k}" for k, n in by_outcome.most_common())
+            lines.append(f"  (ledger: {len(dp_rows)} runs, {n_docs} research docs — {outcome_str})")
+        lines.append("")
 
     # Documents the court still hasn't scanned for high-priority leads. We retry
     # nightly for months, but if the Application/Will never appears the only way
     # to the executor name is a manual courthouse pull — surface the oldest so
     # Oren can grab them by hand.
-    try:
-        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-        import case_doc_queue as _cdq  # noqa: E402
-        from ecourts_scraper import cases_needing_docs as _cnd  # noqa: E402
-        stale_docs = _cdq.long_pending_high_priority(set(_cnd()), min_age_days=21)
-        if stale_docs:
-            lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
-            for e in stale_docs[:15]:
-                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
-                             f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
-            if len(stale_docs) > 15:
-                lines.append(f"  ... and {len(stale_docs) - 15} more")
-            lines.append("")
-    except Exception:
-        pass
+    if stale_docs and not condensed:
+        lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
+        for e in stale_docs[:15]:
+            lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
+                         f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
+        if len(stale_docs) > 15:
+            lines.append(f"  ... and {len(stale_docs) - 15} more")
+        lines.append("")
 
     # Wills/Applications that landed for weeks already archived. apply_late_docs.py
     # writes the name onto the archived sheet, but an archived week is not in the
     # workbook — this report is the ONLY place Oren would ever learn a dead
     # "Heirs of" row turned into a real named contact. Nothing pushes these to
     # DataSift, so they need typing in by hand; keep the case no. front and centre.
-    try:
-        import json as _json
-        _updates = Path("output") / ".late_doc_updates.json"
-        _recent = _json.loads(_updates.read_text(encoding="utf-8")).get("entries", [])
-        _cut = (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
-        _new = [e for e in _recent if e.get("found_iso", "") >= _cut]
-        if _new:
-            lines.append("LATE DOCS — ARCHIVED WEEKS JUST GOT A NAME (add to DataSift by hand)")
-            for e in _new:
-                _rel = f" ({e['relationship']})" if e.get("relationship") else ""
-                lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
-                             f"wk{e.get('week','?')}  {e.get('was','')} -> {e.get('now','')}{_rel}")
-            lines.append("")
-    except Exception:
-        pass
+    if late_docs and not condensed:
+        lines.append("LATE DOCS — ARCHIVED WEEKS JUST GOT A NAME (add to DataSift by hand)")
+        for e in late_docs:
+            _rel = f" ({e['relationship']})" if e.get("relationship") else ""
+            lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
+                         f"wk{e.get('week','?')}  {e.get('was','')} -> {e.get('now','')}{_rel}")
+        lines.append("")
 
     # Day-to-day churn — one compact section (weekly lens). Dropped rows are
     # still the regression signal; parcel changes are usually a smart-picker
     # repick or a new sibling parcel winning main.
     dropped = diffs["dropped"]
     pc = diffs["parcel_changed"]
+    n_drop_cap = 5 if condensed else 15
+    n_pc_cap = 3 if condensed else 10
     lines.append("CHANGES SINCE YESTERDAY'S RUN")
     if not dropped and not pc:
         lines.append("  (steady — nothing dropped, no parcels changed)")
     if dropped:
         lines.append(f"  Dropped ({len(dropped)}) — in yesterday's sheet, gone tonight:")
-        for r in dropped[:15]:
+        for r in dropped[:n_drop_cap]:
             cn = (r.get("Case No.") or "").strip()
             cty = (r.get("County") or "").strip()
             dec = (r.get("Deceased Owner") or "").strip()
             prop = (r.get("Property Address") or "(no parcel)").strip()
             lines.append(f"    {cn:18}  {cty:12}  {dec[:30]:30}  {prop}")
-        if len(dropped) > 15:
-            lines.append(f"    ... and {len(dropped) - 15} more")
+        if len(dropped) > n_drop_cap:
+            lines.append(f"    ... and {len(dropped) - n_drop_cap} more")
     if pc:
         lines.append(f"  Parcel changed ({len(pc)}) — same case, different parcel picked:")
-        for e in pc[:10]:
+        for e in pc[:n_pc_cap]:
             lines.append(f"    {e['case_no']:18}  {e['county']:12}  {e['decedent'][:30]:30}")
             lines.append(f"      was: {e['parcel_yesterday']:18}  {e['addr_yesterday']}")
             lines.append(f"      now: {e['parcel_today']:18}  {e['addr_today']}")
-        if len(pc) > 10:
-            lines.append(f"    ... and {len(pc) - 10} more")
+        if len(pc) > n_pc_cap:
+            lines.append(f"    ... and {len(pc) - n_pc_cap} more")
     lines.append("")
 
     # Week-over-week pace from the workbook tabs (current week still filling).
@@ -668,18 +831,35 @@ def render_report(
         lines.append(f"  Week {w:<3} {n:>4}  {bar}{tail}")
     lines.append("")
 
+    # Condensed email stops here: fold runtime, drop total, and Tracerfy burn
+    # into a two-line footer that points at the attached full report.
+    ts_line = tracerfy_budget_line()
+    if condensed:
+        total_drops = sum(polish_stats.get(k, 0) for k in (
+            "over_500k", "under_min_value", "heir_occupied", "commercial",
+            "no_parcel", "archive_dupe", "non_pending"))
+        bits = []
+        if runtime_min is not None:
+            bits.append(f"runtime {runtime_min:.0f} min")
+        bits.append(f"{total_drops} rows dropped by filters tonight")
+        bits.append(f"workbook total {len(workbook_rows)} cases")
+        lines.append("FINE PRINT")
+        lines.append("  " + " / ".join(bits))
+        if ts_line:
+            lines.append(f"  {ts_line}")
+        lines.append("  Full detail — match reasons, drop breakdown, DP ledger — "
+                     "is in the attached report file")
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        return "\n".join(lines)
+
     # Tracerfy spend (when funded). One-line summary of this week's burn
     # vs cap — useful for catching runaway costs before they hit the cap.
-    try:
-        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-        from tracerfy_budget import budget_summary  # noqa: E402
-        ts_line = budget_summary()
-        if ts_line:
-            lines.append("TRACERFY BUDGET")
-            lines.append(f"  {ts_line}")
-            lines.append("")
-    except Exception:
-        pass
+    if ts_line:
+        lines.append("TRACERFY BUDGET")
+        lines.append(f"  {ts_line}")
+        lines.append("")
 
     # Heir-transfer — off by default (Oren, 2026-07-18). The review XLSX still
     # generates in output/; it's just no longer summarized here or emailed.
@@ -1013,7 +1193,10 @@ def main(argv: list[str] | None = None) -> int:
     polish_stats = parse_polish_log(polish_log, since=datetime.now())
     runtime = pipeline_runtime_min(polish_log)
 
-    report = render_report(
+    monday = date.today() - timedelta(days=date.today().weekday())
+    improvements = summarize_week_improvements(monday)
+
+    common = dict(
         workbook_path=wb_path,
         workbook_rows=workbook_rows,
         week_n=week_n,
@@ -1023,11 +1206,19 @@ def main(argv: list[str] | None = None) -> int:
         polish_stats=polish_stats,
         runtime_min=runtime,
         include_heir_transfer=args.include_heir_transfer,
+        improvements=improvements,
     )
+    # Full report → attached .txt (every fine-print section, uncapped lists);
+    # condensed report → the email body itself (most important items only).
+    report = render_report(**common)
+    email_body = render_report(**common, condensed=True)
 
     out_path = OUTPUT / f"daily_report_{date.today().strftime('%Y-%m-%d')}.txt"
     out_path.write_text(report, encoding="utf-8")
+    email_path = OUTPUT / f"daily_report_{date.today().strftime('%Y-%m-%d')}_email.txt"
+    email_path.write_text(email_body, encoding="utf-8")
     print(f"Wrote {out_path}")
+    print(f"Wrote {email_path}")
     print()
     print(report)
 
@@ -1050,11 +1241,11 @@ def main(argv: list[str] | None = None) -> int:
                  if _has_named_contact(r) and (r.get("Property Address") or "").strip())
     _counties = Counter((r.get("County") or "").strip() for r in today_rows).most_common()
     html = render_html_email(
-        report, this_week=len(today_rows), new_count=new_count,
+        email_body, this_week=len(today_rows), new_count=new_count,
         ready=_ready, eyeball_n=_eyeball, counties=_counties, week_n=week_n,
     )
 
-    ok, msg = send_email(subject, report, attachments=attachments, html=html)
+    ok, msg = send_email(subject, email_body, attachments=attachments, html=html)
     print(f"\nEmail: {msg}")
     return 0 if ok else 0  # File was written; email is best-effort
 
