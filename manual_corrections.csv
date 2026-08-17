@@ -531,3 +531,26 @@ Renner, Kayleigh Lynn - 1162 S Hubert Cir W, Martinsville, IN 46151"
 26E001076-350,Mailing Address,115 Sunny Ln
 26E001076-350,Phone 1,(704) 478-0081
 26E001076-350,Tag,enformion-phone
+# --- Thompson 26E002931-590 (2026-08-17 DP run: Enformion graph + James Funeral Home obit) ---
+# PR "Chase Thompson" legal name = WILLIAM Chase Thompson (b.7/2001, twin of DM2 Chandler Roe Thompson).
+# Both twins + mother Heather Roe Thompson live at 122 Gold Bridge Xing, Canton GA (decedent addr history matches).
+# Phone 1 = household line from Heather's record, Trestle 100 Dial First, litigator-clear.
+26E002931-590,Mailing Address,122 Gold Bridge Xing
+26E002931-590,Mailing City,Canton
+26E002931-590,Mailing State,GA
+26E002931-590,Mailing Zip,30114-7890
+26E002931-590,Phone 1,770-474-2388
+# --- Lineberger 26E001011-350 (2026-08-17 DP run: Gaston CAMA remainderman cards + Warlick obit) ---
+# Betty Faye Lineberger (2/18/1929-6/13/2026) never married, no children; life estate Bk 4632/2236.
+# All 3 parcels list REMAINDERMAN: LINEBERGER LARRY DEAN (nephew "Dean", b. Oct 1960) - sole owner
+# on her death, no probate needed. He lives across the road, owner-occupied PID 165513.
+# Phone from free people-search snippets, Trestle 30 Dial Fourth, litigator-clear.
+26E001011-350,First Name,Larry Dean
+26E001011-350,Last Name,Lineberger
+26E001011-350,Mailing Address,436 Ike Lynch Rd
+26E001011-350,Mailing City,Dallas
+26E001011-350,Mailing State,NC
+26E001011-350,Mailing Zip,28034
+26E001011-350,DM Name,Larry Dean Lineberger
+26E001011-350,DM Relationship,nephew (sole remainderman)
+26E001011-350,Phone 1,704-922-7693
