@@ -6970,6 +6970,77 @@ def flag_surviving_spouse_occupied(rows: list[dict]) -> int:
     return n
 
 
+def _hold_norm_addr(s: str | None) -> str:
+    """Module-level copy of drop_executor_at_property's nested norm_addr —
+    lowercase, suffix-normalize (Drive->dr etc.), strip to alphanumeric —
+    so the occupied-hold step compares addresses the same way Step 1.9 does."""
+    tokens = (s or "").lower().split()
+    norm_tokens = [_STREET_SUFFIX_NORMALIZE.get(t.rstrip("."), t.rstrip("."))
+                   for t in tokens]
+    joined = " ".join(norm_tokens)
+    return "".join(c for c in joined if c.isalnum())
+
+
+def hold_occupied_single_asset(rows: list[dict]) -> int:
+    """Marketing hold for occupied single-asset estates (Oren 2026-08-18).
+
+    A spouse/heir living in the decedent's home, where that home is the
+    estate's ONLY property, is the least-likely-seller class and was eating
+    ~1 in 4 rows' worth of mail + skip-trace spend. These rows STAY in the
+    workbook (Tag 'Hold - Occupied') but are excluded from the DataSift
+    upload CSV, so no lists / mail / trace dollars go to them. Oren can
+    still hand-pick one (the July surviving-spouse rationale) from the
+    workbook.
+
+    Hold requires ALL of:
+      1. Occupancy signal from earlier steps: 'verify-occupied-confirmed'
+         (GIS-confirmed occupant on a court-confirmed parcel) or any
+         surviving-spouse reason ('surviving-spouse' / 'likely-surviving-
+         spouse' — the spouse classes kept by Step 1.9's co-owner
+         exception, Step 3.9's deed confirm, and Step 4's obit-spouse
+         promotion). Raw mailing==property is NOT a signal by itself —
+         Step 1.95's synthetic fill makes that equality meaningless.
+      2. No off-site evidence: no REAL (non-'mailing-from-property')
+         mailing address that differs from the property. A found off-site
+         address means the contact does NOT live in the house — that's the
+         prime class, never held. Runs AFTER Step 4.95 so Medlin-style
+         manual retargets to an off-site owner clear the hold.
+      3. Single-asset estate: no sibling parcels in Notes ('PLUS ...') —
+         when the estate holds other property the lead stays marketable.
+
+    Off-switch: NC_OCCUPIED_HOLD=0. Reason code 'occupied-hold'.
+    """
+    n = 0
+    for r in rows:
+        mr = r.get("Match Reason") or ""
+        if "occupied-hold" in mr:
+            n += 1  # already held on a prior nightly re-polish
+            continue
+        # 'surviving-spouse' is a substring of 'likely-surviving-spouse',
+        # so this one test covers both variants.
+        if not ("verify-occupied-confirmed" in mr or "surviving-spouse" in mr):
+            continue
+        if _has_sibling_parcels(r):
+            continue
+        prop = _hold_norm_addr(r.get("Property Address"))
+        mail = _hold_norm_addr(r.get("Mailing Address"))
+        synthetic = "mailing-from-property" in mr
+        if mail and not synthetic and prop and not _heir_addr_match(prop, mail):
+            continue  # verified off-site contact — keep marketing
+        tag_reason(r, "occupied-hold")
+        tags = (r.get("Tags") or "").strip()
+        if "Hold - Occupied" not in tags:
+            r["Tags"] = (tags + ", " if tags else "") + "Hold - Occupied"
+        _add_note(r, "[HOLD — family member occupies the home and it is the "
+                     "estate's only property; kept in workbook, excluded from "
+                     "DataSift upload/marketing per Oren 2026-08-18. Work by "
+                     "hand if promising.]")
+        print(f"  OCCUPIED-HOLD {r.get('County')}/{r.get('Case No.')}: "
+              f"{(r.get('Personal Representative') or '').strip()!r} at the home")
+        n += 1
+    return n
+
+
 # ── Backup heir contacts + multi-signer flag (Step 4.96) ──────────────────
 # The court hands us the whole beneficiary list, but we only ever marketed to
 # ONE person (the PR). That cost us twice:
@@ -7497,6 +7568,17 @@ def run(src_path: Path, tag: str, ts: str) -> None:
         print(f"  Rows given backup contacts: {n_backup}  "
               f"Multi-signer estates flagged: {n_multi}")
 
+    # Runs after 4.95 (manual corrections) so a hand-retargeted off-site
+    # contact clears the hold, and after 4.96 so held rows still carry their
+    # backup-heir intel in the workbook.
+    if os.environ.get("NC_OCCUPIED_HOLD") == "0":
+        print("Step 4.97: occupied single-asset marketing hold — skipped (NC_OCCUPIED_HOLD=0)")
+    else:
+        print("Step 4.97: hold occupied single-asset estates out of marketing "
+              "(rows stay in workbook, skip the DataSift upload)")
+        n_hold = hold_occupied_single_asset(kept)
+        print(f"  Rows held from upload: {n_hold}")
+
     # Step 4.7 (populate_zillow_urls) removed 2026-07-11 per Oren — DataSift
     # provides the Zillow/listing link in the property record after upload, so
     # generating one per row here is redundant. The function is retained (unused)
@@ -7517,9 +7599,12 @@ def run(src_path: Path, tag: str, ts: str) -> None:
     _wk_m = re.search(r"week(\d+)", tag)
     _wk = int(_wk_m.group(1)) if _wk_m else None
     upload_csv = Path("output") / f"nc_estates_ftm_{ts}_{tag}_datasift_upload.csv"
-    n_up = write_datasift_upload_csv(kept, upload_csv, week=_wk)
+    upload_rows = [r for r in kept
+                   if "occupied-hold" not in (r.get("Match Reason") or "")]
+    n_up = write_datasift_upload_csv(upload_rows, upload_csv, week=_wk)
     print(f"  Wrote: {upload_csv}  ({n_up} rows, DataSift-native headers, "
-          f"Tags=Courthouse Data + Week {_wk})")
+          f"Tags=Courthouse Data + Week {_wk}; "
+          f"{len(kept) - len(upload_rows)} occupied-hold rows excluded)")
 
 
 def _parse_money(v) -> float:
