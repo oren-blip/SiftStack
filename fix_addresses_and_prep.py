@@ -6373,7 +6373,13 @@ def prep_for_datasift(rows: list[dict]) -> tuple[list[dict], int, int, int, int,
             # (see Step 3.9 / feedback_surviving_spouse_leads). Deed is
             # unverified on this path, so use the soft variant of the tag.
             if dm.get("relationship", "").strip().lower() in {
-                    "wife", "husband", "spouse", "widow", "widower"}:
+                    "wife", "husband", "spouse", "widow", "widower",
+                    # Unmarried-partner wordings obits use for the same
+                    # living-in-the-home person (Szabo/Drennan 26E002951-590
+                    # Wk32 slipped the flag as "life partner"):
+                    "life partner", "partner", "companion",
+                    "longtime companion", "fiance", "fiancee",
+                    "fiancé", "fiancée"}:
                 tag_reason(r, "likely-surviving-spouse")
                 tags = (r.get("Tags") or "").strip()
                 if "Surviving Spouse" not in tags:
@@ -7024,8 +7030,23 @@ def hold_occupied_single_asset(rows: list[dict]) -> int:
             continue
         prop = _hold_norm_addr(r.get("Property Address"))
         mail = _hold_norm_addr(r.get("Mailing Address"))
+        # Jammed-mailing guard (Keller 26E000957-170 Wk33): people-search /
+        # Odyssey addresses often arrive as one line ("3807 Newhall Dr Nw
+        # Conover Nc 28613") while the property is street-only — the raw
+        # compare then reads the SAME house as off-site and skips the hold.
+        # Cut the mailing at the LAST occurrence of the city token (rfind so
+        # a street named after the city survives) and compare both forms.
+        mail_head = mail
+        for c in (r.get("Mailing City"), r.get("Property City")):
+            cn = _hold_norm_addr(c)
+            i = mail.rfind(cn) if cn else -1
+            if i > 0:
+                mail_head = mail[:i]
+                break
         synthetic = "mailing-from-property" in mr
-        if mail and not synthetic and prop and not _heir_addr_match(prop, mail):
+        if (mail and not synthetic and prop
+                and not _heir_addr_match(prop, mail)
+                and not _heir_addr_match(prop, mail_head)):
             continue  # verified off-site contact — keep marketing
         tag_reason(r, "occupied-hold")
         tags = (r.get("Tags") or "").strip()

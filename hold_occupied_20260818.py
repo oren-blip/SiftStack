@@ -54,6 +54,99 @@ def latest_week_csvs(min_week: int = 29) -> dict[int, str]:
     return byweek
 
 
+def _contact_at_property_unflagged(r: dict) -> bool:
+    """Sweep-only class D (Szabo/Drennan 26E002951-590): pre-2026-08-13
+    builds exempted ALL promoted DMs from the lives-at-the-property DQ, so a
+    contact with a REAL address == the property could ship with no occupancy
+    flag at all. Today's pipeline drops these at Step 4.05; already-uploaded
+    ones still need the hold. Jam-aware compare, synthetic mailings and
+    'Heirs of' backstops excluded."""
+    from fix_addresses_and_prep import (_hold_norm_addr, _heir_addr_match,
+                                        _has_sibling_parcels)
+    mr = r.get("Match Reason") or ""
+    # Promoted rows ONLY. Non-promoted rows always faced the Step 1.9 DQ, so
+    # a surviving one with mailing==property means the mailing was BLANK at
+    # 1.9 time and Step 1.95 filled it synthetically (pre-8/12 builds lack
+    # the marker) — occupancy unknown, must NOT hold. Only promoted DMs were
+    # exempt from the DQ pre-8/13, so only they can carry an unflagged REAL
+    # at-property address.
+    if not ("dm-promoted-pr" in mr or "beneficiary-promoted-pr" in mr):
+        return False
+    # Synthetic-fill markers (8/12+ builds) and their companion tag.
+    if "mailing-from-property" in mr or _has_sibling_parcels(r):
+        return False
+    if "Verify: No PR Address" in (r.get("Tags") or ""):
+        return False
+    if (r.get("First Name") or "").strip().lower() == "heirs":
+        return False
+    prop = _hold_norm_addr(r.get("Property Address"))
+    mail = _hold_norm_addr(r.get("Mailing Address"))
+    if not prop or not mail:
+        return False
+    mail_head = mail
+    for c in (r.get("Mailing City"), r.get("Property City")):
+        cn = _hold_norm_addr(c)
+        i = mail.rfind(cn) if cn else -1
+        if i > 0:
+            mail_head = mail[:i]
+            break
+    if not (_heir_addr_match(prop, mail) or _heir_addr_match(prop, mail_head)):
+        return False
+    # Pre-8/12 builds: promotion-synthetic fills carry NO marker, so
+    # mailing==property alone is ambiguous. Require PROOF the address came
+    # from a real source: (a) a real-lookup reason code, or (b) the obit
+    # survivor JSON in the raw scrape file lists the DM's street == property
+    # (that's what made Szabo real). Ambiguous rows are skipped and reported.
+    if any(t in mr for t in ("pr-people-search", "pr-tracerfy",
+                             "coowner-address")):
+        return True
+    return _obit_json_confirms_at_property(r)
+
+
+_OBIT_JSON_CACHE: dict[str, dict] = {}
+
+
+def _obit_json_confirms_at_property(r: dict) -> bool:
+    """Scan raw tn_notices_*.csv files for this case; True when the heir
+    JSON's entry for the promoted DM carries a street matching the property
+    (a real obituary/people-search address, not our fill)."""
+    import json as _json
+    from fix_addresses_and_prep import _hold_norm_addr, _heir_addr_match
+    case = (r.get("Case No.") or "").strip()
+    if not case:
+        return False
+    if not _OBIT_JSON_CACHE:
+        for f in sorted(glob.glob("output/tn_notices_*.csv")):
+            try:
+                for row in csv.reader(open(f, encoding="utf-8-sig")):
+                    line = ",".join(row)
+                    m = re.search(r"#case=(\S+?)[\s\"]", line + ' ')
+                    if not m:
+                        continue
+                    for cell in row:
+                        if cell.startswith("[{"):
+                            _OBIT_JSON_CACHE[m.group(1)] = cell
+                            break
+            except Exception:  # noqa: BLE001
+                continue
+    blob = _OBIT_JSON_CACHE.get(case)
+    if not blob:
+        return False
+    try:
+        heirs = _json.loads(blob)
+    except Exception:  # noqa: BLE001
+        return False
+    prop = _hold_norm_addr(r.get("Property Address"))
+    pr_last = (r.get("Last Name") or "").strip().lower()
+    pr_first = (r.get("First Name") or "").strip().lower()
+    for h_ in heirs:
+        name = (h_.get("name") or "").lower()
+        if pr_last and pr_last in name and pr_first and pr_first in name:
+            st = _hold_norm_addr(h_.get("street"))
+            return bool(st and prop and _heir_addr_match(prop, st))
+    return False
+
+
 def build_hold_set() -> list[dict]:
     from fix_addresses_and_prep import hold_occupied_single_asset
     held: dict[str, dict] = {}
@@ -61,8 +154,12 @@ def build_hold_set() -> list[dict]:
         rows = list(csv.DictReader(open(f, encoding="utf-8-sig")))
         hold_occupied_single_asset(rows)
         for r in rows:
-            if "occupied-hold" not in (r.get("Match Reason") or ""):
-                continue
+            mr = r.get("Match Reason") or ""
+            if "occupied-hold" not in mr:
+                if not _contact_at_property_unflagged(r):
+                    continue
+                print(f"  CLASS-D (at-property, unflagged) {r.get('County')}/"
+                      f"{r.get('Case No.')}: {r.get('Personal Representative')!r}")
             case = (r.get("Case No.") or "").strip()
             if case and case not in held:
                 held[case] = {
