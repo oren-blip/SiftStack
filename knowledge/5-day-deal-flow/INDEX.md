@@ -28,6 +28,12 @@ before quoting July numbers. Headline Day 1 deltas: DataSift API shipped (Deal R
 resumed FTM probate (July's "paused entirely" is stale), Claude model advice now Opus 5 default,
 AI plan threshold lowered to $3–5K/mo spend.
 
+**Written guides:** the August Challenge Hub links 13 written modules per day. Local copies live in
+[guides/day-1/](guides/day-1/) (start at its `README.md` digest — it says which guide holds which
+table so you don't have to open all 13). Fetch future days with
+`python scripts/fetch_challenge_guides.py <day>` the week they air — **hub pages are sunset each
+cohort**, so the local copy is the durable one.
+
 The remaining August days import with
 `python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — the 8/18–8/21
 dates auto-map to Days 2–5.

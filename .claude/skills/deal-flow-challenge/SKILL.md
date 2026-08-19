@@ -20,6 +20,10 @@ Everything lives under `knowledge/5-day-deal-flow/`:
   cohorts) — **start here.** Distilled teachings with `[HH:MM:SS]` timestamps pointing back into the
   raw transcript. August notes carry a "what changed since July" section
 - `transcripts/day-N-YYYY-MM-DD.md` — full transcripts, ~170–240K characters each
+- `guides/day-N/` — local copies of the Challenge Hub's **written guide modules** (August cohort;
+  13 per day). Each folder's `README.md` digest says which guide holds which table — read it first,
+  then open only the guide you need. Guides carry exact bands/thresholds/pricing the live session
+  glossed over; the hub pages are sunset each cohort so these are the durable copies
 - `RESOURCES.md` — every link Ty shared in chat (Challenge Hub, county list framework, tool signups)
 - `chat/` — raw Zoom chat logs, which also carry student questions Ty answered out loud
 
@@ -29,7 +33,10 @@ Everything lives under `knowledge/5-day-deal-flow/`:
    quoted; do not answer for a day that has no transcript — say it isn't transcribed yet.
 2. **Read the relevant `notes/day-N-key-teachings.md`.** Most questions are fully answered there,
    and the notes carry the exact numbers, tiers, and scripts.
-3. **Grep the transcript** (never read it whole — they're huge) when the user wants Ty's exact
+3. **Check the written guides** (`guides/day-N/README.md` → the specific guide) when the question
+   needs exact thresholds, bands, pricing tables, or step-by-step workflows — the guides are the
+   polished reference; the live sessions often gloss over the precise numbers.
+4. **Grep the transcript** (never read it whole — they're huge) when the user wants Ty's exact
    words, more context around a claim, or something the notes don't cover. Search for a distinctive
    phrase, or jump to a timestamp cited in the notes.
 

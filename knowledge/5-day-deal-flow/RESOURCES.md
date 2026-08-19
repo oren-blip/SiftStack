@@ -12,7 +12,7 @@ Ty answered verbally.
 | `curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py \| python3 -` | **One-line SiftStack installer** — Ty now distributes his SiftStack repo (skills + workflows) via install script; he tells attendees to paste this into Claude and "download all of the skills and workflow that's inside of this repo" |
 | https://learn.datasift.ai/county-list-playbook | **County list playbook** — appears to supersede the July `county-list-framework` link; same FIPS deep-link anchors (`#47093` = Knox TN, `#01073` = Jefferson AL) |
 | https://learn.datasift.ai/deal-room | Deal room page |
-| https://learn.datasift.ai/challenge-day-3 | Day 3 landing page (posted ahead on Day 1) |
+| https://learn.datasift.ai/challenge-day-1 … /challenge-day-5 | Day hub pages — each links 13 written guide modules. **Sunset each cohort**; Day 1's guides are copied locally to `guides/day-1/` (fetch other days with `scripts/fetch_challenge_guides.py`) |
 | https://github.com/rtk-ai/rtk | RTK — *"install this repo, will help token usage alot"* (moved up from a Day 3 mention in July to Day 1) |
 | https://docs.google.com/spreadsheets/d/1cPMpqRckv-Z6dt3mz3YXh5c-KiFEi7Od/edit | Day 1 sheet (Ty's share, may be permissioned) |
 | https://www.remotelatinos.com/ | Remote Latinos — VA/prospector hiring |
