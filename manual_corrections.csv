@@ -554,3 +554,26 @@ Renner, Kayleigh Lynn - 1162 S Hubert Cir W, Martinsville, IN 46151"
 26E001011-350,DM Name,Larry Dean Lineberger
 26E001011-350,DM Relationship,nephew (sole remainderman)
 26E001011-350,Phone 1,704-922-7693
+# 2026-08-19 call-flow heirs DP sweep (packs in output/reports/, log rows in dp_log.csv)
+26E002891-590,DM Name,Michael Kyle Gregory
+26E002891-590,DM Relationship,son (occupies property)
+26E002891-590,Phone 1,704-560-1527
+26E002995-590,DM Name,Marianne Wagnon
+26E002995-590,DM Relationship,surviving spouse (occupies property)
+26E002995-590,Phone 1,704-340-7961
+26E003003-590,DM Name,Aretha Dunlap
+26E003003-590,DM Relationship,daughter
+26E003003-590,Phone 1,704-909-1302
+26E003003-590,DM 2 Name,Stephen Russel Dunlap
+26E003003-590,DM 2 Relationship,son (S Chesterfield VA)
+26E003003-590,Mailing Address,1112 Coliseum Dr Apt C
+26E003003-590,Mailing City,Charlotte
+26E003003-590,Mailing State,NC
+26E003003-590,Mailing Zip,28205
+26E002962-590,DM Name,Christopher George Zion
+26E002962-590,DM Relationship,son
+26E002962-590,Phone 1,704-572-1093
+26E002962-590,Mailing Address,1905 Abbey Cir
+26E002962-590,Mailing City,Asheville
+26E002962-590,Mailing State,NC
+26E002962-590,Mailing Zip,28805
