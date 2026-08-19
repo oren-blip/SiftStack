@@ -436,6 +436,54 @@ def tracerfy_budget_line() -> str:
         return ""
 
 
+def kpi_section(today: date, condensed: bool = False) -> list[str]:
+    """Short phone-KPI block from output/kpi_daily_ledger.csv (maintained by
+    scripts/kpi_refresh.py, which pulls DataSift call activity nightly).
+    Returns [] when the ledger is missing or has no rows this week/last week,
+    so quiet weeks don't add an all-zeros section to the email."""
+    ledger = OUTPUT / "kpi_daily_ledger.csv"
+    if not ledger.exists():
+        return []
+    try:
+        with open(ledger, encoding="utf-8", newline="") as fh:
+            rows = {r["day"]: r for r in csv.DictReader(fh)}
+    except Exception:
+        return []
+
+    def _tot(day_from: date, day_to: date) -> dict:
+        t = Counter()
+        for d, r in rows.items():
+            if day_from.isoformat() <= d <= day_to.isoformat():
+                for f in ("dials", "answered", "conversations", "correct_numbers",
+                          "leads", "not_interested", "talk_seconds", "sms_sent"):
+                    t[f] += int(r.get(f) or 0)
+        return t
+
+    monday = today - timedelta(days=today.weekday())
+    wk = _tot(monday, today)
+    lw = _tot(monday - timedelta(days=7), monday - timedelta(days=1))
+    if not wk["dials"] and not lw["dials"]:
+        return []
+
+    def _line(label: str, t: dict) -> str:
+        ans = f"{t['answered'] / t['dials'] * 100:.0f}%" if t["dials"] else "-"
+        mins = t["talk_seconds"] // 60
+        return (f"  {label:13} {t['dials']} dials, {t['answered']} answered ({ans}), "
+                f"{t['conversations']} conversations, {t['correct_numbers']} correct #s, "
+                f"{t['leads']} leads, {mins}m talk")
+
+    out = ["PHONES THIS WEEK"]
+    out.append(_line("Mon-today:", wk))
+    out.append(_line("Last week:", lw))
+    if wk["sms_sent"] or lw["sms_sent"]:
+        out.append(f"  Texts sent:   {wk['sms_sent']} this week, {lw['sms_sent']} last week")
+    stale = max(rows) if rows else ""
+    if stale and (today - date.fromisoformat(stale)).days > 2:
+        out.append(f"  (numbers only current through {stale} — KPI refresh hasn't run since)")
+    out.append("")
+    return out
+
+
 def summarize_week_improvements(monday: date) -> list[str]:
     """Plain-English bullets describing the week's pipeline improvements.
 
@@ -612,6 +660,8 @@ def render_report(
         label = c if c else "(blank)"
         lines.append(f"    {label:16} {0:>7}   {county_prev[c]:>7}")
     lines.append("")
+
+    lines.extend(kpi_section(today, condensed=condensed))
 
     # A county GIS that went down during the polish. Its rows lost their parcel
     # to a dead server (not to "owns nothing") and were dropped at Step 4 — so
@@ -1172,6 +1222,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="Re-enable the heir-transfer review section + XLSX attachment "
                          "(off by default per Oren; the XLSX still generates in output/)")
     args = ap.parse_args(argv)
+
+    # Top up the phone-KPI ledger (call activity from DataSift) so the PHONES
+    # THIS WEEK section is current. Best-effort: a dead token, DataSift outage,
+    # or timeout just leaves the section on yesterday's numbers. KPI_EMAIL=0
+    # skips the refresh entirely.
+    if os.environ.get("KPI_EMAIL", "1") != "0":
+        try:
+            subprocess.run(
+                [sys.executable, str(Path(__file__).parent / "kpi_refresh.py")],
+                capture_output=True, timeout=900,
+                cwd=str(Path(__file__).parent.parent))
+        except Exception:
+            pass
 
     wb_path = find_latest_workbook()
     if not wb_path:
