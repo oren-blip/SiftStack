@@ -33,7 +33,9 @@ PUSHES2 = [
      "mail": None,  # she lives at the property; mailing already correct
      "phones": [("7047986425", ["Dial First", "Widow co-trustee Cheryl Scearce"])],
      "rm": ["Verify: No PR Address"],
-     "add": ["DP Complete", "Hold Review - Spouse Occupies"]},
+     # real hold approved 8/19 PM — hold_occupied_20260819.py applies
+     # "Hold - Occupied"; no interim review tag needed here
+     "add": ["DP Complete"]},
     {"label": "Keener 26E000942-170 @ 7050 Martin Mill Rd",
      "uuid": "62fbc070-1349-4be0-a695-e8f34f8eba1e",
      "owner_frag": "keener",

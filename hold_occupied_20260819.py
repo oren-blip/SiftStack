@@ -1,8 +1,9 @@
 """One-off 2026-08-19: Oren approved the REAL occupied hold for the two
 spouse-occupied estates found in today's call-flow heirs DP sweep:
 
-    Adams 26E002995-590  (widow Marianne Wagnon lives at 1825 Rice Planters Rd)
-    Zion  26E002962-590  (widow Jocelyne Zion lives at 832 Stratfordshire Dr)
+    Adams   26E002995-590  (widow Marianne Wagnon lives at 1825 Rice Planters Rd)
+    Zion    26E002962-590  (widow Jocelyne Zion lives at 832 Stratfordshire Dr)
+    Scearce 26E000825-790  (widow co-trustee Cheryl Scearce lives at 220 Neel Rd)
 
 Same recipe as hold_occupied_20260818.py: add Tag "Hold - Occupied", remove
 ALL lists except "Inherited" (lists drive the niche-sequential presets),
@@ -43,6 +44,8 @@ print(f"\n===== run at {_dt.datetime.now()} apply={APPLY} =====")
 TARGETS = [
     ("Adams 26E002995-590", "f695a966-4e83-4017-8080-9247a71552de"),
     ("Zion 26E002962-590", "eae607c7-0038-4a63-ac07-d5e6b8476760"),
+    # added 8/19 PM (Oren: "yes") — widow co-trustee Cheryl occupies 220 Neel Rd
+    ("Scearce 26E000825-790", "8840b9e3-6b43-4cf5-b1f9-18b9f8bad1e0"),
 ]
 
 
