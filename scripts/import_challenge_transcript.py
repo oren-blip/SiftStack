@@ -32,12 +32,20 @@ TRANSCRIPT_DIR = REPO_ROOT / "knowledge" / "5-day-deal-flow" / "transcripts"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 # Zoom names recordings by date, not by challenge day, so map them.
+# Cohorts run monthly; add each new cohort's dates as recordings come in.
 CHALLENGE_DATES = {
+    # July 2026 cohort
     "2026-07-13": 1,
     "2026-07-14": 2,
     "2026-07-15": 3,
     "2026-07-16": 4,
     "2026-07-17": 5,
+    # August 2026 cohort
+    "2026-08-17": 1,
+    "2026-08-18": 2,
+    "2026-08-19": 3,
+    "2026-08-20": 4,
+    "2026-08-21": 5,
 }
 
 # Merge consecutive cues from the same speaker until this many seconds of

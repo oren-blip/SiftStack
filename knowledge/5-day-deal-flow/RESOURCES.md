@@ -4,6 +4,21 @@ Pulled from the Zoom chat logs in `chat/`. Ty constantly says *"I put it in the 
 sessions — this is that chat. Raw logs are kept alongside because they also contain student questions
 Ty answered verbally.
 
+## August 2026 cohort — new since July (Day 1, 2026-08-17)
+
+| Link | What it is |
+|---|---|
+| https://learn.datasift.ai/agent-org-chart | **Agent org chart** — posted 8+ times on Day 1; the new centerpiece page for the Claude/agent setup |
+| `curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py \| python3 -` | **One-line SiftStack installer** — Ty now distributes his SiftStack repo (skills + workflows) via install script; he tells attendees to paste this into Claude and "download all of the skills and workflow that's inside of this repo" |
+| https://learn.datasift.ai/county-list-playbook | **County list playbook** — appears to supersede the July `county-list-framework` link; same FIPS deep-link anchors (`#47093` = Knox TN, `#01073` = Jefferson AL) |
+| https://learn.datasift.ai/deal-room | Deal room page |
+| https://learn.datasift.ai/challenge-day-3 | Day 3 landing page (posted ahead on Day 1) |
+| https://github.com/rtk-ai/rtk | RTK — *"install this repo, will help token usage alot"* (moved up from a Day 3 mention in July to Day 1) |
+| https://docs.google.com/spreadsheets/d/1cPMpqRckv-Z6dt3mz3YXh5c-KiFEi7Od/edit | Day 1 sheet (Ty's share, may be permissioned) |
+| https://www.remotelatinos.com/ | Remote Latinos — VA/prospector hiring |
+| https://www.macwhisper.com/ | MacWhisper — voice dictation (Mac alternative to WhisperFlow) |
+| https://www.facebook.com/groups/1831529317509932 | Second Facebook group posted at close of Day 1 |
+
 ## Challenge material
 
 | Link | What it is |

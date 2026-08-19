@@ -1,7 +1,9 @@
 # 5 Day Deal Flow Challenge — Reference Library
 
-Ty Garrett's (DataSift) 5 Day Deal Flow Challenge, recorded 2026-07-13 → 2026-07-17.
-This is where the **FTM (first-to-market) strategy** behind the NC probate pipeline comes from.
+Ty Garrett's (DataSift) 5 Day Deal Flow Challenge. The challenge re-runs monthly; this library
+holds the **July 2026 cohort** (complete, 2026-07-13 → 17) and the **August 2026 cohort**
+(in progress, started 2026-08-17). This is where the **FTM (first-to-market) strategy** behind
+the NC probate pipeline comes from. When cohorts disagree, the August run is the current teaching.
 
 ## How to use this
 
@@ -13,6 +15,24 @@ This is where the **FTM (first-to-market) strategy** behind the NC probate pipel
   handles `.docx`, `.md`, `.txt`; infers the day number and date from the filename.
 
 ## Status
+
+### August 2026 cohort (in progress)
+
+| Day | Date | Topic | Speakers named? |
+|-----|------|-------|---|
+| [1](notes/day-1-2026-08-17-key-teachings.md) | 2026-08-17 (Mon) | **Market & data strategy** — Doors Per Deal v2 web tool (market-share stacking, per-county FTM Excel roadmap), first cohort with the DataSift API live, obituary timing split-tests, one-command install of the 74-agent/22-skill library | ✅ real names |
+| 2–5 | 2026-08-18 → 21 | *not yet recorded/imported* | — |
+
+Each August notes file opens with a **"What changed since the July cohort"** section — read that
+before quoting July numbers. Headline Day 1 deltas: DataSift API shipped (Deal Room beta), Ty
+resumed FTM probate (July's "paused entirely" is stale), Claude model advice now Opus 5 default,
+AI plan threshold lowered to $3–5K/mo spend.
+
+The remaining August days import with
+`python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — the 8/18–8/21
+dates auto-map to Days 2–5.
+
+### July 2026 cohort (complete)
 
 **All five days are transcribed and distilled.**
 

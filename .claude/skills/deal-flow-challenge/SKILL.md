@@ -5,17 +5,21 @@ description: Answer questions from Ty Garrett's 5 Day Deal Flow Challenge — th
 
 # 5 Day Deal Flow Challenge
 
-A local, searchable copy of Ty Garrett's (DataSift) 5 Day Deal Flow Challenge, recorded
-2026-07-13 → 2026-07-17. This is the source of the FTM strategy behind the NC probate pipeline.
+A local, searchable copy of Ty Garrett's (DataSift) 5 Day Deal Flow Challenge. The challenge
+re-runs monthly; this library holds the **July 2026 cohort (complete, 2026-07-13 → 17)** and the
+**August 2026 cohort (in progress, from 2026-08-17)**. It is the source of the FTM strategy behind
+the NC probate pipeline. When cohorts disagree, the newer cohort reflects current DataSift features
+— cite the newer one but mention what changed.
 
 ## Where things are
 
 Everything lives under `knowledge/5-day-deal-flow/`:
 
-- `INDEX.md` — status table: which days have transcripts, how good each one is, cross-references
-- `notes/day-N-key-teachings.md` — **start here.** Distilled teachings with `[HH:MM:SS]` timestamps
-  pointing back into the raw transcript
-- `transcripts/day-N-YYYY-MM-DD.md` — full transcripts, ~170–230K characters each
+- `INDEX.md` — status table per cohort: which days have transcripts, how good each one is, cross-references
+- `notes/day-N-key-teachings.md` (July cohort) and `notes/day-N-YYYY-MM-DD-key-teachings.md` (later
+  cohorts) — **start here.** Distilled teachings with `[HH:MM:SS]` timestamps pointing back into the
+  raw transcript. August notes carry a "what changed since July" section
+- `transcripts/day-N-YYYY-MM-DD.md` — full transcripts, ~170–240K characters each
 - `RESOURCES.md` — every link Ty shared in chat (Challenge Hub, county list framework, tool signups)
 - `chat/` — raw Zoom chat logs, which also carry student questions Ty answered out loud
 
@@ -45,9 +49,10 @@ Everything lives under `knowledge/5-day-deal-flow/`:
   Ty taught most of the material. Tyler Austin (co-founder) owns the obituary/deceased-data and
   recently-sold-audit segments; Phil Loesch (power user) contributed the phone-warming and pre-call
   texting ideas.
-- **Flag staleness.** The challenge was recorded 2026-07-13 → 17 and discusses features that were
-  unreleased at the time (the DataSift API, records-page auto-update). If a question depends on
-  those, say when it was recorded and that it may have shipped since.
+- **Flag staleness, and prefer the newest cohort.** Each answer should say which cohort it came
+  from. The July run discussed features that were unreleased at the time (the DataSift API,
+  records-page auto-update); the August run is the current teaching. If a question depends on a
+  feature's status, say when the session was recorded and that it may have shipped since.
 - **Prefer the challenge's own vocabulary** — doors per deal, lift vs baseline, niche vs bulk
   sequential, call attempt 1/2/3, rehash, not-interested campaign, dial first/second, the four
   pillars of motivation. The user thinks in these terms.
