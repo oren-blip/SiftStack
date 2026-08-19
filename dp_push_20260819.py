@@ -231,9 +231,13 @@ def push_one(h: dict, spec: dict) -> bool:
     tep = spec.get("tag_existing_phone")
     if tep:
         num, tags = tep
+        _TIERS = {"Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop"}
         for p in new_owner.get("phones") or []:
             if "".join(c for c in str(p.get("number") or "") if c.isdigit()) == num:
                 cur = [t if isinstance(t, str) else t.get("title") for t in (p.get("tags") or [])]
+                # new tier tag REPLACES any existing tier tag (never both)
+                if _TIERS & set(tags):
+                    cur = [t for t in cur if t not in _TIERS]
                 p["tags"] = list(dict.fromkeys([*(t for t in cur if t), *tags]))
                 print(f"  tagging existing phone {num} -> {p['tags']}")
 
