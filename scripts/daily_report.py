@@ -373,6 +373,16 @@ def _has_phone(r: dict) -> bool:
     return bool((r.get("Phone 1") or "").strip() or (r.get("DM Phone") or "").strip())
 
 
+def _week_pull_dates(week_n: int, year: int) -> str:
+    """Mon-Fri date span of an ISO week — when that week's cases were pulled."""
+    try:
+        mon = date.fromisocalendar(year, week_n, 1)
+        fri = date.fromisocalendar(year, week_n, 5)
+        return f"{mon.strftime('%b %d')}-{fri.strftime('%b %d')}"
+    except ValueError:
+        return "?"
+
+
 def eyeball_cases(rows: list[dict]) -> list[tuple[dict, list[str]]]:
     """Rows whose Match Reason carries at least one uncertain (eyeball) tag."""
     out: list[tuple[dict, list[str]]] = []
@@ -625,6 +635,11 @@ def render_report(
              if _has_named_contact(r) and (r.get("Property Address") or "").strip()]
     with_phone = [r for r in week_rows if _has_phone(r)]
     heirs_of = [r for r in week_rows if _is_heirs_of(r)]
+    # The FULL deep-prospecting queue — every "Heirs of" row still in the
+    # workbook, all weeks, not just this week's slice (Oren, 2026-08-19:
+    # "how many are in the DP queue total and what are the dates they were
+    # pulled? Need to know this in future reports").
+    dp_queue = [r for r in workbook_rows if _is_heirs_of(r)]
     eyeballs = eyeball_cases(week_rows)
     in_ds, awaiting = datasift_upload_status(week_rows)
 
@@ -643,8 +658,10 @@ def render_report(
     # in-CSV count when deep prospecting actually put numbers on rows, so a 0
     # here doesn't read as "no phones anywhere".
     if with_phone:
-        lines.append(f"  Have a phone number:  {len(with_phone)}    (from court docs / deep prospecting)")
-    lines.append(f"  \"Heirs of\" rows:      {len(heirs_of)}    no named contact yet — deep-prospecting queue")
+        lines.append(f"  Have a phone number:  {len(with_phone)}    (found by the pipeline itself — court docs / DP; "
+                     "skip-trace phones live in DataSift and aren't counted here)")
+    lines.append(f"  \"Heirs of\" rows:      {len(heirs_of)}    new this week — DP queue is "
+                 f"{len(dp_queue)} total (see DEEP PROSPECTING QUEUE below)")
     lines.append(f"  Check these:          {len(eyeballs)}    uncertain matches — listed below")
     if in_ds >= 0:
         lines.append(f"  In DataSift already:  {in_ds}    ({awaiting} waiting for the next upload)")
@@ -693,9 +710,8 @@ def render_report(
     if late_docs:
         prios.append("Type these into DataSift by hand — archived cases just got a "
                      f"named contact: {_cases_preview(late_docs, 'case_number')}")
-    if stale_docs:
-        prios.append("Next courthouse trip — pull the unscanned docs for: "
-                     f"{_cases_preview(stale_docs, 'case_number')}")
+    # Unscanned court docs are NOT a priority item — Oren doesn't do courthouse
+    # trips (2026-08-19). They stay in the full report as an FYI list only.
     if eyeballs:
         prios.append(f"Double-check {len(eyeballs)} uncertain matches before "
                      "mailing (worst listed below)")
@@ -703,10 +719,11 @@ def render_report(
         prios.append(f"Finish {len(open_dp)} open deep-prospecting case(s): "
                      f"{_cases_preview(open_dp, 'Case No.')}")
     if in_ds >= 0 and awaiting > 0:
-        prios.append(f"{awaiting} polished rows are waiting for the next DataSift upload")
+        prios.append(f"{awaiting} polished rows are waiting for the next DataSift upload "
+                     "(nothing uploads by itself — they go in when the upload script is run)")
     if heirs_of:
-        prios.append(f'{len(heirs_of)} "Heirs of" rows still need a named contact '
-                     "(deep-prospecting queue)")
+        prios.append(f'{len(heirs_of)} new "Heirs of" rows this week — DP queue is '
+                     f"{len(dp_queue)} total (breakdown below)")
     lines.append("WHAT TO WORK ON NEXT")
     if not prios:
         lines.append("  (nothing urgent — pipeline is clean)")
@@ -723,7 +740,9 @@ def render_report(
     fixes = git_fixes_since(monday)
     lines.append(f"WHAT GOT DONE THIS WEEK (since Mon {monday.strftime('%b %d')})")
     lines.append(f"  {this_week_total} new estate cases found and matched to property")
-    phone_note = f"; {len(with_phone)} already have a phone number" if with_phone else ""
+    phone_note = (f"; {len(with_phone)} came with a phone the pipeline found itself "
+                  "(court docs / DP — the rest get phones from DataSift skip trace "
+                  "after upload)") if with_phone else ""
     lines.append(f"  {len(ready)} are mail-ready with a named contact{phone_note}")
     if dp_resolved_wk:
         if condensed:
@@ -797,6 +816,34 @@ def render_report(
             lines.append(f"  ... and {len(eyeballs) - 20} more — sort the workbook's Match Reason column")
     lines.append("")
 
+    # Deep-prospecting queue — every "Heirs of" row across ALL workbook weeks,
+    # grouped by the week it was pulled (with the pull dates). Condensed email
+    # shows the total + by-week breakdown; the full report also lists every case.
+    lines.append('DEEP PROSPECTING QUEUE — ALL "HEIRS OF" ROWS (no named contact yet)')
+    if not dp_queue:
+        lines.append("  (empty)")
+    else:
+        by_wk: dict[tuple[int, int], list[dict]] = {}
+        for r in dp_queue:
+            m = re.search(r"Week (\d+)\s*(\d{4})?", str(r.get("_tab") or ""))
+            wk = int(m.group(1)) if m else 0
+            yr = int(m.group(2)) if m and m.group(2) else today.year
+            by_wk.setdefault((yr, wk), []).append(r)
+        lines.append(f"  Total: {len(dp_queue)} cases, pulled across {len(by_wk)} week(s)")
+        for (yr, wk) in sorted(by_wk, reverse=True):
+            span = _week_pull_dates(wk, yr)
+            lines.append(f"    Week {wk:<3} pulled {span:14} {len(by_wk[(yr, wk)]):>4} case(s)")
+        if not condensed:
+            lines.append("  Every case (newest first):")
+            for (yr, wk) in sorted(by_wk, reverse=True):
+                for r in by_wk[(yr, wk)]:
+                    cn = (r.get("Case No.") or "").strip()
+                    cty = (r.get("County") or "").strip()
+                    dec = (r.get("Deceased Owner") or "").strip()
+                    filed = str(r.get("File Date") or "").strip()
+                    lines.append(f"    {cn:18}  {cty:12}  {dec[:30]:30}  filed {filed}")
+    lines.append("")
+
     # Deep prospecting still open — the hand-work queue. The condensed email
     # already surfaces these in WHAT TO WORK ON NEXT; detail is full-report only.
     if not condensed:
@@ -819,7 +866,8 @@ def render_report(
     # to the executor name is a manual courthouse pull — surface the oldest so
     # Oren can grab them by hand.
     if stale_docs and not condensed:
-        lines.append("DOCS NOT SCANNED — MANUAL COURTHOUSE PULL (high-priority, 21+ days)")
+        lines.append("DOCS THE COURT STILL HASN'T SCANNED (FYI — 21+ days; only worth "
+                     "pulling if you happen to be at the courthouse)")
         for e in stale_docs[:15]:
             lines.append(f"  {e.get('case_number',''):18} {e.get('county',''):12} "
                          f"{e['age_days']:>3}d  needs {','.join(e.get('needs', []))}")
