@@ -67,7 +67,12 @@ def main() -> int:
         label = f"{e['dm_first']} {e['dm_last']} @ {e['property']}"
         pushes = []
         for s in (e.get("scored") or []):
-            t = tier(s.get("score"))
+            # Litigator risk: pushed with the DNC tag (never a dial tier) so the
+            # number is documented but suppressed from all marketing.
+            if s.get("litigator"):
+                t = "Litigator - DNC"
+            else:
+                t = tier(s.get("score"))
             if not t:
                 continue
             ltype = "MOBILE" if "mobile" in str(s.get("line_type") or "").lower() else "LANDLINE"
