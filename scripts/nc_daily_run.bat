@@ -145,6 +145,13 @@ if "%NC_LATE_DOCS%"=="0" (
     "D:\SiftStack\.venv\Scripts\python.exe" apply_late_docs.py >> "logs\nc_daily_run.log" 2>&1
 )
 
+REM Auto-upload tonight's NETNEW rows to DataSift (Oren approved unprompted
+REM uploads 2026-08-19). Runs BEFORE the report so the email's "waiting for
+REM upload" line shows the post-upload state. Skips cleanly when tonight
+REM produced no NETNEW rows. Off-switch:  set NC_AUTO_UPLOAD=0
+echo [6.8/7] Auto-uploading net-new rows to DataSift...
+"D:\SiftStack\.venv\Scripts\python.exe" scripts\auto_upload_netnew.py >> "logs\nc_daily_run.log" 2>&1
+
 echo [7/7] Daily report (file + email)...
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\daily_report.py >> "logs\nc_daily_run.log" 2>&1
 
