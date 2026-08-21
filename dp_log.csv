@@ -159,3 +159,122 @@ Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-19,34,NSM10 1115 Cannon Farm Rd,Rowan,"Erin Bongard (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Enformion no confident match at DM mailing. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 3908 Ferncliff Rd,Gaston,"David Todd Sarvis (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 5 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 745 Old Willis School Rd,Gaston,"Kim Aziz (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Enformion no confident match at DM mailing. Push: dp_push_nsm10_20260819.py
+2026-08-20,33,26E000832-790,Rowan,Settineri,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Faye L Settineri (Spouse/Sibling)
+2026-08-20,34,26E000826-480,Iredell,Jolly,L2-enf,partial,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,decedent matched but relatives graph empty
+2026-08-20,25,26E002293-590,Mecklenburg,Alexander,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Janice Brenda Alexander (Spouse/Sibling)
+2026-08-20,24,26E002179-590,Mecklenburg,Warren,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Clifford James Warren (Spouse/Sibling)
+2026-08-20,33,26E000953-170,Catawba,Burris,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Guylia Kay Burris (Spouse/Sibling)
+2026-08-20,29,26E000432-540,Lincoln,VANCE,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Michael E Vance (Spouse/Sibling)
+2026-08-20,32,26E002899-590,Mecklenburg,OWENS,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Donald Anvy Owens (Spouse/Sibling)
+2026-08-20,34,26E000978-170,Catawba,Sigmon,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Richard Lee Sigmon (Spouse/Sibling)
+2026-08-20,34,26E001111-350,Gaston,Bradley,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Mary Bradley, Margie Bradley,"
+2026-08-20,34,26E001116-350,Gaston,Vaughn,L2-enf,partial,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,decedent matched but relatives graph empty
+2026-08-20,33,26E000837-120,Cabarrus,Irish,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Bruce Wayne Irish (Spouse/Sibling)
+2026-08-20,21,26E001834-590,Mecklenburg,Miller,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Gregory A Miller (Spouse/Sibling)
+2026-08-20,34,26E000964-170,Catawba,Brown,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Cory A Brown (Spouse/Sibling)
+2026-08-20,26,26E000728-170,Catawba,Wilson,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Lucille W Wilson (Spouse/Sibling)
+2026-08-20,33,26E000853-120,Cabarrus,Dover,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Jeff Monroe Dover (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E001795-590,Mecklenburg,James W Thrower,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Kandace Thrower, Leland Throw"
+2026-08-20,33,26E000793-480,Iredell,George W Brawley,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Christopher Brawley, Evelina "
+2026-08-20,32,26E001051-350,Gaston,Sadler,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Carmen Damon Sadler (Spouse/Sibling) AT PROPERTY
+2026-08-20,27,26E002476-590,Mecklenburg,Palmgren,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Carol Middleton Palmgren (Spouse/Sibling)
+2026-08-20,33,26E002979-590,Mecklenburg,Dudley,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Arceal Dudley (Spouse/Sibling)
+2026-08-20,21,26E001913-590,Mecklenburg,Patterson,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Jamelia Patterson, Debra Patt"
+2026-08-20,33,26E001090-350,Gaston,Tiearney,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Steve E Tiearney (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E001906-590,Mecklenburg,James John Ball,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Dana Ball, Mary Ball, Raiford"
+2026-08-20,34,26E000977-170,Catawba,Brown,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Ronald Augustus Ml Brown (Spouse/Sibling)
+2026-08-20,21,26E001832-590,Mecklenburg,Ardie Clondike Banker,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,32,26E002866-590,Mecklenburg,Hoag,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Daniel T Hoag (Spouse/Sibling)
+2026-08-20,23,26E002026-590,Mecklenburg,Davis,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Larry Davis (Spouse/Sibling)
+2026-08-20,32,26E002925-590,Mecklenburg,SANTIAGO,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Trinidad Cortez Santiago (Spouse/Sibling)
+2026-08-20,21,26E001910-590,Mecklenburg,Tucker,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,34,26E001117-350,Gaston,Parker,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Robin M Parker (Spouse/Sibling)
+2026-08-20,21,26E001901-590,Mecklenburg,Gomez,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Eric Gomez, Sonia Gomez, Carl"
+2026-08-20,34,26E000821-480,Iredell,Richards,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Lloyd Laoel Richards (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E001806-590,Mecklenburg,Simmons,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Torrence Ellis Simmons (Spouse/Sibling)
+2026-08-20,21,26E001887-590,Mecklenburg,Witherspoon,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Sharlea Joan Witherspoon (Spouse/Sibling)
+2026-08-20,23,26E002085-590,Mecklenburg,Miller,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,21,26E001879-590,Mecklenburg,Thomas,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Madeline Thomas (Spouse/Sibling)
+2026-08-20,21,26E001805-590,Mecklenburg,SERPAS,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Blanca Gomez, Jose Tapia, Rig"
+2026-08-20,21,26E001803-590,Mecklenburg,Bell,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Charles Claxton Bell (Spouse/Sibling)
+2026-08-20,28,26E000905-350,Gaston,Smith,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Douglas Alan Smith (Spouse/Sibling)
+2026-08-20,21,26E001808-590,Mecklenburg,Oliphant,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Elizabeth Jane Oliphant (Spouse/Sibling)
+2026-08-20,21,26E001911-590,Mecklenburg,Chagaris,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Angela G Chagaris (Spouse/Sibling)
+2026-08-20,21,26E001899-590,Mecklenburg,Hdok,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Nget H Hdok (Spouse/Sibling)
+2026-08-20,31,26E000780-120,Cabarrus,Boyden,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Robert Kachmarik (Spouse/Sibling)
+2026-08-20,33,26E000849-120,Cabarrus,Sheets,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Donald Ray Sheets (Spouse/Sibling)
+2026-08-20,21,26E001915-590,Mecklenburg,HENMAN,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Lois Ann Henman (Spouse/Sibling)
+2026-08-20,21,26E001824-590,Mecklenburg,ROBINSON,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Meme Elizabeth Robinson (Spouse/Sibling)
+2026-08-20,22,26E001945-590,Mecklenburg,FOSTER,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Cherith Darice Foster (Spouse/Sibling)
+2026-08-20,34,26E001115-350,Gaston,Friday,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Vanessa Cathcart Friday (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E001907-590,Mecklenburg,MILLIGAN,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Stephen M Milligan (Spouse/Sibling) AT PROPERTY
+2026-08-20,34,26E000805-480,Iredell,Casto,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Jeffrey O Casto (Spouse/Sibling)
+2026-08-20,33,26E000782-480,Iredell,Lunsford,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Edward Gene Lunsford (Spouse/Sibling)
+2026-08-20,21,26E001908-590,Mecklenburg,Cheek,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Legretta Ford Cheek (Spouse/Sibling)
+2026-08-20,26,26E000753-170,Catawba,Feldhaus,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Terry Francis Feldhaus (Spouse/Sibling)
+2026-08-20,21,26E001797-590,Mecklenburg,Crawford,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Lateef A Crawford (Spouse/Sibling) AT PROPERTY
+2026-08-20,34,26E000841-790,Rowan,Whitaker,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Nancy B Whitaker (Spouse/Sibling)
+2026-08-20,34,26E000963-170,Catawba,Tinney,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Blanchard Bradley Tinney (Spouse/Sibling)
+2026-08-20,34,26E001114-350,Gaston,Verna,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Victor Alexander Verna (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E001820-590,Mecklenburg,Roberson,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Paula Rochelle Roberson (Spouse/Sibling)
+2026-08-20,34,26E001093-350,Gaston,Mack,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Michael Mack, Michael Middlet"
+2026-08-20,29,26E000433-540,Lincoln,Atkinson,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Carol Atkinson, Michele Atkin"
+2026-08-20,34,26E000858-120,Cabarrus,Hall,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Teah C Hall (Spouse/Sibling)
+2026-08-20,21,26E001873-590,Mecklenburg,MILLER,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,relatives found but none passed the identity gate: Maggie Miller
+2026-08-20,33,26E001066-350,Gaston,Walter Ernest Burrier,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Kayla Burrier, Sierra Burrier"
+2026-08-20,29,26E000683-480,Iredell,Lippard,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM James Allen Lippard (Spouse/Sibling)
+2026-08-20,28,26E000666-480,Iredell,Stokes,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Ted W Stokes (Spouse/Sibling) AT PROPERTY
+2026-08-20,30,26E000974-350,Gaston,Williams,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Bertrom L Williams (Spouse/Sibling)
+2026-08-20,21,26E001859-590,Mecklenburg,Helms,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Monica Ann Helms (Spouse/Sibling)
+2026-08-20,34,26E001102-350,Gaston,Walker,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Gwendolyn Thompson Walker (Spouse/Sibling)
+2026-08-20,33,26E001089-350,Gaston,Grainger,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Christina Noel Raeburn Grainger (Spouse/Sibling)
+2026-08-20,32,26E000770-480,Iredell,Phillips,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Tracy Phillips, Nina Phillips"
+2026-08-20,21,26E001796-590,Mecklenburg,Phifer,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Hattie Caterina Phifer (Spouse/Sibling)
+2026-08-20,21,26E001903-590,Mecklenburg,Guion,L2-enf,partial,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,decedent matched but relatives graph empty
+2026-08-20,29,26E000726-790,Rowan,HUNT,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Ellis Wayne Hunt (Spouse/Sibling)
+2026-08-20,21,26E001831-590,Mecklenburg,RUSSELL,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM William Beaver Russell (Spouse/Sibling)
+2026-08-20,24,26E000756-350,Gaston,Pilkington,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Mark W Pilkington (Spouse/Sibling)
+2026-08-20,23,26E000733-350,Gaston,Ozment,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM James Ralph Appleton (Spouse/Sibling)
+2026-08-20,23,26E000736-350,Gaston,Greene,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Alexander L Greene (Spouse/Sibling)
+2026-08-20,23,26E000737-350,Gaston,Curry,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Chris Curry, Wilma Curry, Geo"
+2026-08-20,23,26E000738-350,Gaston,Wilson,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Phyllis Wilson, Sharon Wilson"
+2026-08-20,23,26E000559-480,Iredell,Smith,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Michael Joseph Smith (Spouse/Sibling)
+2026-08-20,23,26E000359-540,Lincoln,Howard,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Roger Wayne Howard (Spouse/Sibling)
+2026-08-20,23,26E000609-790,Rowan,Phifer,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Carla Deaton Phifer (Spouse/Sibling)
+2026-08-20,22,26E000574-120,Cabarrus,bailey,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Stephanie Walker Bailey (Spouse/Sibling)
+2026-08-20,22,26E000340-540,Lincoln,Dellinger,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM David Lee Dellinger (Spouse/Sibling)
+2026-08-20,22,26E000595-790,Rowan,Walker,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Mart E Walker (Spouse/Sibling)
+2026-08-20,21,26E000531-120,Cabarrus,Caudle,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Louise P Caudle (Spouse/Sibling)
+2026-08-20,21,26E000538-120,Cabarrus,Dunn,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Marie Dunn, Robert Dunn, Bob "
+2026-08-20,21,26E000543-120,Cabarrus,McCachren,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Shane M Mccachren (Spouse/Sibling)
+2026-08-20,21,26E000591-170,Catawba,Isaac,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Roger D Isaac (Spouse/Sibling)
+2026-08-20,21,26E000653-350,Gaston,Grigg,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Boyd Steve Grigg (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E000654-350,Gaston,Summitt,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Connie Renee Summitt (Spouse/Sibling)
+2026-08-20,21,26E000655-350,Gaston,Dixon,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: James Dixon, James Dixon, Dal"
+2026-08-20,21,26E000658-350,Gaston,Bess,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Timothy Yates Bess (Spouse/Sibling)
+2026-08-20,21,26E000667-350,Gaston,Beall,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM George C Beall (Spouse/Sibling)
+2026-08-20,21,26E000670-350,Gaston,Gilliam,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Barbara Anne Gilliam (Spouse/Sibling)
+2026-08-20,21,26E000673-350,Gaston,Weiden,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,21,26E000496-480,Iredell,Wilson,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Gordon Douglas Wilson (Spouse/Sibling)
+2026-08-20,21,26E000499-480,Iredell,Deviney,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Raymond Ray Deviney (Spouse/Sibling)
+2026-08-20,21,26E000504-480,Iredell,Harding,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM James R Harding (Spouse/Sibling)
+2026-08-20,21,26E000517-480,Iredell,Cook,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: David Cook, Kelly Cook, Linda"
+2026-08-20,21,26E000520-480,Iredell,Malone,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,21,26E000328-540,Lincoln,Schrum,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,21,26E000329-540,Lincoln,Keener,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Donna Rae Keener (Spouse/Sibling)
+2026-08-20,21,26E000330-540,Lincoln,Stewart,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Jean Stewart, Timothy Stewart"
+2026-08-20,21,26E000337-540,Lincoln,HOPPER,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Harold Mathew Hopper (Spouse/Sibling)
+2026-08-20,21,26E000338-540,Lincoln,Roome,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Anthony G Roome (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E000542-790,Rowan,Rhea,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Gordon A Rhea (Spouse/Sibling)
+2026-08-20,21,26E000543-790,Rowan,Shipwash,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Christopher W Shipwash (Spouse/Sibling)
+2026-08-20,21,26E000549-790,Rowan,Floyd David Long,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Teresa Long, Jerry Long, Tere"
+2026-08-20,21,26E000560-790,Rowan,Hildebrand,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,no anchored decedent match
+2026-08-20,21,26E000563-790,Rowan,JONES,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Susan Jones, Angela Jones, St"
+2026-08-20,21,26E000574-790,Rowan,Havrischak,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Basil John Havrischak (Spouse/Sibling) AT PROPERTY
+2026-08-20,21,26E000421-480,Iredell,Gordon,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Craig Gordon, Sandra Gordon, "
+2026-08-20,21,26E000195-120,Cabarrus,Barrett,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Eileen M Barrett (Spouse/Sibling)
+2026-08-20,21,26E000150-120,Cabarrus,Snipes,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Amy Greer Snipes (Spouse/Sibling)
+2026-08-20,21,25E001251-350,Gaston,Edison,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Christopher James Edison (Spouse/Sibling)
+2026-08-20,21,26E000567-790,Rowan,Hines,L2-enf,resolved,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,DM Jeanie Campbell Hines (Spouse/Sibling)
+2026-08-20,21,25E002130-790,Rowan,Roberts,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Barbara Roberts, Jeremy Rober"
+2026-08-20,21,26E000383-790,Rowan,Taylor,L2-enf,open,d:/SiftStack/output/reports/DP_HeirsSweep_20260820.md,"relatives found but none passed the identity gate: Timothy Taylor, Therese Taylo"

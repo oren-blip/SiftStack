@@ -639,7 +639,23 @@ def render_report(
     # workbook, all weeks, not just this week's slice (Oren, 2026-08-19:
     # "how many are in the DP queue total and what are the dates they were
     # pulled? Need to know this in future reports").
-    dp_queue = [r for r in workbook_rows if _is_heirs_of(r)]
+    # Archived week tabs are frozen, so a case that was since researched never
+    # leaves the workbook — the queue must subtract finished work itself
+    # (Oren, 2026-08-20): skip cases the DP ledger marks resolved, and rows
+    # where research already filled a DM Name (a named contact exists even
+    # though the PR column still says "Heirs of").
+    dp_rows = read_dp_log()
+    dp_done_cases = {
+        (r.get("Case No.") or "").strip().upper() for r in dp_rows
+        if (r.get("Outcome") or "").strip() in ("resolved", "resolved-rejected")
+    }
+    all_heirs = [r for r in workbook_rows if _is_heirs_of(r)]
+    dp_queue = [
+        r for r in all_heirs
+        if (r.get("Case No.") or "").strip().upper() not in dp_done_cases
+        and not str(r.get("DM Name") or "").strip()
+    ]
+    dp_already_done = len(all_heirs) - len(dp_queue)
     eyeballs = eyeball_cases(week_rows)
     in_ds, awaiting = datasift_upload_status(week_rows)
 
@@ -702,7 +718,6 @@ def render_report(
     # What to work on next — the priority queue, ranked. Hand-entry work that
     # nothing else surfaces comes first; volume queues last. Only non-empty
     # items get a number; case numbers up front (Oren looks cases up by number).
-    dp_rows = read_dp_log()
     open_dp = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
     stale_docs = get_stale_docs()
     late_docs = get_late_doc_updates()
@@ -821,7 +836,8 @@ def render_report(
     # shows the total + by-week breakdown; the full report also lists every case.
     lines.append('DEEP PROSPECTING QUEUE — ALL "HEIRS OF" ROWS (no named contact yet)')
     if not dp_queue:
-        lines.append("  (empty)")
+        lines.append("  (empty)" + (f" — {dp_already_done} already researched"
+                                    if dp_already_done else ""))
     else:
         by_wk: dict[tuple[int, int], list[dict]] = {}
         for r in dp_queue:
@@ -829,7 +845,10 @@ def render_report(
             wk = int(m.group(1)) if m else 0
             yr = int(m.group(2)) if m and m.group(2) else today.year
             by_wk.setdefault((yr, wk), []).append(r)
-        lines.append(f"  Total: {len(dp_queue)} cases, pulled across {len(by_wk)} week(s)")
+        done_note = (f"  (another {dp_already_done} already researched — "
+                     "not counted)") if dp_already_done else ""
+        lines.append(f"  Total: {len(dp_queue)} cases, pulled across "
+                     f"{len(by_wk)} week(s){done_note}")
         for (yr, wk) in sorted(by_wk, reverse=True):
             span = _week_pull_dates(wk, yr)
             lines.append(f"    Week {wk:<3} pulled {span:14} {len(by_wk[(yr, wk)]):>4} case(s)")
