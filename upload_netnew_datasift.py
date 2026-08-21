@@ -550,29 +550,37 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
     # above only scores THIS upload's phones. Phones that entered records any
     # other way since the last upload — DP pushes, per-record "Skip Trace
     # Owner" re-traces, trace results landing after the settle window — never
-    # get dial-priority tags. Sweep the list for them, scoped to a rolling
-    # 90-day Created window (actively-called records only). The persistent
-    # score cache makes re-seen phones free; a normal sweep costs pennies,
-    # and --max-cost aborts before spending if it ever finds a big backlog.
+    # get dial-priority tags.
+    #
+    # 2026-08-20: switched from trestle_backfill_step (Phone Enrichment CSV
+    # export) to trestle_api_backfill (DataSift API). The export was proven to
+    # return only a SUBSET of each record's phones — it showed 0/1/1 phones on
+    # records the API reported as having 3/5/2 — so the export-based sweep kept
+    # reporting "every phone carries a tier tag" while 20 phones sat untiered
+    # in '02. Ready to Call', some for 3+ days. Reading the record over the API
+    # sees every phone.
+    #
+    # Scope = the '02. Ready to Call' preset (what Oren actually looks at) plus
+    # the last 7 days of 'NC Upload' batch tags. The 7-day window is what makes
+    # it self-healing: DataSift's own skip trace often writes new phones AFTER
+    # this sweep runs, and those late arrivals get picked up on a later night
+    # instead of sitting untiered forever.
     if backfill:
         try:
-            from datetime import datetime as _dt, timedelta as _td
-            from trestle_backfill_step import run as backfill_run
-            since = (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
-            logger.info("Tier backfill sweep (records created since %s)...", since)
-            brc = await backfill_run(list_name=list_name, all_records=False,
-                                     csv_path=None, apply=True,
-                                     headless=headless, max_cost=1.0,
-                                     created_since=since)
+            from trestle_api_backfill import run_sweep
+            logger.info("Tier backfill sweep (API; RTC preset + last 7 days "
+                        "of upload batches)...")
+            brc = await asyncio.to_thread(
+                run_sweep, preset="02. Ready to Call", tags=None,
+                recent_days=7, apply=True, max_cost=1.0, headless=headless)
             if brc == 0:
                 logger.info("Tier backfill sweep complete.")
             else:
                 logger.warning("Tier backfill sweep exited %d — run by hand: "
-                               "python trestle_backfill_step.py --apply "
-                               "--created-since %s", brc, since)
+                               "python trestle_api_backfill.py --apply", brc)
         except Exception as e:  # noqa: BLE001
             logger.warning("Tier backfill sweep failed (%s) — run by hand: "
-                           "python trestle_backfill_step.py --apply", e)
+                           "python trestle_api_backfill.py --apply", e)
 
 
 def main():

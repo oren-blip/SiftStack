@@ -1,5 +1,12 @@
 """Trestle tier backfill: find + fix phones with no dial-priority tag.
 
+SUPERSEDED 2026-08-20 by `trestle_api_backfill.py` — USE THAT INSTEAD.
+This version audits the "Phone Enrichment" CSV export, which was proven to
+return only a SUBSET of each record's phones (it showed 0/1/1 phones on records
+the API reported as having 3/5/2). Because of that it reports "every phone
+carries a tier tag" while phones sit untiered, so a clean run here means
+nothing. Kept only for auditing a Phone Enrichment CSV you already have.
+
 Why records sit in '02. Ready to Call' without Trestle scoring:
 trestle_tier_step.py only runs right after each upload's skip trace, scoped
 to that one upload's batch tag. Phones that reach a record ANY other way are
