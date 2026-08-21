@@ -227,7 +227,9 @@ def find_untiered(h: dict, pool: dict) -> list[dict]:
                 cleaned = clean_phone(raw)
                 if not cleaned:
                     continue
-                findings.append({"uuid": ru, "address": street,
+                # street can be None on Incomplete records (no address) —
+                # a None key crashes the sorted() report at the end.
+                findings.append({"uuid": ru, "address": street or "(no address)",
                                  "owner": oname, "phone": cleaned,
                                  "raw": raw, "tags": tags})
     return findings
