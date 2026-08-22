@@ -582,6 +582,37 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             logger.warning("Tier backfill sweep failed (%s) — run by hand: "
                            "python trestle_api_backfill.py --apply", e)
 
+    # ── Text-touch backfill sweep (2026-08-22): the batch text-touch step
+    # above is nested inside `if rc == 0` of the tier step, which is itself
+    # gated on the skip trace having STARTED. Any night that chain broke, the
+    # batch got no drafts at all and nothing ever went back for them. Worse,
+    # DP pushes rename the owner AFTER the drafts are written, so records that
+    # DID get touches were left greeting "whoever handles <address>" once a
+    # real heir name landed on them — 51 records with no drafts and 21 with
+    # wrong-name drafts were sitting in '02. Ready to Call' when this shipped.
+    #
+    # Same shape as the tier sweep: read over the API (never the Phone
+    # Enrichment export, which is a subset view), scope = the RTC preset Oren
+    # actually calls from + the last 7 days of upload batches, and write with a
+    # per-record custom-field PATCH so there is no address-matched Add Data
+    # upsert that could duplicate his hand-entered rows. Free — no API spend.
+    if text_touches:
+        try:
+            from text_touch_api_backfill import run_sweep as touch_sweep
+            logger.info("Text-touch backfill sweep (API; RTC preset + last 7 days "
+                        "of upload batches)...")
+            src = await asyncio.to_thread(
+                touch_sweep, preset="02. Ready to Call", tags=None,
+                recent_days=7, apply=True, sender=touch_sender)
+            if src == 0:
+                logger.info("Text-touch backfill sweep complete.")
+            else:
+                logger.warning("Text-touch backfill sweep exited %d — run by hand: "
+                               "python text_touch_api_backfill.py --apply", src)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Text-touch backfill sweep failed (%s) — run by hand: "
+                           "python text_touch_api_backfill.py --apply", e)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
