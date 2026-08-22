@@ -127,6 +127,22 @@ SEARCHES = {
     "dunlap_aretha": {"FirstName": "Aretha", "LastName": "Dunlap", "Dob": "1978"},
     "overcash_timothy": {"FirstName": "Timothy", "MiddleName": "Dale",
                          "LastName": "Overcash", "Dob": "1956"},
+    # ── wave 5 (8/19 PM): the 3 Verify-No-PR-Address records Oren approved ──
+    "scearce_danny": {"FirstName": "Danny", "LastName": "Scearce",
+                      "Addresses": [{"AddressLine1": "220 Neel Rd",
+                                     "AddressLine2": "Salisbury, NC 28147"}]},
+    "scearce_cheryl": {"FirstName": "Cheryl", "LastName": "Scearce",
+                       "Addresses": [{"AddressLine2": "Salisbury, NC 28147"}]},
+    "keener_barbara": {"FirstName": "Barbara", "LastName": "Keener",
+                       "Addresses": [{"AddressLine1": "7050 Martin Mill Rd",
+                                      "AddressLine2": "Hickory, NC 28602"}]},
+    "courteau_robert": {"FirstName": "Robert", "LastName": "Courteau",
+                        "Addresses": [{"AddressLine1": "536 Kiser Rd",
+                                       "AddressLine2": "Bessemer City, NC 28016"}]},
+    "keener_son_jeffrey": {"FirstName": "Jeffrey", "LastName": "Lawson", "Dob": "1974"},
+    "courteau_son_everette": {"FirstName": "Everette", "LastName": "Courteau", "Dob": "1966"},
+    "courteau_son_robertc": {"FirstName": "Robert", "MiddleName": "Clinton",
+                             "LastName": "Courteau", "Dob": "1968"},
 }
 
 if __name__ == "__main__":

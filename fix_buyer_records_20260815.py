@@ -76,7 +76,10 @@ def fetch_batch_records(h: dict) -> list[dict]:
     """All records carrying the batch tag, via the preset query grammar."""
     r = requests.get(f"{API}/api/internal/tag/", headers={k: v for k, v in h.items()
                      if k != "x-http-method-override"},
-                     params={"search": BATCH_TAG, "limit": 10}, timeout=30)
+                     # NOTE: the tag API's `search` param does NOT filter — it
+                     # returns most-recent tags regardless. Large limit so the
+                     # batch tag survives newer uploads pushing it down the list.
+                     params={"search": BATCH_TAG, "limit": 500}, timeout=30)
     tag_id = None
     for t in (r.json().get("results") or r.json().get("data") or []):
         if (t.get("title") or "") == BATCH_TAG:
