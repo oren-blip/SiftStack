@@ -232,9 +232,23 @@ async def main_async(args) -> None:
                 if parties:
                     detail = CaseDetail(case_id=hex_id, parties=parties)
                     ex = detail.executor
-                    if ex and not (r.get("Personal Representative") or "").strip().startswith("Heirs of"):
+                    # Upgradable = the row has NO real PR yet, i.e. it still
+                    # carries the "Heirs of <decedent>" placeholder (or a
+                    # blank). A court-named PR is never overwritten.
+                    # NOTE: this used to read `not ...startswith("Heirs of")`,
+                    # which is backwards — it silently blocked every upgrade
+                    # once the column was renamed from "Executor Full Name"
+                    # to "Personal Representative" and started carrying the
+                    # literal placeholder text.
+                    pr_now = (r.get("Personal Representative") or "").strip()
+                    is_heirs_row = (
+                        r.get("First Name") == "Heirs"
+                        or pr_now.startswith("Heirs of")
+                        or not pr_now
+                    )
+                    if ex and is_heirs_row:
                         full = " ".join(filter(None, [ex.first_name, ex.last_name])).strip() or ex.full_name
-                        if full and r.get("First Name") == "Heirs":
+                        if full:
                             # Heirs-of fallback can be upgraded to real PR
                             r["Personal Representative"] = full
                             r["First Name"] = ex.first_name

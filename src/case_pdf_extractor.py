@@ -274,6 +274,15 @@ def list_case_documents(case_id_hex: str, *, timeout: int = 30) -> list[dict[str
     params = {"$top": "200", "$skip": "0"}
     r = requests.get(url, params=params, headers=_HEADERS, timeout=timeout)
     r.raise_for_status()
+    # The docket listing shares the per-IP document quota (measured 2026-08-22:
+    # ~5 listings, then HTTP 202 + empty body — same throttle the PDF fetch
+    # hits). 202 is NOT an error status, so raise_for_status() sails past it and
+    # r.json() dies with "Expecting value: line 1 column 1". Callers must be able
+    # to tell "throttled, retry later" from "this case has no docket" — that
+    # confusion silently killed court-phone extraction for 515 cases (Aug 5-21).
+    if r.status_code == 202 and not r.content:
+        raise DocRateLimited(
+            f"throttled by Odyssey (HTTP 202, empty body) listing case {case_id_hex[:16]}...")
     data = r.json()
     out: list[dict[str, Any]] = []
     for raw_ev in (data.get("Events") or []):

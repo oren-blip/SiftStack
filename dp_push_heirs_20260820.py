@@ -157,11 +157,19 @@ def main() -> int:
         if not dm["occupied_flag"]:
             parsed = parse_full_address(dm.get("address") or "")
             if parsed and all(parsed.values()):
-                ma = new_owner.get("mailing_address") or {}
+                # The mailing address lives on owner["address"] — the top-level
+                # property "address" is the situs. This block used to write
+                # owner["mailing_address"], a key the API does not read: the
+                # PATCH still returned HTTP 200 and the rename/phones in the
+                # same body landed, so every run looked clean while 0 of 16
+                # mailings actually saved (found 2026-08-22, see
+                # audit_dm_mailing_gap_20260822.py). Same key the proven
+                # dp_fix_mailings_20260817.py recipe uses.
+                ma = new_owner.get("address") or {}
                 ma.update({"street": parsed["street"], "city": parsed["city"],
                            "state": parsed["state"],
                            "postal_code": parsed["postal_code"]})
-                new_owner["mailing_address"] = ma
+                new_owner["address"] = ma
                 mail_note = f"mailing -> {parsed['street']}, {parsed['city']} " \
                             f"{parsed['state']} {parsed['postal_code']}"
 
@@ -213,9 +221,17 @@ def main() -> int:
             tags2 = [t.get("title") if isinstance(t, dict) else str(t)
                      for t in (d2.get("tags") or [])]
             renamed = (ow2.get("last_name") or "").lower() == dm["last"].lower()
+            # verify the mailing too — the silent no-op above hid for two days
+            # because this line only ever checked the name, phones and tag
+            want_mail = mail_note.startswith("mailing -> ")
+            mail_ok = True
+            if want_mail:
+                live_mail = ((ow2.get("address") or {}).get("street") or "").strip()
+                mail_ok = live_mail.lower() == parsed["street"].lower()
             out(f"  verify: renamed={renamed} phones_missing={missing} "
-                f"dp_complete={'DP Complete' in tags2}")
-            if renamed and not missing:
+                f"dp_complete={'DP Complete' in tags2}"
+                + (f" mailing_saved={mail_ok}" if want_mail else ""))
+            if renamed and not missing and mail_ok:
                 ok += 1
 
     out(f"\n{ok} pushed/verified, {skipped} skipped, of {len(entries)} resolved.")

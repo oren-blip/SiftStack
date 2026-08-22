@@ -56,6 +56,13 @@ _FIELD_MAP: list[tuple[str, str | None]] = [
     # Structure Type) — it ignores an uploaded APN and won't auto-map it. Let
     # DataSift's "Enrich Property Information" fill it. Every remaining column
     # now auto-maps by name, so no manual drag is ever needed.
+    # Case Number auto-maps to the "Case Number" custom field (id 13474,
+    # Estate Files group 94) — header matches its label exactly, so no
+    # wizard dragging. Added 2026-08-22: the estate case number was in
+    # every FTM row but never uploaded, so the CRM field sat empty on all
+    # ~328 previously-uploaded records (backfilled by
+    # backfill_case_number_20260822.py).
+    ("Case Number",             "Case No."),
     ("Personal Representative", "Personal Representative"),
     ("Probate Open Date",       "File Date"),
     ("decedent",                "Deceased Owner"),   # matches Oren's DataSift custom field "decedent"

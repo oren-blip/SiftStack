@@ -65,6 +65,112 @@ PROMOTE_SCORE = 6  # min score to PROMOTE a court number to primary (Phone 1)
                    # court-verified-phone at export.
 
 
+# -- Court-verified phone tag (per-phone, not per-record) --------------
+# Oren, 2026-08-22: "I want a label so I can recognize and prioritize the
+# court-found number." The record-level `court-verified-phone` tag flags the
+# LEAD; this tags the NUMBER itself, so it shows next to the phone in the
+# record's phone list alongside its Trestle dial tier. Uploaded through the
+# same route as the tier tags (Upload File -> Update Data -> Tagging phones by
+# phone numbers), which ADDS tags -- it does not replace the dial tier.
+COURT_PHONE_TAG = "Court Verified"
+COURT_TAGS_CSV = "output/court_verified_phones.csv"
+
+
+def _record_court_phone_tag(phone: str, case: str, name: str) -> None:
+    """Append a phone -> "Court Verified" row to the upload queue (dedup'd)."""
+    digits = "".join(ch for ch in phone if ch.isdigit())[-10:]
+    if len(digits) != 10:
+        return
+    seen = set()
+    rows = []
+    if os.path.exists(COURT_TAGS_CSV):
+        with open(COURT_TAGS_CSV, encoding="utf-8-sig", newline="") as fh:
+            for row in csv.DictReader(fh):
+                key = "".join(ch for ch in row.get("Phone Number", "") if ch.isdigit())[-10:]
+                if key and key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+    if digits in seen:
+        return
+    rows.append({"Phone Number": digits, "Phone Tag": COURT_PHONE_TAG,
+                 "Case No.": case, "Decedent": name})
+    os.makedirs(os.path.dirname(COURT_TAGS_CSV), exist_ok=True)
+    with open(COURT_TAGS_CSV, "w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Phone Number", "Phone Tag",
+                                           "Case No.", "Decedent"])
+        w.writeheader()
+        w.writerows(rows)
+    logger.info("  TAG   %s: %s queued for phone tag %r (%s)",
+                case, phone, COURT_PHONE_TAG, COURT_TAGS_CSV)
+
+
+# -- Docket-listing cache ---------------------------------------------
+# Listing a case's docket costs one token from the same ~5-per-IP Odyssey
+# bucket the PDF fetches draw on. Before this cache the nightly pass re-listed
+# EVERY row with a case number each night -- burning the whole bucket on the
+# same first few cases and never reaching the rest. Cache the cheap verdict
+# ("this case has no phone-bearing doc filed") so quota goes to new cases.
+# Positive verdicts are not cached -- those rows go straight on to the fetch.
+_DOCKET_CACHE_PATH = "output/.nc_docket_cache.json"
+_DOCKET_CACHE_TTL_DAYS = int(os.environ.get("NC_DOCKET_CACHE_TTL_DAYS", "10"))
+_DOCKET_CACHE_DISABLED = os.environ.get("NC_DOCKET_CACHE_DISABLE", "") == "1"
+_docket_cache: dict | None = None
+
+
+def _docket_cache_load() -> dict:
+    global _docket_cache
+    if _docket_cache is None:
+        try:
+            _docket_cache = json.load(open(_DOCKET_CACHE_PATH, encoding="utf-8"))
+        except (OSError, ValueError):
+            _docket_cache = {}
+    return _docket_cache
+
+
+def _docket_recently_empty(case: str) -> bool:
+    """True if we listed this docket recently and it had no phone-bearing doc."""
+    if _DOCKET_CACHE_DISABLED:
+        return False
+    from datetime import datetime, timedelta
+    hit = _docket_cache_load().get(case)
+    if not hit:
+        return False
+    try:
+        ts = datetime.fromisoformat(hit.get("ts", ""))
+    except ValueError:
+        return False
+    return ts >= datetime.now() - timedelta(days=_DOCKET_CACHE_TTL_DAYS)
+
+
+def _docket_mark_empty(case: str) -> None:
+    from datetime import datetime
+    _docket_cache_load()[case] = {"ts": datetime.now().isoformat(timespec="seconds")}
+    try:
+        os.makedirs(os.path.dirname(_DOCKET_CACHE_PATH), exist_ok=True)
+        json.dump(_docket_cache, open(_DOCKET_CACHE_PATH, "w", encoding="utf-8"))
+    except OSError:
+        pass
+
+
+def _list_with_backoff(hexid: str):
+    """list_case_documents, waiting out the Odyssey throttle like the fetch does.
+
+    Raises DocRateLimited when the bucket never refills inside the retry budget --
+    the caller stops the batch instead of grinding out guaranteed-202 skips.
+    """
+    from case_pdf_extractor import DOC_BACKOFF_SECONDS, DOC_MAX_RETRIES
+    for attempt in range(1, DOC_MAX_RETRIES + 2):
+        try:
+            return list_case_documents(hexid)
+        except DocRateLimited:
+            if attempt > DOC_MAX_RETRIES:
+                raise
+            logger.info("  Docket list throttled -- backing off %ds (attempt %d/%d)",
+                        DOC_BACKOFF_SECONDS, attempt, DOC_MAX_RETRIES + 1)
+            time.sleep(DOC_BACKOFF_SECONDS)
+    raise DocRateLimited("unreachable")  # pragma: no cover
+
+
 def _latest_enriched_csv() -> str:
     files = glob.glob("output/*_dm_enriched.csv")
     if not files:
@@ -136,14 +242,23 @@ def main() -> None:
         if not hexid:
             logger.info("  SKIP %s (%s): no cached case_id_hex — rescrape needed", case, name)
             continue
+        if "pdf-phone" in (r.get("Match Reason") or ""):
+            continue  # already court-verified -- spending quota again gains nothing
+        if _docket_recently_empty(case):
+            continue  # no phone-bearing doc last time we looked; save the quota
         try:
-            events = list_case_documents(hexid)
+            events = _list_with_backoff(hexid)
+        except DocRateLimited:
+            logger.info("  THROTTLED listing %s — stopping; rerun later.", case)
+            _write(csv_path, rows, fieldnames, args.dry_run, found, found_addr, benef_found)
+            return
         except Exception as e:
             logger.info("  SKIP %s: docket list failed: %s", case, e)
             continue
         picks = _pick_phone_docs(events)
         if not picks:
             logger.info("  MISS %s (%s): no cover-sheet/family-history/funeral doc filed", case, name)
+            _docket_mark_empty(case)
             continue
 
         best = None
@@ -248,6 +363,7 @@ def main() -> None:
                 if best["email"] and not (r.get("DM Email") or "").strip():
                     r["DM Email"] = best["email"]
                 r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone").strip(" |")
+                _record_court_phone_tag(best["phone"], case, name)
         elif (best and best["score"] >= PROMOTE_SCORE
               and best["phone_digits"] not in (existing_digits, dm_existing_digits)):
             # Phone 1 already has a number — PROMOTE the court number to primary
@@ -268,9 +384,25 @@ def main() -> None:
                 if best["email"] and not (r.get("DM Email") or "").strip():
                     r["DM Email"] = best["email"]
                 r["Match Reason"] = ((r.get("Match Reason") or "") + " | pdf-phone").strip(" |")
+                _record_court_phone_tag(best["phone"], case, name)
         elif best:
-            logger.info("  KEEP  %s (%s): existing %s stands (court score %d, dup or low)",
-                        case, name, existing, best["score"])
+            # The court doc confirms a number we already hold (or scores too low
+            # to promote). A MATCH is the strongest signal in the whole pipeline
+            # -- a skip-trace number independently corroborated by the court
+            # file -- so it still earns the phone tag, even though nothing about
+            # the row changes. Oren, 2026-08-22: Courteau 26E001077-350 had
+            # 804-647-2756 from Enformion and the same number handwritten on the
+            # Family History Affidavit; that number should be visibly the one to
+            # dial first.
+            confirms = best["phone_digits"] in (existing_digits, dm_existing_digits)
+            logger.info("  %s  %s (%s): existing %s stands (court score %d, %s)",
+                        "CONFIRM" if confirms else "KEEP   ", case, name, existing,
+                        best["score"], "court doc matches" if confirms else "low score")
+            if confirms:
+                _record_court_phone_tag(best["phone"], case, name)
+                if not args.dry_run and "pdf-phone" not in (r.get("Match Reason") or ""):
+                    r["Match Reason"] = ((r.get("Match Reason") or "")
+                                         + " | pdf-phone").strip(" |")
         else:
             logger.info("  MISS  %s (%s): docs filed but no PR phone in them", case, name)
 

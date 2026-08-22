@@ -569,7 +569,8 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
         try:
             from trestle_api_backfill import run_sweep
             logger.info("Tier backfill sweep (API; RTC preset + last 7 days "
-                        "of upload batches)...")
+                        "of upload batches; also fills in Mobile/Landline/"
+                        "VOIP, which the CSV upload cannot carry)...")
             brc = await asyncio.to_thread(
                 run_sweep, preset="02. Ready to Call", tags=None,
                 recent_days=7, apply=True, max_cost=1.0, headless=headless)

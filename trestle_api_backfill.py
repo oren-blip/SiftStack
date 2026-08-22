@@ -19,12 +19,26 @@ then DataSift's OWN skip trace adds more phones minutes-to-hours later. The
 nightly tier step + sweep both run inside that window, so the late arrivals
 were never scored.
 
+LINE TYPES (2026-08-22)
+-----------------------
+The same sweep also fills in each phone's Mobile / Landline / VOIP. DataSift's
+CSV upload has only plain "Phone N" columns — no line-type column — so every
+phone we upload lands as UNKNOWN, while phones DataSift skip-traces itself and
+phones our DP scripts POST through the API (which send "type") get a real one.
+Measured that day: 164 of the 300 phones in '02. Ready to Call' were UNKNOWN,
+and every single one had arrived by CSV upload.
+
+Trestle returns `line_type` on the very call we already pay for the activity
+score, so this pass is FREE — it reads the score cache and never calls Trestle
+on its own. Phones with no cached line type are left alone, not guessed.
+
 Default run is a FREE AUDIT (no Trestle spend, no writes).
 
     python trestle_api_backfill.py                    # audit RTC + last 7 days
-    python trestle_api_backfill.py --apply            # score + tag
+    python trestle_api_backfill.py --apply            # score + tag + set types
     python trestle_api_backfill.py --preset "02. Ready to Call" --apply
     python trestle_api_backfill.py --tag "NC Upload 2026-08-20" --apply
+    python trestle_api_backfill.py --apply --no-types # tiers only
 """
 from __future__ import annotations
 
@@ -199,8 +213,13 @@ def collect_scope(h: dict, preset_name: str | None, tags: list[str],
     return pool
 
 
-def find_untiered(h: dict, pool: dict) -> list[dict]:
-    """Read each record's FULL phone list and return the untiered ones."""
+def find_untiered(h: dict, pool: dict,
+                  props_out: dict | None = None) -> list[dict]:
+    """Read each record's FULL phone list and return the untiered ones.
+
+    `props_out`, when given, collects the full record JSON per UUID so the
+    line-type pass can reuse these GETs instead of re-reading every record.
+    """
     findings = []
     for i, (ru, _) in enumerate(pool.items(), 1):
         if i % 25 == 0:
@@ -211,6 +230,8 @@ def find_untiered(h: dict, pool: dict) -> list[dict]:
             logger.warning("  record %s -> HTTP %s", ru[:8], fr.status_code)
             continue
         prop = fr.json().get("data") or fr.json()
+        if props_out is not None:
+            props_out[ru] = prop
         addr = prop.get("address") or {}
         street = addr.get("street") if isinstance(addr, dict) else str(addr)
         owners = []
@@ -258,22 +279,119 @@ async def _upload_tags(headless: bool) -> bool:
             await b.close()
 
 
-def run_sweep(*, preset: str | None = "02. Ready to Call",
-              tags: list[str] | None = None, recent_days: int = 7,
-              apply: bool = False, max_cost: float = 5.0,
-              headless: bool = False) -> int:
-    """Audit (and optionally fix) untiered phones. Returns a process exit code.
+# ── Line type (Mobile / Landline / VOIP) ────────────────────────────────────
+# DataSift's CSV upload has only plain "Phone N" columns — no line-type column —
+# so every phone we upload lands as UNKNOWN, while phones DataSift skip-traces
+# itself and phones our DP scripts POST through the API (which send "type")
+# carry a real one. Measured 2026-08-22: 164 of 300 phones in "02. Ready to
+# Call" were UNKNOWN and every single one of them came in by CSV upload.
+#
+# Trestle hands us `line_type` on the very same call we already pay for the
+# activity score, so filling this in is free — it reads from the score cache
+# and never makes a Trestle call of its own.
+DS_TYPES = ("MOBILE", "LANDLINE", "VOIP")
 
-    Importable so the nightly upload can call it directly.
-    """
-    h = headers(get_token())
-    pool = collect_scope(h, preset or None, list(tags or []), recent_days)
-    logger.info("Scope: %d unique record(s)", len(pool))
-    if not pool:
-        logger.info("Nothing in scope.")
-        return 0
 
-    findings = find_untiered(h, pool)
+def ds_line_type(trestle_line_type: str | None) -> str | None:
+    """Trestle line type -> DataSift's phone type enum (verified live: a PATCH
+    of "VOIP" round-trips). Anything else (TollFree, Premium, blank) -> None,
+    which leaves the phone alone rather than guessing."""
+    lt = str(trestle_line_type or "").lower().replace(" ", "").replace("_", "")
+    if "voip" in lt:                          # FixedVOIP / NonFixedVOIP
+        return "VOIP"
+    if "mobile" in lt or "wireless" in lt:
+        return "MOBILE"
+    if "landline" in lt or "fixedline" in lt:
+        return "LANDLINE"
+    return None
+
+
+def fix_line_types(h: dict, props: dict, cache: dict, *,
+                   apply: bool = False) -> dict:
+    """Set Mobile/Landline/VOIP on phones sitting at UNKNOWN, from the Trestle
+    score cache. Free (cache only). Returns a summary dict."""
+    summary = {"records": 0, "phones": 0, "by_type": {}, "unresolved": 0,
+               "failed": [], "detail": []}
+    for ru, prop in props.items():
+        addr = prop.get("address") or {}
+        street = (addr.get("street") if isinstance(addr, dict) else str(addr))             or "(no address)"
+        body, changes = {}, 0
+        groups = [("owner", [prop["owner"]] if prop.get("owner") else []),
+                  ("secondary_owners", prop.get("secondary_owners") or [])]
+        for key, owners in groups:
+            touched = False
+            for ow in owners:
+                for ph in (ow.get("phones") or []):
+                    cur = str(ph.get("type") or "").upper()
+                    if cur in DS_TYPES:
+                        continue
+                    cleaned = clean_phone(ph.get("number") or "")
+                    want = ds_line_type(
+                        (cache.get(cleaned) or {}).get("line_type"))
+                    if not want:
+                        summary["unresolved"] += 1
+                        continue
+                    ph["type"] = want
+                    touched = True
+                    changes += 1
+                    summary["by_type"][want] = summary["by_type"].get(want, 0) + 1
+                    summary["detail"].append((street, cleaned, want))
+            if touched:
+                body[key] = owners[0] if key == "owner" else owners
+        if not changes:
+            continue
+        summary["records"] += 1
+        summary["phones"] += changes
+        if not apply:
+            continue
+        r = requests.patch(f"{API}/api/internal/property/{ru}/", headers=h,
+                           data=json.dumps(body), timeout=30)
+        if r.status_code not in (200, 202):
+            logger.warning("  %s: type PATCH -> %s %s", street,
+                           r.status_code, r.text[:120])
+            summary["failed"].append((street, f"HTTP {r.status_code}"))
+            continue
+        # Verify by re-GET — a 200 that didn't stick is the known failure mode
+        # (see project_pr_upgrade_silent_save_failure).
+        vr = requests.get(f"{API}/api/internal/property/{ru}/", headers=h,
+                          timeout=30)
+        if vr.status_code != 200:
+            summary["failed"].append((street, "verify GET failed"))
+            continue
+        live = vr.json().get("data") or vr.json()
+        got = {}
+        for ow in ([live["owner"]] if live.get("owner") else [])                 + (live.get("secondary_owners") or []):
+            for ph in (ow.get("phones") or []):
+                got[clean_phone(ph.get("number") or "")] =                     str(ph.get("type") or "").upper()
+        stale = [(n, t) for (s, n, t) in summary["detail"]
+                 if s == street and got.get(n) != t]
+        if stale:
+            summary["failed"].append((street, f"{len(stale)} phone(s) reverted"))
+            logger.warning("  %s: %d phone type(s) did not stick: %s",
+                           street, len(stale), stale[:3])
+    return summary
+
+
+def report_line_types(summary: dict, *, apply: bool) -> None:
+    verb = "Set" if apply else "Would set"
+    if not summary["phones"]:
+        logger.info("LINE TYPES: every phone in scope already has one.")
+        return
+    logger.info("LINE TYPES: %s %d phone(s) on %d record(s) — %s",
+                verb, summary["phones"], summary["records"],
+                ", ".join(f"{k} {v}" for k, v in
+                          sorted(summary["by_type"].items())))
+    if summary["unresolved"]:
+        logger.info("   %d UNKNOWN phone(s) left alone (no line type in the "
+                    "Trestle cache)", summary["unresolved"])
+    for street, why in summary["failed"]:
+        logger.warning("   FAILED %-32s %s", street, why)
+
+
+def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
+                max_cost: float, headless: bool) -> int:
+    """Audit (and optionally fix) untiered phones. Returns a process exit code."""
+    findings = find_untiered(h, pool, props)
     cache = load_cache()
     unique = list(dict.fromkeys(f["phone"] for f in findings))
     cached = [p for p in unique if p in cache]
@@ -359,6 +477,38 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
     return 0
 
 
+def run_sweep(*, preset: str | None = "02. Ready to Call",
+              tags: list[str] | None = None, recent_days: int = 7,
+              apply: bool = False, max_cost: float = 5.0,
+              headless: bool = False, fix_types: bool = True) -> int:
+    """Tier untiered phones, then fill in any missing Mobile/Landline/VOIP.
+
+    The line-type pass is free (Trestle score cache only) and runs whether or
+    not anything needed tiering — CSV-uploaded phones get a tier tag from this
+    sweep but land with no line type at all, so the two gaps are independent.
+
+    Importable so the nightly upload can call it directly.
+    """
+    h = headers(get_token())
+    pool = collect_scope(h, preset or None, list(tags or []), recent_days)
+    logger.info("Scope: %d unique record(s)", len(pool))
+    if not pool:
+        logger.info("Nothing in scope.")
+        return 0
+
+    props: dict = {}
+    rc = _tier_sweep(h=h, pool=pool, props=props, apply=apply,
+                     max_cost=max_cost, headless=headless)
+    if fix_types and props:
+        # reload the cache: the tier pass above may have just scored phones,
+        # and their line types are in those fresh results.
+        summary = fix_line_types(h, props, load_cache(), apply=apply)
+        report_line_types(summary, apply=apply)
+        if summary["failed"] and rc == 0:
+            rc = 1
+    return rc
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--preset", default="02. Ready to Call",
@@ -374,10 +524,13 @@ def main() -> int:
     ap.add_argument("--max-cost", type=float, default=5.0,
                     help="abort --apply if fresh Trestle spend exceeds this (default 5.00)")
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--no-types", action="store_true",
+                    help="skip the free line-type (Mobile/Landline/VOIP) pass")
     args = ap.parse_args()
     return run_sweep(preset=args.preset, tags=args.tag,
                      recent_days=args.recent_days, apply=args.apply,
-                     max_cost=args.max_cost, headless=args.headless)
+                     max_cost=args.max_cost, headless=args.headless,
+                     fix_types=not args.no_types)
 
 
 if __name__ == "__main__":
