@@ -21,18 +21,19 @@ the NC probate pipeline comes from. When cohorts disagree, the August run is the
 | Day | Date | Topic | Speakers named? |
 |-----|------|-------|---|
 | [1](notes/day-1-2026-08-17-key-teachings.md) | 2026-08-17 (Mon) | **Market & data strategy** — Doors Per Deal v2 web tool (market-share stacking, per-county FTM Excel roadmap), first cohort with the DataSift API live, obituary timing split-tests, one-command install of the 74-agent/22-skill library | ✅ real names |
-| 2–5 | 2026-08-18 → 21 | *not yet recorded/imported* | — |
+| [2](notes/day-2-2026-08-18-key-teachings.md) | 2026-08-18 (Tue) | **Niche sequential marketing** — tags/presets conveyor, sold suppression ("most important workflow"), Trestle 2,000-number experiment, Number Verifier spam playbook, autonomous two-way SMS agent, not-interested campaigns (20–30% of deals), team ladder. 4h17m, longest session; Tyler co-teaches | ✅ real names |
+| 3–5 | 2026-08-19 → 21 | *not yet recorded/imported* | — |
 
 Each August notes file opens with a **"What changed since the July cohort"** section — read that
 before quoting July numbers. Headline Day 1 deltas: DataSift API shipped (Deal Room beta), Ty
 resumed FTM probate (July's "paused entirely" is stale), Claude model advice now Opus 5 default,
 AI plan threshold lowered to $3–5K/mo spend.
 
-**Written guides:** the August Challenge Hub links 13 written modules per day. Local copies live in
-[guides/day-1/](guides/day-1/) (start at its `README.md` digest — it says which guide holds which
-table so you don't have to open all 13). Fetch future days with
-`python scripts/fetch_challenge_guides.py <day>` the week they air — **hub pages are sunset each
-cohort**, so the local copy is the durable one.
+**Written guides:** the August Challenge Hub links written modules per day (13 on Day 1, 6 on
+Day 2). Local copies live in [guides/day-1/](guides/day-1/) and [guides/day-2/](guides/day-2/)
+(start at each folder's `README.md` digest — it says which guide holds which table so you don't
+have to open them all). Fetch future days with `python scripts/fetch_challenge_guides.py <day>`
+the week they air — **hub pages are sunset each cohort**, so the local copy is the durable one.
 
 The remaining August days import with
 `python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — the 8/18–8/21

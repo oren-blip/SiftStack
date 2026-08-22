@@ -19,6 +19,22 @@ Ty answered verbally.
 | https://www.macwhisper.com/ | MacWhisper — voice dictation (Mac alternative to WhisperFlow) |
 | https://www.facebook.com/groups/1831529317509932 | Second Facebook group posted at close of Day 1 |
 
+## August 2026 cohort — Day 2 (2026-08-18)
+
+Links Ty posted in chat:
+
+| Link | What it is |
+|---|---|
+| https://intercom.help/reisift/en/articles/15282418-how-to-update-and-manage-your-recently-sold-records | **Recently-sold records article** — the managing-sold-properties workflow (our monthly sold sweep implements this) |
+| https://intercom.help/reisift/en/?q=tags | DataSift help center search for tag articles |
+| https://www.forewarn.com/ | **Forewarn** — identity/phone lookup app; students report best direct-to-market accuracy; free through some MLS boards |
+| https://numberverifier.com/ | **NumberVerifier** — spam-label checking for outbound caller IDs ($150/mo minimum per Phil). Carrier registration trio named in chat: **First Orion, Hiya, TNS** |
+| https://github.com/rtk-ai/rtk | RTK again — Day 2 prompt: implement as global CLAUDE.md settings |
+| http://scrapfly.io/ + https://2captcha.com/ + https://apify.com/ | Scraping stack (moved up from Day 3 in July; Apify newly added) |
+| https://learn.datasift.ai/agent-org-chart | Agent org chart again (posted at open + close) |
+
+Student/community links: https://tactiq.io/r/transcribing (Tactiq transcription), https://addleverage.com/ + https://realva.services/ + https://www.ninjaassistants.com/#hero + https://vainusa.com/apply/ (VA hiring services), https://code.visualstudio.com/ (VS Code for newcomers). Notable chat intel: "scrapling gets past cloudflare" (John Sterling); Ty hinted he's building his own caller-reputation site (per Ryan Hawker's read); Quo dialer mentioned as a smrtphone alternative.
+
 ## Challenge material
 
 | Link | What it is |

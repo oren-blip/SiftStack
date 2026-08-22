@@ -1,0 +1,368 @@
+00:03:51	John Sudlow:	Good afternoon, everyone!
+00:04:03	iPhone 7 Plus:	Good afternoon 😃
+00:04:08	Mak:	good afternoon
+00:04:21	kashifel-amin:	Good afternoon!
+00:04:22	Clark:	Hi, I'm transcribing this call with my Tactiq AI Extension. https://tactiq.io/r/transcribing
+00:05:06	Antorious Kelly:	Congrats bro!@Phil Loesch
+00:05:12	Mak:	did good installed all the skills and pull 5 lists so far picked my top 5 from doors per deal.
+00:08:30	Omar:	I've created 2 scrapers one which pulls preforeclosures and divorce records.And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift
+00:11:06	Assaf Barak:	Replying to "I've created 2 scrapers one which pulls preforeclosures and divorce records.
+And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift"
+
+I think if you use Siftstack in VS and just ask Claude to do what you want to get done, it will work through it with you.
+00:11:38	Ty Garrett:	https://github.com/rtk-ai/rtk
+00:11:40	Omar:	Replying to "I've created 2 scrapers one which pulls preforeclosures and divorce records.And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift"
+
+Okay thanks
+00:13:23	Mary Derman:	can you please share the get sh*t done link too and your prompt in the chat?
+00:13:33	Jalen:	Reacted to "I've created 2 scrapers one which pulls preforeclosures and divorce records.
+And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift" with 🔥
+00:13:36	Ty Garrett:	I want you to take both of these public GitHub repos and implement them both. I want you to set them up as global CLAUDE.md settings that you use in every session going forward. link for github
+00:14:13	Jalen:	Replying to "I've created 2 scrapers one which pulls preforeclosures and divorce records.
+And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift"
+
+What market u in
+00:14:15	Mak:	Does anyone know if you can you apply that to just a project folder instead of globally?
+00:14:27	Omar:	Replying to "I've created 2 scrapers one which pulls preforeclosures and divorce records.And a more complex one that pull probate records and I am trying to use cowork to make our probate process better and targets the best probate records. I am to trying to use claude caude to add the website where we get deeds and taxes records to connect to the probate scraber to only push records which have properties attached to it. I attend this challenge to learn how to connect all of this to reisift"
+
+MD
+00:14:39	kev hernandez:	I believe in everyone <3
+00:14:44	John Sudlow:	Reacted to "I think if you use Siftstack in VS and just ask Claude to do what you want to get done, it will work through it with you." with 👍
+00:14:57	Phil Loesch:	Replying to "can you please share the get sh*t done link too and your prompt in the chat?"
+
+it is already in your siftstack
+00:15:52	Jalen:	Reacted to "MD" with 🔥
+00:18:09	Phil Loesch:	Replying to "Does anyone know if you can you apply that to just a project folder instead of globally?"
+
+yes you can
+00:18:26	Mary Derman:	Reacted to "it is already in y..." with 👍
+00:18:41	Ken Carter:	Replying to "https://github.com/r..."
+
+Is there a second second link?
+00:18:49	Mary Derman:	Replying to "can you please sha..."
+
+Should I deploy the rtk to lessen the token amounts used?
+00:19:10	Mak:	Replying to "Does anyone know i..."
+
+awesome thanks.
+00:19:30	Jose Castillo:	Reacted to "Does anyone know if you can you apply that to just a project folder instead of globally?" with 👍
+00:19:36	Jose Castillo:	Reacted to "Should I deploy the rtk to lessen the token amounts used?" with 👍
+00:19:48	Jasper:	Reacted to "Good afternoon 😃" with 👍
+00:20:46	Carson Rees:	My doors per deal list really focuses on final judgement. In FL- are foreclosures/auctions and final judgement the same thing in sift map ? Or should I pull these directly from county?
+00:24:21	kev hernandez:	Replying to "My doors per deal li..."
+
+Whatsup big baller
+00:25:10	Eeshan Shukla:	Who all are using VA to pull FTM lists?
+00:26:46	Omar:	Replying to "Who all are using VA to pull FTM lists?"
+
+I am a data manager VA who do this, but if it's a one man show you can do it on your own till you ready to upscale
+00:27:37	Eeshan Shukla:	Replying to "Who all are using VA to pull FTM lists?"
+
+Got it. I am looking for reliable data manager VA anybody can recommend me?
+00:28:57	Jasper:	Replying to "Who all are using VA to pull FTM lists?"
+
+we are best in town till now to provide the VA services in  US almost every state
+00:29:02	John Scipione:	Replying to "Who all are using VA..."
+
+https://addleverage.com/
+00:29:09	John Scipione:	Replying to "Who all are using VA..."
+
+Great VAs
+00:29:16	kashifel-amin:	Who’s new to this and is confused lol. I kinda understand some of this stuff but I kinda don’t🤔
+00:29:50	Jasper:	Replying to "Who all are using VA to pull FTM lists?"
+
+@Eeshan Shukla https://realva.services/
+00:31:11	Dave Marsh -Tampa:	I don't know if Claude improved or the Prompt for Market Research but the Report was incredible. It was great 6mo ago but even better now
+00:31:59	kev hernandez:	Replying to "Who’s new to this an..."
+
+It isn’t very natural for anyone to understand off the bat which is why its important to ask specific questions to the group to see what direction it can help you.
+00:32:01	Gordon Thornton:	Replying to "I don't know if Clau..."
+
+Whats up brother….how is FLA treating you and the family?
+00:32:04	Dan Murphy:	Replying to "Who’s new to this..."
+
+kashifel, i am sooooo confused!   Your not alone.
+00:32:07	Gordon Thornton:	Reacted to "I don't know if Claude improved or the Prompt for Market Research but the Report was incredible. It was great 6mo ago but even better now" with 👍
+00:32:11	Carson Rees:	Replying to "My doors per deal li..."
+
+@kev hernandez hey Kevin how’s it going man!
+00:32:12	John Scipione:	Reacted to "Who’s new to this and is confused lol. I kinda understand some of this stuff but I kinda don’t🤔" with 👍🏼
+00:32:25	John Scipione:	Reacted to "kashifel, i am sooooo confused!   Your not alone." with 👍🏼
+00:32:56	Shannon Rhea Agarrado:	Reacted to "kashifel, i am sooooo confused!   Your not alone." with 👍🏼
+00:33:04	kashifel-amin:	Reacted to "It isn’t very natura..." with ❤️
+00:33:09	kashifel-amin:	Reacted to "kashifel, i am soooo..." with ❤️
+00:33:33	Eeshan Shukla:	Replying to "Who all are using VA to pull FTM lists?"
+
+Not looking for any agencies though. Accordingly recommend some please
+00:33:46	Carson Rees:	Reacted to "Whatsup big baller" with 👍
+00:33:52	Dan Murphy:	Replying to "Who’s new to this..."
+
+I think you need to actually use the platform then ask the questions
+00:34:27	Jasper:	Replying to "Who all are using VA to pull FTM lists?"
+
+depending on a  agency who can take care of each thing is more easy to depend on a one person
+00:34:28	Dan Murphy:	Replying to "Who’s new to this..."
+
+I am a real estate agent and I am looking to generate leads for listings.
+00:34:47	Omar:	Replying to "Who all are using VA to pull FTM lists?"
+
+@Eeshan Shukla how can I reach you?
+00:35:04	Carson Rees:	Reacted to "It isn’t very natural for anyone to understand off the bat which is why its important to ask specific questions to the group to see what direction it can help you." with ❤️
+00:36:00	kashifel-amin:	Replying to "Who’s new to this an..."
+
+@Dan Murphy yes I definitely will use the platform and get more familiar as time goes on. A lot of things have been going over my head.
+00:36:10	kashifel-amin:	Reacted to "I think you need to ..." with ❤️
+00:36:31	Jasper:	Replying to "Who all are using VA to pull FTM lists?"
+
+you can visit the link and book a call and gave the reference that i am here form refence to jasper hanks
+00:36:33	Dan Murphy:	Replying to "Who’s new to this..."
+
+me too!....
+00:37:24	Craig K:	Replying to "Who’s new to this and is confused lol. I kinda understand some of this stuff but I kinda don’t🤔"
+
+hey duyn how are u? u are from subto i remember you, hope all is well
+00:37:37	Michael Genovese:	Replying to "Who all are using VA to pull FTM lists?"
+
+where can i schedule a call? im on the highest plan
+00:38:04	Phil Loesch:	@duyn at 5k monthly you should be able 2 add a second caller after you get the first one set up correctly
+00:38:16	Ty Garrett:	Replying to "@duyn at 5k monthly you should be able 2 add a second caller after you get the first one set up correctly"
+
+Agreed
+00:38:23	Patrick:	i think i need a little one on one assistance. im on highest plan and feel like im not even touching the surface
+00:39:22	duyn:	Replying to "@duyn at 5k monthly you should be able 2 add a second caller after you get the first one set up correctly"
+
+Thanks Phil !!!
+00:40:09	Carson Rees:	Reacted to "@duyn at 5k monthly you should be able 2 add a second caller after you get the first one set up correctly" with 👍
+00:41:18	Jasper:	@duyn i can help you in this
+00:41:27	duyn:	Reacted to "@duyn i can help you in this" with 👍
+00:41:39	Phil Loesch:	@duyn I can send you a referral as well
+00:42:04	duyn:	Replying to "@duyn I can send you a referral as well"
+
+thanks guys. I definitely will get on the AI plan, just to get everything speed up and get to work
+00:42:09	Ty Garrett:	http://scrapfly.io/
+00:42:19	Jasper:	you can book a call on https://realva.services/  and gave them a reference of jasper hanks
+00:42:21	Ty Garrett:	https://2captcha.com/
+00:42:45	Gordon Thornton:	We use AI for everything, Voice AI, texting and email to automate the 8-15 touches it takes to book appointments right in our calendar…one VA as Lead Manager
+00:43:03	duyn:	Reacted to "you can book a call on https://realva.services/  and gave them a reference of jasper hanks" with 👍
+00:43:13	Ty Garrett:	https://apify.com/
+00:43:14	Jasper:	Replying to "@duyn I can send you a referral as well"
+
+you can book a call on https://realva.services/  and gave them a reference of jasper hanks
+00:43:31	John Sterling:	scrapling gets past cloudflare
+00:43:51	Jalen:	Reacted to "scrapling gets past cloudflare" with 👀
+00:43:53	Jalen:	Reacted to "scrapling gets past cloudflare" with 🔥
+00:44:51	Kyle:	Reacted to "Who’s new to this..." with 👍🏼
+00:44:54	Kyle:	Reacted to "kashifel, i am soo..." with 👍🏼
+00:46:04	Jasper:	Reacted to "scrapling gets past cloudflare" with 👍
+00:47:52	Dave Marsh -Tampa:	Reacted to "https://2captcha.com/" with 🔥
+00:47:56	Dave Marsh -Tampa:	Reacted to "We use AI for everything, Voice AI, texting and email to automate the 8-15 touches it takes to book appointments right in our calendar…one VA as Lead Manager" with 🔥
+00:49:11	Carson Rees:	Replying to "My doors per deal li..."
+
+@Ty Garrett @Mason Brunner
+00:52:34	kev hernandez:	Replying to "My doors per deal li..."
+
+Final judgment is once there is a total amount owed and an auction date issued so they can be convoluted
+00:53:12	kev hernandez:	Replying to "My doors per deal li..."
+
+Auction and final judgment are part of the foreclosure process.
+00:53:19	Dave Marsh -Tampa:	Replying to "My doors per deal list really focuses on final judgement. In FL- are foreclosures/auctions and final judgement the same thing in sift map ? Or should I pull these directly from county?"
+
+correct. Final Judgement has been made in a foreclosure case
+00:54:43	Alicia Aubart 651-900-0551:	Reacted to "Who’s new to this an..." with 👍🏼
+00:54:44	kev hernandez:	Replying to "My doors per deal li..."
+
+Final Judgment is also known as Summary Judgment. Although Summary Judgment is the type of hearing that is held where a Final Judgment is issued.
+00:55:09	Shannon Rhea Agarrado:	Is it good to run the numbers through trestle first then Blacklistalliance? Or is Trestle enough for that? Sorry I missed that part
+00:56:14	Carson Rees:	Okay trying to see if pulling in sift map is fine or direct from court records in my county
+00:57:24	Alicia Aubart 651-900-0551:	Reacted to "@Eeshan Shukla https..." with 👍🏼
+01:00:25	Mak:	What was the guide called?
+01:00:53	kev hernandez:	Replying to "My doors per deal li..."
+
+You can’t do it in county unless you go through each case individually so sift is the best route imo
+01:01:05	Faiz Abrar:	Replying to "What was the guide called?"
+
+niche sequential marketing
+01:05:14	Mak:	Replying to "What was the guide..."
+
+thanks
+01:06:17	Carson Rees:	Replying to "My doors per deal li..."
+
+So pull for my county, foreclosure presets, and foreclosure filter by notice type: final judgement?
+01:07:40	kev hernandez:	Replying to "My doors per deal li..."
+
+yes
+01:07:53	Carson Rees:	Replying to "My doors per deal li..."
+
+Ok just making sure that’s correct way to pull
+01:10:41	Jasper:	Reacted to "niche sequential marketing" with 👍
+01:13:17	Mak:	Oh wow that pretty amazing
+01:13:53	kev hernandez:	It’s a must!
+01:15:21	Ty Garrett:	https://intercom.help/reisift/en/articles/15282418-how-to-update-and-manage-your-recently-sold-records
+01:17:32	Mak:	What about for non disclosure states?
+01:17:42	Mak:	wouldyou still put in last sale price at 1k?
+01:20:30	Troy:	cant you lose buyers that way?
+01:21:38	Ken Carter:	When we down load the sift-sequences.skill as sequential-presets.skill 
+
+Do we just have claude run those create them in our account?
+01:21:56	John Scipione:	I may have misunderstood the format, but I was under the impression these webinars would be focused on learning how to use the software. Would it make sense to walk everyone through the platform first and then open it up for questions at the end?
+01:23:00	Joy Cariño:	Replying to "Is there a way to au..." 
+
+ Yup. Update phone status in bulk
+01:23:58	kev hernandez:	Is Obituary data only available on the Expert Plan?
+01:24:39	Basem Sanad:	its available through siftmap pro add on or expert plan - cheaper version
+01:27:28	Basem Sanad:	Replying to "Is there a way to automatically mark those disconnected numbers as dead in bulk"
+
+i think its gotta be exported - and then tag what ever you want and then reupload and retag those phone statuses
+01:27:54	Basem Sanad:	Replying to "Is there a way to automatically mark those disconnected numbers as dead in bulk"
+
+through the csv
+01:30:20	Mak:	I dont know I think filtering out the solds is pretty goated
+01:30:28	William Smith:	im going to rewatch day 1 and 2 tonight
+01:30:37	Jasper:	Reacted to "im going to rewatch day 1 and 2 tonight" with 👍
+01:30:52	Mak:	Reacted to "im going to rewatc..." with 👍
+01:31:16	Ty Garrett:	https://intercom.help/reisift/en/?q=tags
+01:35:38	Joy Cariño:	Replying to "Is there a way to au..." 
+
+ What are u tryna do? Update phone statuses in sift or get the list of dead numbers from sift?
+01:44:03	Arthur Botting:	Where can we get the county list playbook?
+01:47:41	Omar:	That's the same team structure ops we use and we just closed our third contract this month. But we outsource bulk list to a call center to cold call these records
+01:53:14	kev hernandez:	This coulda been a 10 day training
+01:53:16	kev hernandez:	lol
+01:55:28	Alicia Aubart 651-900-0551:	Reacted to "This coulda been a 1..." with 😂
+01:55:39	Dan Murphy:	Reacted to "This coulda been a..." with 😂
+01:58:16	duyn:	crazy tricks !!
+01:59:06	Michael Feldman:	I have a question
+01:59:13	Juancarlos Carreno:	we don't cold call however that's huge
+01:59:39	Nara:	Reacted to "This coulda been a..." with 💯
+02:00:28	Assaf Barak:	@Ty Garrett next level is if you guys could mark the phone numbers' dial priority (like a different color to the tag for each priority level) so it's quick and easy to hit the Dial 1st and 2nd ones
+02:06:11	Makeba:	Thanks
+02:08:42	Juancarlos Carreno:	I think you can download claude to ur computer
+02:08:53	Juancarlos Carreno:	and give it permission
+02:08:55	Jalen:	Reacted to "This coulda been a 10 day training" with 😂
+02:08:56	Jalen:	Reacted to "This coulda been a 10 day training" with 💯
+02:15:39	Nelson Martinez:	Just have Claude in VS Code use Api's from all providers and he'ss take care of it
+02:22:18	Jasper:	Replying to "we don't cold call however that's huge"
+
+you should do that
+02:24:47	Zach Hyre:	https://learn.datasift.ai/agent-org-chart
+02:24:49	Maryam Shahid:	https://learn.datasift.ai/agent-org-chart
+02:24:50	Mak:	https://learn.datasift.ai/agent-org-chart
+02:24:51	Phil Loesch:	https://learn.datasift.ai/agent-org-chart
+02:24:58	Basem Sanad:	curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -
+02:29:51	Basem Sanad:	you can schedule it
+02:30:30	Basem Sanad:	I actually set up a script on google sheets and i can run it with a click of a button on whatever list.
+02:30:35	Faiz Abrar:	even with siftstack, its taken me about 1 month +
+02:31:05	Faiz Abrar:	its genuinely a lot of work
+02:31:11	Ryan Hawker:	I put my whole siftstack on a Mac mini I had and have everything running off a separate lil server so that my computer being off wont slow me down at all. This also allows my Data manager to log into my siftstack from a remote location without giving her access to my main computer or having her build a separate siftstack
+02:31:16	Mak:	brillant
+02:31:59	Basem Sanad:	data sift skip traced is the blue icon
+02:32:23	Faiz Abrar:	Replying to "I put my whole siftstack on a Mac mini I had and have everything running off a separate lil server so that my computer being off wont slow me down at all. This also allows my Data manager to log into my siftstack from a remote location without giving her access to my main computer or having her build a separate siftstack"
+
+do you just use GitHub?
+02:34:09	Avi sela:	What was the name?
+02:34:11	Dave Marsh -Tampa:	Someone in Dataflik community created a scraper bot w forewarn. Its 🔥
+02:34:17	John Scipione:	forewarn is free?  i am an agent and i pay.
+02:34:25	Ty Garrett:	https://www.forewarn.com/
+02:34:41	samoneill:	I use forewarn for my direct to market. Its accuracy is the best I have seen so far
+02:34:48	Dave Marsh -Tampa:	Replying to "forewarn is free?  i am an agent and i pay."
+
+Yes they added it to the MLS a year or 2 ago.
+02:34:48	Alicia Aubart 651-900-0551:	Reacted to "I put my whole sifts..." with 🔥
+02:34:52	Ty Garrett:	https://numberverifier.com/
+02:34:53	Mak:	is that updated in the hub
+02:35:02	Sonya Johnson:	Replying to "Someone in Dataflik ..." 
+
+ Are we able to get it?
+02:35:34	Dino Brown:	Reacted to "forewarn is free?  i am an agent and i pay." with 🤦🏽
+02:35:52	Brynn Misener:	Replying to "forewarn is free?  i..."
+
+Different boards in our local area pay for it - some do, some don't
+02:37:25	Roger Critz:	can you set all this up to run in hostinger so we are not relying on my local machine in case something happens to it?
+02:38:00	Corel McCullough:	Awesome
+02:40:36	Mary Derman:	Is number verifier in SiftStack?
+02:44:26	Daniel Johnson:	Can you change the colors for spam ratings. They all  look the same to me.
+02:46:43	Carlos Torres:	Isnt there a way to clean up the numbers when they get marked as spam?
+02:47:50	Ryan Hawker:	Im so happy im not the only one dealing with this. Every number I have gotten from smrtphone came in as spammed by more than one carrier
+02:49:39	Mak:	canyou put that in the chat
+02:49:47	Maryam Shahid:	first orion
+02:49:48	Basem Sanad:	First Orion, Hiya, TNS
+02:49:48	Maryam Shahid:	Hiya
+02:51:00	Matix - HireTrainVA.com:	If anyone is interested in hiring Virtual Assistants to help with any tasks and roles in real estate investing and trained in DataSift CRM and First to Market sales strategy, schedule a call with us here:  https://www.ninjaassistants.com/#hero
+02:51:04	Faiz Abrar:	but you cant get numberverifier with less than 10 numbers
+02:51:27	Phil Loesch:	Replying to "but you cant get numberverifier with less than 10 numbers"
+
+you can, but still pay the 150 per month
+02:51:49	Mak:	Replying to "First Orion, Hiya,..."
+
+thank you for sharing this
+02:52:48	Ryan Hawker:	All I heard is Ty is building his own caller reputation site…..
+02:53:02	Nelson Martinez:	Reacted to "All I heard is Ty is building his own caller reputation site….." with 👍🏻
+02:53:02	Phil Loesch:	$150 minimum
+02:56:22	Mak:	I want to make sure I understand this correctly. 1. get the phone numbers from Twilio, check them in numberverifier and pay for the 10 that are good, then regester them on First Orion, Hiya, TNS? is that the correct order?
+03:01:55	Faiz Abrar:	might be making the switch to Quo
+03:02:03	Faiz Abrar:	have had more success personally
+03:07:52	Jalen:	Replying to "have had more succes..."
+
+Thats what I have.
+03:08:11	Jalen:	Reacted to "have had more succes..." with 🔥
+03:08:16	Jalen:	Reacted to "might be making the ..." with 🔥
+03:09:35	William Smith:	how many texts can you send out per day like that?
+03:12:33	William Smith:	Reacted to "{EFDF4271-FE97-45C4-9CFB-3C0542C15D09}.png" with 👍
+03:12:37	William Smith:	Replying to "{EFDF4271-FE97-45C4-9CFB-3C0542C15D09}.png"
+
+TY
+03:19:25	Michael Genovese:	where can i find all the tutorial videos on the set up of siftstack
+03:19:36	Ken Carter:	Are you recommending to install all 74 agents along the 9 divisions in Claude?
+03:20:09	William Smith:	if were using WAVV dialer with go high level, would we be able to integrate it eventually?
+03:20:46	Phil Loesch:	Replying to "where can i find all the tutorial videos on the set up of siftstack"
+
+challenge hub
+03:20:52	Phil Loesch:	Replying to "Are you recommending to install all 74 agents along the 9 divisions in Claude?"
+
+yes
+03:23:11	Carlos Torres:	When using Kixie API. Can we set it up the same way as smartphone using claude?
+03:23:21	Carlos Torres:	For auto texts
+03:27:13	Jose V:	yupppppp
+03:27:17	Ryan Hawker:	Which ones are you deciding to door knock?
+03:28:43	Jose V:	BOOOOOM
+03:30:45	Jose V:	Bars!
+03:33:42	Jose V:	Yess!! Number verifier is the OG. Def need a VA to clean them up the more numbers you have.
+03:33:52	Mike Boyea:	To confirm all the calls and texts  run through smrtphone?
+03:34:14	Jose V:	To confirm they arent labeled "spam likely"
+03:40:32	Matix - HireTrainVA.com:	If anyone is interested in hiring Virtual Assistants to help with any tasks and roles in real estate investing and trained in DataSift CRM and First to Market sales strategy, schedule a call with us here:  https://www.ninjaassistants.com/#hero
+03:44:46	Matix - HireTrainVA.com:	Or if you would like to work as a Virtual Assistant in this industry, apply at:
+https://vainusa.com/apply/ 
+03:46:28	Assaf Barak:	I think today is going strong on record breaking, all time longest 5DDFC cohort session...
+03:47:51	Hector Martinez:	Thought I was the only one lol
+03:53:08	kashifel-amin:	What is VS code is this another version of claude?
+03:57:26	Assaf Barak:	@monet you can bulk update the call attempt number by selecting all of the records you want to adjust and click "Manage" then "Update Attempts"
+03:57:48	Cyrus:	Replying to "What is VS code is this another version of claude?"
+
+It's a source code editor.https://code.visualstudio.com/
+03:58:50	Jose Castillo:	Replying to "What is VS code is this another version of claude?"
+
+It has a claude extension.
+04:01:03	kashifel-amin:	This stuff is so cool. I’m determined to get this!
+04:01:06	Assaf Barak:	Replying to "What is VS code is this another version of claude?"
+
+@kashifel-amin On day 3 guides in the Hub for setting up Siftstack, you also have an explanation about downloading and setting up Claude in VS Code
+04:01:22	kashifel-amin:	Reacted to "@kashifel-amin On da..." with ❤️
+04:01:32	kashifel-amin:	Reacted to "It has a claude exte..." with ❤️
+04:01:34	monet:	@Assaf Barak great idea!! I'll give that a shot! Thank you 🙏
+04:01:41	kashifel-amin:	Reacted to "It's a source code e..." with ❤️
+04:01:43	Assaf Barak:	Replying to "@Assaf Barak great idea!! I'll give that a shot! Thank you 🙏"
+
+YW!
+04:03:34	Shaddy ElRamly:	should we keep not interesteds in the mailing lists or just call them back?
+04:04:59	Aileen Arnoco:	Maybe set up a not Interested follow up Sequence
+04:06:45	Alicia Aubart 651-900-0551:	Reacted to "@kashifel-amin On da..." with ❤️
+04:11:08	Assaf Barak:	Reacted to "Maybe set up a not Interested follow up Sequence" with 👍🏻
+04:11:12	William Smith:	Reacted to "Maybe set up a not Interested follow up Sequence" with 👍
+04:18:07	Mak:	we are grateful for this thank you
+04:18:20	Dion Parba:	Thank you Ty!
+04:18:26	Mak:	are the instructions up to date as of todays date in the hub?
+04:18:55	Milly:	Reacted to Thank you Ty! with "👏"
+04:19:12	monet:	Thank you soooo much Ty 🌷...and great questions everyone!! 🥸
+04:21:10	Ty Garrett:	https://learn.datasift.ai/agent-org-chart
+04:21:55	monet:	How do you do all of this??
+04:21:55	Mak:	rock on thanks
