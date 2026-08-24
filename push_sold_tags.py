@@ -121,6 +121,25 @@ def _street_of(rec: dict) -> str:
     return (rec.get("address") or {}).get("street") or ""
 
 
+def _street_compatible(a: str, b: str) -> bool:
+    """True when two street strings can be the same address written differently.
+
+    The surname + house-number fallback used to accept ANY single record at the
+    right house number, which is how "235 N East End Ave" matched a record
+    reading "235 E End Ave" — right property as it turned out, but the same
+    rule would just as happily have matched "235 Oak St" and renamed a stranger.
+
+    Compatible means one side's folded tokens are a subset of the other's:
+    DataSift drops directionals and abbreviates, so the stored street is a
+    shortening of the county's, never a different road.
+    """
+    ta = set(_fold(a or "", _SHORT).lower().split())
+    tb = set(_fold(b or "", _SHORT).lower().split())
+    if not ta or not tb:
+        return False
+    return ta <= tb or tb <= ta
+
+
 def surname(name: str) -> str:
     """'Hutchinson, Faye' and 'Bradley Hutchinson' both -> 'Hutchinson'."""
     name = (name or "").strip()
@@ -183,9 +202,13 @@ def find_record(h: dict, street: str, decedent: str = "",
         exact = [r for r in near if _norm(_street_of(r)) == want]
         if len(exact) == 1:
             return exact[0], f"{label} surname {ln!r} + house number"
-        if len(near) == 1:
+        if len(near) == 1 and _street_compatible(street, _street_of(near[0])):
             return near[0], (f"{label} surname {ln!r} + house number "
                              f"(record street reads {_street_of(near[0])!r})")
+        if len(near) == 1:
+            return None, (f"AMBIGUOUS (one {label}-surname record at house number "
+                          f"{num}, but its street reads {_street_of(near[0])!r} "
+                          f"against {street!r})")
         if near:
             return None, (f"AMBIGUOUS ({len(near)} records at house number {num} "
                           f"under {label} surname {ln!r})")
