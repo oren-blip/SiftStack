@@ -35,9 +35,10 @@ Two defects it repairs:
 
 Default run is a FREE AUDIT (no writes).
 
-    python text_touch_api_backfill.py                  # audit RTC + last 7 days
+    python text_touch_api_backfill.py                  # audit NSM 02-05 + last 7 days
     python text_touch_api_backfill.py --apply          # fix missing + drifted
     python text_touch_api_backfill.py --apply --missing-only
+    python text_touch_api_backfill.py --preset "02. Ready to Call" --apply
     python text_touch_api_backfill.py --preset "" --tag "NC Upload 2026-08-22" --apply
 """
 from __future__ import annotations
@@ -205,12 +206,30 @@ def _assigned_first(prop: dict) -> str:
     return GEN.clean_first(name)
 
 
+# Records carrying this tag get the vacant/absentee copy instead of the general
+# pools: different opener (drive-by, not "is this yours"), and the copy is
+# guarded against ever naming the distress. See build_text_touches.VACANT_POOLS.
+VACANT_TAG = "priority 1"
+
+
+def record_niche(prop: dict) -> str:
+    """'vacant' when the record carries the Priority 1 tag, else 'default'."""
+    for t in (prop.get("tags") or []):
+        name = t.get("title") or t.get("name") if isinstance(t, dict) else t
+        if (name or "").strip().lower() == VACANT_TAG:
+            return "vacant"
+    return "default"
+
+
 def expected_touches(prop: dict, sender_default: str):
     """The four drafts this record's CURRENT owner + address should carry.
 
     Mirrors build_text_touches.main() exactly, sourced from the API record
     instead of the CSV export. Returns (touches, meta) or None when the record
     is not renderable (no street, or nothing to sign with).
+
+    Pool set is chosen per record by record_niche() — the vacant stack gets
+    VACANT_POOLS, everything else keeps the general-purpose copy.
     """
     addr = prop.get("address") or {}
     if not isinstance(addr, dict):
@@ -227,20 +246,34 @@ def expected_touches(prop: dict, sender_default: str):
     sender = _assigned_first(prop) or sender_default.strip().title()
     if not sender:
         return None
+    niche = record_niche(prop)
     touches = GEN.render((street + "|" + owner_full).lower(), first,
                          GEN.tidy_addr(street), GEN.tidy_place(city) or "the area",
-                         sender, no_name)
+                         sender, no_name,
+                         pools=GEN.POOLS_BY_NICHE.get(niche))
     if any(len(t) > GEN.MAX_CHARS for t in touches):
         return None
     return touches, {"street": street, "owner": owner_full, "first": first,
-                     "sender": sender}
+                     "sender": sender, "niche": niche}
 
 
-def run_sweep(*, preset: str | None = "02. Ready to Call",
+# Every NSM stage a caller dials from. Sweeping only "02. Ready to Call" left a
+# hole: a record that advances to Follow-Up 1-3 leaves RTC, so a DP rename after
+# that point never got its drafts refreshed and the caller greeted the wrong
+# person on attempt 2+. The 8/23 audit found 19 such records across 03/04/05.
+NSM_CALL_STAGES = ["02. Ready to Call", "03. Follow-Up 1",
+                   "04. Follow-Up 2", "05. Follow-Up 3"]
+
+
+def run_sweep(*, preset: str | list[str] | None = None,
               tags: list[str] | None = None, recent_days: int = 7,
               apply: bool = False, missing_only: bool = False,
               sender: str = "Oren", limit: int = 0) -> int:
-    """Audit (and optionally repair) text touches. Importable by the nightly."""
+    """Audit (and optionally repair) text touches. Importable by the nightly.
+
+    `preset` takes one name or a list of them; None means NSM_CALL_STAGES.
+    Pass "" (or an empty list) to skip presets and sweep tags only.
+    """
     h = headers(get_token())
     try:
         fields = touch_field_uuids(h)
@@ -253,8 +286,28 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
                      "to create them.", ", ".join(missing_defs))
         return 2
 
-    pool = collect_scope(h, preset or None, list(tags or []), recent_days)
-    logger.info("Scope: %d unique record(s)", len(pool))
+    if preset is None:
+        presets = list(NSM_CALL_STAGES)
+    elif isinstance(preset, str):
+        presets = [preset] if preset else []
+    else:
+        presets = [p for p in preset if p]
+
+    # One collect_scope per preset, unioned. Records sitting in two stages are
+    # read once; `origin` is only for the log line.
+    pool: dict[str, dict] = {}
+    origin: dict[str, list[str]] = {}
+    for name in presets:
+        for u, rec in collect_scope(h, name, [], 0).items():
+            pool.setdefault(u, rec)
+            origin.setdefault(u, []).append(name)
+    if tags or recent_days > 0:
+        for u, rec in collect_scope(h, None, list(tags or []), recent_days).items():
+            pool.setdefault(u, rec)
+            origin.setdefault(u, []).append("batch tag")
+    logger.info("Scope: %d unique record(s) across %d preset(s)%s",
+                len(pool), len(presets),
+                " + batch tags" if (tags or recent_days > 0) else "")
     if not pool:
         logger.info("Nothing in scope.")
         return 0
@@ -290,6 +343,7 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
             continue
         rec = {"uuid": ru, "kind": kind, "touches": touches,
                "blanks": len(blanks), "drifted": len(drifted),
+               "stages": ";".join(origin.get(ru, [])),
                "current_t1": cur.get("Text Touch 1", "")}
         rec.update(meta)
         todo.append(rec)
@@ -300,10 +354,12 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Defect", "Property Address", "Owner", "Signer", "Blank fields",
-                    "Drifted fields", "Stored Touch 1", "New Touch 1", "Record UUID"])
+        w.writerow(["Defect", "Property Address", "Owner", "Signer", "Niche", "Stage",
+                    "Blank fields", "Drifted fields", "Stored Touch 1", "New Touch 1",
+                    "Record UUID"])
         for t in todo:
-            w.writerow([t["kind"], t["street"], t["owner"], t["sender"], t["blanks"],
+            w.writerow([t["kind"], t["street"], t["owner"], t["sender"],
+                        t.get("niche", ""), t.get("stages", ""), t["blanks"],
                         t["drifted"], t["current_t1"], t["touches"][0], t["uuid"]])
 
     logger.info("Text touches: %d record(s) OK, %d MISSING, %d DRIFT, %d not "
@@ -340,9 +396,10 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--preset", default="02. Ready to Call",
-                    help="filter preset to audit (default '02. Ready to Call'; "
-                         "pass '' to skip)")
+    ap.add_argument("--preset", action="append", default=None,
+                    help="filter preset to audit; repeatable. Default is every "
+                         "NSM call stage (%s). Pass '' to skip presets."
+                         % ", ".join(NSM_CALL_STAGES))
     ap.add_argument("--tag", action="append", default=[],
                     help="extra batch tag to audit (repeatable)")
     ap.add_argument("--recent-days", type=int, default=7,

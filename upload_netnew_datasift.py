@@ -592,18 +592,27 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
     # real heir name landed on them — 51 records with no drafts and 21 with
     # wrong-name drafts were sitting in '02. Ready to Call' when this shipped.
     #
+    # Widened 2026-08-23: scope was RTC only, but a record that advances to
+    # Follow-Up 1-3 LEAVES the RTC preset, so a DP rename after that point never
+    # got its drafts refreshed — the caller greeted the wrong person on attempt
+    # 2+. Now every NSM call stage (02-05) is swept. Same run also covers the
+    # Priority 1 vacant stack, which entered these presets when they were
+    # widened earlier that day.
+    #
     # Same shape as the tier sweep: read over the API (never the Phone
-    # Enrichment export, which is a subset view), scope = the RTC preset Oren
-    # actually calls from + the last 7 days of upload batches, and write with a
+    # Enrichment export, which is a subset view), scope = the NSM call stages
+    # Oren dials from + the last 7 days of upload batches, and write with a
     # per-record custom-field PATCH so there is no address-matched Add Data
     # upsert that could duplicate his hand-entered rows. Free — no API spend.
     if text_touches:
         try:
             from text_touch_api_backfill import run_sweep as touch_sweep
-            logger.info("Text-touch backfill sweep (API; RTC preset + last 7 days "
-                        "of upload batches)...")
+            from text_touch_api_backfill import NSM_CALL_STAGES
+            logger.info("Text-touch backfill sweep (API; NSM call stages %s + "
+                        "last 7 days of upload batches)...",
+                        ", ".join(NSM_CALL_STAGES))
             src = await asyncio.to_thread(
-                touch_sweep, preset="02. Ready to Call", tags=None,
+                touch_sweep, preset=NSM_CALL_STAGES, tags=None,
                 recent_days=7, apply=True, sender=touch_sender)
             if src == 0:
                 logger.info("Text-touch backfill sweep complete.")

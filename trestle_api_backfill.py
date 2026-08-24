@@ -163,9 +163,21 @@ def tag_uuid_map(h: dict) -> dict:
 
 
 def collect_scope(h: dict, preset_name: str | None, tags: list[str],
-                  recent_days: int) -> dict:
-    """Return {uuid: record} for every record in the audit scope."""
+                  recent_days: int, county: str | None = None) -> dict:
+    """Return {uuid: record} for every record in the audit scope.
+
+    `county` narrows every search to one Property County (the API key is
+    `property_county`, a plain string — a list value is a 400).
+    """
     pool: dict[str, dict] = {}
+
+    def _scoped(q: dict) -> dict:
+        """Inject the county filter into a search query, if one was asked for."""
+        if not county:
+            return q
+        q = json.loads(json.dumps(q))          # deep copy, leave caller's dict alone
+        q.setdefault("must", {})["property_county"] = county
+        return q
 
     if preset_name:
         r = requests.get(f"{API}/api/internal/filter-preset/", headers=h,
@@ -181,7 +193,7 @@ def collect_scope(h: dict, preset_name: str | None, tags: list[str],
             body = d.json() if d.status_code == 200 else {}
             q = body.get("query") or body.get("filters") or body.get("filter")
             if q:
-                rows = _search(h, q)
+                rows = _search(h, _scoped(q))
                 # The preset's nested must_not (any status) is not honoured by
                 # the search API -> replicate it client-side: statusless only.
                 for rec in rows:
@@ -205,7 +217,7 @@ def collect_scope(h: dict, preset_name: str | None, tags: list[str],
             tu = tmap.get(tg)
             if not tu:
                 continue
-            rows = _search(h, {"must": {"all_tags": [tu]}})
+            rows = _search(h, _scoped({"must": {"all_tags": [tu]}}))
             if rows:
                 logger.info("Tag %r: %d record(s)", tg, len(rows))
             for rec in rows:
@@ -480,7 +492,8 @@ def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
 def run_sweep(*, preset: str | None = "02. Ready to Call",
               tags: list[str] | None = None, recent_days: int = 7,
               apply: bool = False, max_cost: float = 5.0,
-              headless: bool = False, fix_types: bool = True) -> int:
+              headless: bool = False, fix_types: bool = True,
+              county: str | None = None) -> int:
     """Tier untiered phones, then fill in any missing Mobile/Landline/VOIP.
 
     The line-type pass is free (Trestle score cache only) and runs whether or
@@ -490,8 +503,10 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
     Importable so the nightly upload can call it directly.
     """
     h = headers(get_token())
-    pool = collect_scope(h, preset or None, list(tags or []), recent_days)
-    logger.info("Scope: %d unique record(s)", len(pool))
+    pool = collect_scope(h, preset or None, list(tags or []), recent_days,
+                         county=county)
+    logger.info("Scope: %d unique record(s)%s", len(pool),
+                f" in {county}" if county else "")
     if not pool:
         logger.info("Nothing in scope.")
         return 0
@@ -523,6 +538,9 @@ def main() -> int:
                     help="score untiered phones + upload tags (default: free audit)")
     ap.add_argument("--max-cost", type=float, default=5.0,
                     help="abort --apply if fresh Trestle spend exceeds this (default 5.00)")
+    ap.add_argument("--county",
+                    help="narrow the whole sweep to one Property County "
+                         "(e.g. Cabarrus) — lets you work one county at a time")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--no-types", action="store_true",
                     help="skip the free line-type (Mobile/Landline/VOIP) pass")
@@ -530,7 +548,7 @@ def main() -> int:
     return run_sweep(preset=args.preset, tags=args.tag,
                      recent_days=args.recent_days, apply=args.apply,
                      max_cost=args.max_cost, headless=args.headless,
-                     fix_types=not args.no_types)
+                     fix_types=not args.no_types, county=args.county)
 
 
 if __name__ == "__main__":

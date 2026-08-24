@@ -40,6 +40,7 @@ import csv
 import glob
 import re
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -116,26 +117,80 @@ def _search(h: dict, text: str) -> list[dict]:
     return d.get("results") or d.get("data") or []
 
 
-def find_record(h: dict, street: str) -> list[dict]:
-    """Search the street in both spelling conventions; first form that hits wins."""
-    if not street:
-        return []
-    tried = []
-    for form in (street, _fold(street, _SHORT), _fold(street, _LONG)):
-        if form in tried:
-            continue
-        tried.append(form)
-        rows = _search(h, form)
-        if rows:
-            return rows
-    return []
+def _street_of(rec: dict) -> str:
+    return (rec.get("address") or {}).get("street") or ""
+
+
+def surname(name: str) -> str:
+    """'Hutchinson, Faye' and 'Bradley Hutchinson' both -> 'Hutchinson'."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if "," in name:                      # audit CSV writes the decedent LAST, FIRST
+        return name.split(",")[0].strip()
+    parts = [p for p in name.split()
+             if p.lower().rstrip(".") not in ("jr", "sr", "ii", "iii", "iv")]
+    return parts[-1] if parts else ""
 
 
 def match_one(rows: list[dict], street: str) -> dict | None:
     """Exact-ish street match only. Ambiguity is reported, never guessed."""
     want = _norm(street)
-    hits = [r for r in rows if _norm((r.get("address") or {}).get("street")) == want]
+    hits = [r for r in rows if _norm(_street_of(r)) == want]
     return hits[0] if len(hits) == 1 else None
+
+
+def find_record(h: dict, street: str, decedent: str = "",
+                pr: str = "") -> tuple[dict | None, str]:
+    """Locate the record, and say why when it can't. Returns (record, how).
+
+    Street search alone is not enough. The API matches the whole search string
+    against stored text, and GIS and DataSift disagree on spelling *and* case
+    ("994 22nd St Pl NE" returns 0 against a record reading "994 22Nd Street
+    Pl Ne"), so audit_rename_gap_20260822 falls back to a surname search
+    narrowed by house number. Same fallback here — the estate's decedent and PR
+    are the two names the record is most likely filed under.
+
+    `how` distinguishes the two failures that used to look identical in the
+    log: a property that was never uploaded (nothing to suppress, not a bug)
+    from one with several candidate hits (needs a human).
+    """
+    if not street:
+        return None, "NO ADDRESS in audit row"
+    want, num = _norm(street), (street.split() or [""])[0].lower()
+
+    tried: list[str] = []
+    for form in (street, _fold(street, _SHORT), _fold(street, _LONG)):
+        if form in tried:
+            continue
+        tried.append(form)
+        rows = _search(h, form)
+        if not rows:
+            continue
+        rec = match_one(rows, street)
+        if rec:
+            return rec, f"street {form!r}"
+        return None, f"AMBIGUOUS ({len(rows)} hits on {form!r}, none an exact street match)"
+
+    for label, person in (("decedent", decedent), ("PR", pr)):
+        ln = surname(person)
+        if not ln:
+            continue
+        rows = _search(h, ln)
+        if not rows:
+            continue
+        near = [r for r in rows if _street_of(r).lower().startswith(num + " ")] if num else rows
+        exact = [r for r in near if _norm(_street_of(r)) == want]
+        if len(exact) == 1:
+            return exact[0], f"{label} surname {ln!r} + house number"
+        if len(near) == 1:
+            return near[0], (f"{label} surname {ln!r} + house number "
+                             f"(record street reads {_street_of(near[0])!r})")
+        if near:
+            return None, (f"AMBIGUOUS ({len(near)} records at house number {num} "
+                          f"under {label} surname {ln!r})")
+
+    return None, "NOT IN CRM (no street or surname hit — never uploaded?)"
 
 
 def add_tags(h: dict, uuid: str, titles: list[str]) -> bool:
@@ -147,18 +202,34 @@ def add_tags(h: dict, uuid: str, titles: list[str]) -> bool:
     return r.status_code in (200, 201, 202, 204)
 
 
-def verify_tags(h: dict, uuid: str, titles: list[str]) -> bool:
-    """Re-read the property and confirm the titles landed. Never trust the write
-    response, and never verify via search — the search index is stale after writes.
-    """
+def read_tags(h: dict, uuid: str) -> set[str] | None:
+    """Titles currently on the record, or None if the read itself failed."""
     r = requests.get(f"{API}/api/internal/property/{uuid}/", headers=h, timeout=30)
     if r.status_code != 200:
-        return False
+        return None
     d = r.json()
     d = d.get("data") or d
-    have = {(t.get("title") if isinstance(t, dict) else str(t)) or ""
+    return {(t.get("title") if isinstance(t, dict) else str(t)) or ""
             for t in (d.get("tags") or [])}
-    return all(w in have for w in titles)
+
+
+# The write is durable before the read reflects it. On 2026-08-23 all three
+# suppressions logged FAILED and all three were verified tagged minutes later —
+# a single immediate re-read is a coin flip, not a check. Retry before believing
+# a failure; never verify via search, whose index is staler still.
+VERIFY_TRIES = 4
+VERIFY_WAIT = 3  # seconds between reads
+
+
+def verify_tags(h: dict, uuid: str, titles: list[str]) -> bool:
+    """Re-read the property until the titles land, or the retries run out."""
+    for attempt in range(VERIFY_TRIES):
+        have = read_tags(h, uuid)
+        if have is not None and all(w in have for w in titles):
+            return True
+        if attempt < VERIFY_TRIES - 1:
+            time.sleep(VERIFY_WAIT)
+    return False
 
 
 def main() -> int:
@@ -209,31 +280,31 @@ def main() -> int:
         # Only reuse a month tag that already exists — don't spawn new ones.
         month_tag = f"Sold {month}" if tags.get(f"sold {month}") else None
         want = ["Sold"] + ([month_tag] if month_tag else [])
-        found = find_record(h, street)
-        rec = match_one(found, street)
+        rec, how = find_record(h, street, r.get("decedent", ""), r.get("pr", ""))
         case = r.get("case") or "NO CASE#"
         if rec is None:
-            state = f"NO MATCH ({len(found)} search hits)"
-            print(f"  {state:26s} {case} | {street[:38]}")
-            results.append({**r, "result": state, "uuid": ""})
+            print(f"  {how[:26]:26s} {case} | {street[:38]}")
+            results.append({**r, "result": how, "uuid": ""})
             continue
         uuid = rec.get("uuid")
         if not args.apply:
             extra = f" + Sold {month}" if month_tag else ""
             print(f"  would tag                  {case} | {street[:38]:38s} | Sold{extra}")
-            results.append({**r, "result": "DRY RUN", "uuid": uuid})
+            results.append({**r, "result": "DRY RUN", "uuid": uuid, "how": how})
             continue
+        # Already-tagged records re-verify clean and cost one read — leave the
+        # write in anyway so a partially-tagged record (Sold, no month) heals.
         ok = add_tags(h, uuid, want) and verify_tags(h, uuid, want)
         state = "TAGGED (verified)" if ok else "FAILED"
         print(f"  {state:26s} {case} | {street[:38]}")
-        results.append({**r, "result": state, "uuid": uuid})
+        results.append({**r, "result": state, "uuid": uuid, "how": how})
 
     if args.apply and results:
         new = not LOG.exists()
         with LOG.open("a", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=[
                 "run_date", "case", "county", "decedent", "address", "sale_date",
-                "sale_price", "owner", "class", "result", "uuid"],
+                "sale_price", "owner", "class", "result", "uuid", "how"],
                 extrasaction="ignore")
             if new:
                 w.writeheader()

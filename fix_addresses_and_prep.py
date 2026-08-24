@@ -5905,12 +5905,27 @@ def _clean_person_name(name: str | None) -> str:
 def _split_app_pr_name(app_pr: str) -> tuple[str, str, str]:
     """Split a cleaned applicant name into (full, first, last) for the search-
     friendly columns, dropping a single-initial middle token so the Last field
-    stays clean. 'Bill J. Baity Jr' -> ('Bill Baity Jr', 'Bill', 'Baity Jr')."""
-    parts = app_pr.split()
+    stays clean. 'Bill J. Baity Jr' -> ('Bill Baity Jr', 'Bill', 'Baity').
+
+    The Last field must be comma-free AND suffix-free. This used to return
+    'Winfred Russell, Jr' for "Gilbert Winfred Russell, Jr" — DataSift's
+    importer then split that on the comma and kept the trailing token, so the
+    CRM record read owner **"Gilbert Jr"** with the surname gone entirely
+    (Russell 26E001013-350, found 2026-08-23). The suffix still rides along in
+    `full`, which is what the Personal Representative column shows.
+    `_split_person_name` learned the same lesson from Fisher 26E000810-790.
+    """
+    parts = (app_pr or "").replace(",", " ").split()
+    if not parts:
+        return ("", "", "")
     first = parts[0]
-    last_parts = [p for p in parts[1:] if len(p.rstrip(".")) > 1] or [parts[-1]]
-    last = " ".join(last_parts)
-    return (f"{first} {last}", first, last)
+    rest = [p for p in parts[1:] if len(p.rstrip(".")) > 1] or parts[1:]
+    suffixes: list[str] = []
+    while len(rest) > 1 and rest[-1].lower().rstrip(".") in _NAME_SUFFIX_TOKENS:
+        suffixes.insert(0, rest.pop())
+    last = " ".join(rest)
+    full = " ".join([first, last] + suffixes).strip()
+    return (full, first, last)
 
 
 def second_pass_obituary_for_heirs_of(rows: list[dict]) -> tuple[int, int, int]:

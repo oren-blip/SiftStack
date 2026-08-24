@@ -92,6 +92,83 @@ TOUCH4_NONAME = [
 POOLS = [(TOUCH1, TOUCH1_NONAME), (TOUCH2, TOUCH2_NONAME),
          (TOUCH3, TOUCH3_NONAME), (TOUCH4, TOUCH4_NONAME)]
 
+# ---------------------------------------------------------------------------
+# VACANT / ABSENTEE / FREE-AND-CLEAR pools  (niche: "vacant")
+#
+# Different job from the default pools. These owners are ABSENTEE, so the
+# credible reason you are contacting them is that YOU are near the property and
+# they are not. That drive-by hook is the whole opener.
+#
+# HARD RULE, from the challenge: insinuate, never name the distress. Nothing in
+# here may reference the property being vacant, empty, abandoned, neglected,
+# run-down, behind on taxes, or owned free and clear. Say what you SAW from the
+# street, never what you know from the data.
+# ---------------------------------------------------------------------------
+VAC_TOUCH1 = [
+    "Hi {first}! My name is {sender}. I was over in {city} this week and went past {addr} - is that one yours by any chance? Thanks!",
+    "Hi {first}, hope your week is going well. I'm {sender}. I came across {addr} while I was out in {city} and wondered if it belongs to you?",
+    "Hey {first}! {sender} here. I know this is out of the blue - I was on your street in {city} and noticed {addr}. Do I have the right owner?",
+    "Hi {first}, this is {sender}. I pick up a few places around {city} each year and {addr} caught my eye. Is that yours? Hope I have the right number!",
+    "Hi {first}! I'm {sender}, local to the {city} area. I was looking at {addr} and wanted to check I had the right person before I said more. Thanks!",
+]
+VAC_TOUCH1_NONAME = [
+    "Hi! My name is {sender}. I was out in {city} this week and went past {addr} - I'm trying to reach whoever owns it. Did I get the right number?",
+    "Hi there, {sender} here. I came across {addr} in {city} and I'm hoping to reach the owner. Do I have the right contact? Thanks!",
+]
+VAC_TOUCH2 = [
+    "Hi {first}, {sender} here - I texted about {addr} the other day and wasn't sure it landed. Is that property yours?",
+    "Hey, sorry to double up! Did my note about {addr} come through? Just want to be sure I have the right owner. {sender}",
+    "Hi {first}! {sender} again. My texts don't always go through, so trying once more - is {addr} in {city} yours?",
+    "Hey {first}, floating my last message back up in case it got buried. Is {addr} your property? Thanks! {sender}",
+]
+VAC_TOUCH2_NONAME = [
+    "Hi, {sender} again. I messaged the other day about {addr} and wasn't sure it went through - is this the right contact for it?",
+    "Hey, sorry to text twice! Did my message about {addr} in {city} reach you? Just checking I have the right person. {sender}",
+]
+VAC_TOUCH3 = [
+    "Hi {first}, {sender} again about {addr}. If it is yours, would you ever consider an offer on it? No pressure - just wanted to ask you directly.",
+    "Hey {first}! I'm genuinely interested in {addr}. Would you be open to a quick call? I can work around whatever time suits you.",
+    "Hi {first}, this is {sender}. I'd take {addr} as-is and handle everything on my end. Worth a two-minute conversation?",
+    "Hey {first}, me again - if you'd ever part with {addr}, I'd love to be the first person you talk to. Can I give you a quick call?",
+]
+VAC_TOUCH3_NONAME = [
+    "Hi, {sender} again. If {addr} is one of yours, would you be open to an offer on it? Happy to work around your schedule.",
+    "Hey there, {sender} here. I'm interested in {addr} in {city} - if you look after that one, would a short call work?",
+]
+VAC_TOUCH4 = [
+    "Hi {first}, I've sent a few notes about {addr} with no luck. Maybe you're holding onto it - totally fair! Wishing you well. {sender}",
+    "Hey {first}, last one from me. If {addr} ever becomes something you'd sell, I'd love to be your first call. Take care! {sender}",
+    "Hi {first}, I'll leave you alone after this! Just leaving my number in case {addr} ever comes up down the road. {sender}",
+    "Hey {first}, {sender} one more time. If I have the wrong number I'm sorry! If not, I'd still love to talk about {addr} whenever suits you.",
+]
+VAC_TOUCH4_NONAME = [
+    "Hi, {sender} here one last time about {addr}. If someone else looks after that property, a point in the right direction would be a big help. Thanks!",
+    "Hey there, last text from me! If {addr} is ever something you'd consider selling, I'd love to be your first call. All the best! {sender}",
+]
+VACANT_POOLS = [(VAC_TOUCH1, VAC_TOUCH1_NONAME), (VAC_TOUCH2, VAC_TOUCH2_NONAME),
+                (VAC_TOUCH3, VAC_TOUCH3_NONAME), (VAC_TOUCH4, VAC_TOUCH4_NONAME)]
+
+# niche name -> pool set. text_touch_api_backfill picks per record.
+POOLS_BY_NICHE = {"default": POOLS, "vacant": VACANT_POOLS}
+
+# words that would name the distress - guarded by test_vacant_pools()
+_BANNED_RX = re.compile(
+    r"\b(vacant|empty|abandon\w*|unoccupied|neglect\w*|run.?down|distress\w*|"
+    r"delinquen\w*|foreclos\w*|free and clear|equity|probate|deceased|estate|"
+    r"eyesore|boarded|condemn\w*)\b", re.I)
+
+
+def test_vacant_pools() -> None:
+    """Fail loudly if the vacant copy ever names the distress or runs long."""
+    for i, (pool, noname) in enumerate(VACANT_POOLS, 1):
+        for msg in list(pool) + list(noname):
+            bad = _BANNED_RX.search(msg)
+            assert not bad, f"touch {i} names the distress ({bad.group(0)!r}): {msg}"
+            rendered = msg.format(first="Jonathan", addr="1234 Old Charlotte Rd Sw",
+                                  city="Concord", sender="Oren")
+            assert len(rendered) <= MAX_CHARS, f"touch {i} too long ({len(rendered)}): {msg}"
+
+
 # common DataSift export header spellings, first match wins (case-insensitive)
 COLUMN_GUESSES = {
     "street": ["property street address", "property street", "street address",
@@ -164,10 +241,12 @@ def tidy_addr(raw: str) -> str:
 
 
 def render(seed_text: str, first: str, addr: str, city: str, sender: str,
-           no_name: bool) -> list[str]:
+           no_name: bool, pools: list | None = None) -> list[str]:
+    """Render the 4 touches. `pools` defaults to the general-purpose set;
+    pass VACANT_POOLS (or POOLS_BY_NICHE['vacant']) for the vacant stack."""
     s = int(hashlib.md5(seed_text.encode()).hexdigest(), 16)
     out = []
-    for i, (pool, noname_pool) in enumerate(POOLS):
+    for i, (pool, noname_pool) in enumerate(pools or POOLS):
         p = noname_pool if (no_name or not first) else pool
         msg = p[(s // (7 ** i)) % len(p)].format(
             first=first, addr=addr, city=city, sender=sender)
