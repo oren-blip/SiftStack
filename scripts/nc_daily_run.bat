@@ -152,6 +152,38 @@ REM produced no NETNEW rows. Off-switch:  set NC_AUTO_UPLOAD=0
 echo [6.8/7] Auto-uploading net-new rows to DataSift...
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\auto_upload_netnew.py >> "logs\nc_daily_run.log" 2>&1
 
+REM Renaming a DataSift record does NOT move its mailing address, so a
+REM hand PR-correction leaves the previous heir's address under the new
+REM heir's name and the next mail drop goes to the wrong house. Caught 2 of
+REM 15 that way on 2026-08-23. Read-only (GETs + a local snapshot), non-fatal,
+REM ~2.5 min for ~250 records. Flags stay in the log every night until the
+REM mailing is fixed. Off-switch:  set NC_MAILING_DRIFT=0
+echo [6.9/7] CRM owner/mailing drift check...
+if "%NC_MAILING_DRIFT%"=="0" (
+    echo   skipped -- NC_MAILING_DRIFT=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" audit_owner_mailing_drift.py >> "logs\nc_daily_run.log" 2>&1
+)
+
+REM Sold suppression. Oren asked (2026-08-23) for Ty's Day-2 "recently sold
+REM auto-add" so the monthly sweep goes away and sold houses drop out daily.
+REM That SiftMap toggle needs SiftMap Pro ($297/mo, not subscribed), so this
+REM does the same job free and more accurately: county GIS by parcel is the
+REM sale feed (on 2026-08-01 it caught 13 transfers SiftMap caught ZERO of,
+REM and it carries August sale dates while DataSift's own data stops at July).
+REM Tagging "Sold" is enough on its own -- the 12 NSM presets now exclude that
+REM tag AND any sale since 2023-01-01, so no sequence has to fire (bulk tag
+REM adds do NOT fire sequences on this account). HEIR TRANSFERs are never
+REM suppressed: estate settled + title cleared = hot re-target lead.
+REM ~17 min for ~700 parcels, non-fatal.  Off-switch:  set NC_SOLD_SWEEP=0
+echo [6.95/7] Sold sweep (county GIS -^> DataSift "Sold" tag)...
+if "%NC_SOLD_SWEEP%"=="0" (
+    echo   skipped -- NC_SOLD_SWEEP=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" sold_audit.py --since-days 90 >> "logs\nc_daily_run.log" 2>&1
+    "D:\SiftStack\.venv\Scripts\python.exe" push_sold_tags.py --apply >> "logs\nc_daily_run.log" 2>&1
+)
+
 echo [7/7] Daily report (file + email)...
 "D:\SiftStack\.venv\Scripts\python.exe" scripts\daily_report.py >> "logs\nc_daily_run.log" 2>&1
 

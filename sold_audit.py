@@ -5,10 +5,16 @@ parcels, queries each county's GIS BY PARCEL ID (exact match — no address
 fuzz), and reports any probate property whose GIS sale date falls on/after
 --since (default 2026-06-01). Independent of DataSift entirely.
 
+A parcel is also flagged when its GIS reading moved forward since the last run,
+which is the only way some counties are visible at all — see
+CHANGE_MAX_AGE_DAYS below.
+
 Usage:
     python sold_audit.py                       # since 2026-06-01
     python sold_audit.py --since 2026-01-01    # any 2026 sale
+    python sold_audit.py --since-days 90       # rolling window (nightly uses this)
 Output: output/sold_audit_<today>.csv + console summary (Case No. included).
+Feeds push_sold_tags.py, which tags the real sales "Sold" in DataSift.
 """
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
@@ -143,6 +149,64 @@ def update_competitor_log(flagged: list[dict]) -> None:
             w.writerow({**r, "found": date.today().isoformat(),
                         "buyer": r.get("owner", "")})
     print(f"Competitor log: +{len(new)} entries -> {path}")
+
+
+# A date window alone can't see a sale in every county. Measured 2026-08-23
+# across two snapshots 22 days apart:
+#   Lincoln  57/57  and Rowan 116/116 dated sales read "Jan 1" — those counties
+#                   publish a sale YEAR, not a date, so a "last 90 days" window
+#                   only sees them in Jan-Mar.
+#   Iredell         posts 16-61+ days after the sale (Mecklenburg: ~10 days).
+# So the sweep also fires when a parcel's GIS reading CHANGED since the last
+# run — that catches a year flip (2025-01-01 -> 2026-01-01) and a slow county
+# whenever it finally posts, with no date window involved.
+CHANGE_MAX_AGE_DAYS = 730  # a year-only county's "Jan 1" can already be ~600 days old
+
+
+def load_prior_readings() -> dict[tuple, str]:
+    """(county, parcel) -> sale_date from the most recent PREVIOUS audit CSV.
+
+    Empty on the very first run, which disables change detection for that run —
+    without a baseline every parcel would look "changed" and flag at once.
+    """
+    # Compare BASENAMES: glob returns Windows backslash paths
+    # ("output\\sold_audit_....csv") which never equal a forward-slash literal,
+    # so today's own file survived the filter and became its own baseline —
+    # zero changes detected, Lincoln and Rowan silently back to blind.
+    today = f"sold_audit_{date.today().isoformat()}.csv"
+    files = sorted(f for f in glob.glob("output/sold_audit_*.csv")
+                   if os.path.basename(f) != today)
+    if not files:
+        print("No prior audit CSV — change detection off this run (building baseline)")
+        return {}
+    print(f"Change baseline: {files[-1]}")
+    out: dict[tuple, str] = {}
+    with open(files[-1], encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            sd = (r.get("sale_date") or "")[:10]
+            out[(r.get("county", ""), r.get("parcel", ""))] = sd
+    return out
+
+
+def changed_since_last_run(prior: dict[tuple, str], county: str, pid: str,
+                           sale_date: str | None) -> bool:
+    """True when this parcel's sale record moved FORWARD to a recent date.
+
+    Guarded three ways so a GIS correction to an old deed doesn't read as a
+    sale: there must be a prior reading, the new date must be strictly NEWER
+    than the old one, and it must fall inside CHANGE_MAX_AGE_DAYS.
+    """
+    key = (county, pid)
+    if key not in prior or not sale_date:
+        return False
+    was = prior[key]
+    if not was or sale_date <= was:
+        return False
+    try:
+        sold_on = date.fromisoformat(sale_date[:10])
+    except ValueError:
+        return False
+    return 0 <= (date.today() - sold_on).days <= CHANGE_MAX_AGE_DAYS
 
 
 def norm_pid(pid: str) -> str:
@@ -281,7 +345,15 @@ def q_meck(pid: str) -> dict | None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="2026-06-01")
+    ap.add_argument("--since-days", type=int,
+                    help="rolling window instead of a fixed --since date; what "
+                         "the nightly run uses so the cutoff can't go stale")
     args = ap.parse_args()
+    if args.since_days:
+        args.since = (date.today() - timedelta(days=args.since_days)).isoformat()
+        print(f"rolling window: sales on/after {args.since}")
+
+    prior = load_prior_readings()
 
     rows = load_rows()
     seen: dict[tuple, dict] = {}
@@ -309,6 +381,9 @@ def main() -> None:
             sd = gis.get("sale_date")
             if sd and sd >= args.since:
                 flag = f"SOLD since {args.since}"
+            elif changed_since_last_run(prior, county, pid, sd):
+                flag = f"SOLD - GIS record changed (was {prior[(county, pid)]})"
+            if flag:
                 st[2] += 1
         results.append({**r, **(gis or {}), "flag": flag})
         if i % 50 == 0:
@@ -319,7 +394,12 @@ def main() -> None:
     results.sort(key=lambda x: (x["flag"] == "", x["county"]))
     with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "flag", "county", "case", "decedent", "parcel", "address",
+            # "pr" is NOT cosmetic: push_sold_tags.py re-derives classify()
+            # from this CSV, and classify() matches the new owner's surname
+            # against decedent OR PR. Without pr the two disagree — an estate
+            # deeded to a married daughter who is the PR reads HEIR TRANSFER
+            # here and MARKET SALE there, which would suppress a hot lead.
+            "flag", "county", "case", "decedent", "pr", "parcel", "address",
             "sale_date", "sale_price", "owner", "week"], extrasaction="ignore")
         w.writeheader()
         w.writerows(results)
