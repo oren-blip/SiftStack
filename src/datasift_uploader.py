@@ -1274,6 +1274,63 @@ async def enrich_records(page: Page, list_name: str) -> dict:
     return result
 
 
+async def _dismiss_input_suggestions(page: Page) -> int:
+    """Hide autocomplete suggestion overlays that swallow clicks.
+
+    The tag input on the skip-trace review step leaves its suggestion list open,
+    and the list renders OVER the submit button. 2026-08-24: an "Administration"
+    option sat on top of "Skip Trace records" and ate every click for 70 minutes,
+    which timed out the nightly. Escape is not safe on DataSift tag inputs (it
+    clears the tag you just typed), so hide the overlay instead of dismissing it.
+
+    Returns the number of overlays hidden.
+    """
+    try:
+        return await page.evaluate("""() => {
+            let n = 0;
+            for (const el of document.querySelectorAll('[class*="InputSuggestion"]')) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) { el.style.display = 'none'; n++; }
+            }
+            return n;
+        }""")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not clear suggestion overlays: %s", e)
+        return 0
+
+
+async def _click_resilient(page: Page, locator, label: str) -> bool:
+    """Click through DataSift's pointer-intercepting overlays.
+
+    Plain click first; if something intercepts it, hide the suggestion overlays
+    and retry; last resort a direct DOM click, which ignores hit-testing. Uses a
+    short timeout per stage — an intercepted click never clears on its own, so
+    waiting the default 30s just burns the nightly's time budget.
+    """
+    try:
+        await locator.click(timeout=5000)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Plain click on %r failed (%s) - clearing overlays", label, e)
+
+    hidden = await _dismiss_input_suggestions(page)
+    if hidden:
+        logger.info("Hid %d suggestion overlay(s) blocking %r", hidden, label)
+        try:
+            await locator.click(timeout=5000)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Click on %r still blocked (%s)", label, e)
+
+    try:
+        await locator.evaluate("el => el.click()")
+        logger.info("DOM-clicked %r (overlay bypass)", label)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.error("Could not click %r at all: %s", label, e)
+        return False
+
+
 async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
                              filter_tag: str | None = None) -> dict:
     """Skip trace uploaded records for phone numbers + emails.
@@ -1293,7 +1350,7 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
     Returns:
         Dict with {success, message}.
     """
-    result = {"success": False, "message": ""}
+    result = {"success": False, "message": "", "reason": "error"}
     logger.info("Starting DataSift skip trace for list: %s", list_name)
 
     try:
@@ -1313,6 +1370,9 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
             # pay-per-record, so a failed filter must not become a paid trace
             # of the whole list. (Week 31 2026-07-27: filter timed out,
             # "continuing anyway" traced 10 records for a 6-row upload.)
+            # The ONLY failure a later retry can fix: a brand-new tag takes up
+            # to ~35 min to become filterable after an upload commits.
+            result["reason"] = "filter_failed"
             result["message"] = (
                 f"Filter failed ({'tag ' + filter_tag if filter_tag else 'list ' + list_name})"
                 " — skip trace aborted to avoid tracing unfiltered records. "
@@ -1388,6 +1448,9 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
             await page.wait_for_timeout(500)
             await tag_input.first.press("Enter")
             await page.wait_for_timeout(500)
+            # Committing the tag leaves the suggestion list open on top of the
+            # submit button — close it now rather than fighting it below.
+            await _dismiss_input_suggestions(page)
             logger.info("Added skip trace tag: %s", tag)
 
         await _screenshot(page, "skip_ready")
@@ -1403,12 +1466,21 @@ async def skip_trace_records(page: Page, list_name: str, confirm: bool = True,
         for btn_text in ["Skip Trace", "Skip Trace Records", "Start Skip Trace", "Submit", "Confirm", "Process"]:
             skip_btn = page.locator(f'button:has-text("{btn_text}")')
             if await skip_btn.count() > 0:
-                await skip_btn.first.click()
+                if not await _click_resilient(page, skip_btn.first, btn_text):
+                    await _screenshot(page, "skip_click_blocked")
+                    result["reason"] = "click_blocked"
+                    result["message"] = (
+                        f"Submit button '{btn_text}' found but every click was "
+                        "intercepted — an overlay is covering it. Retrying will "
+                        "not clear this; run skip trace by hand.")
+                    logger.error(result["message"])
+                    return result
                 logger.info("Clicked '%s' — processing started", btn_text)
                 await page.wait_for_timeout(3000)
                 break
         else:
             await _screenshot(page, "skip_no_button")
+            result["reason"] = "no_button"
             result["message"] = "Could not find skip trace submit button"
             logger.error(result["message"])
             return result

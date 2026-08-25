@@ -265,11 +265,32 @@ async def _skip_trace_week(page, list_name: str, tag: str,
     # 3-attempt/8-min budget could never reach that). Retry every 5 min for
     # ~45 min, reloading the page each round — a failed attempt leaves the
     # filter panel in a state where 'Search for tags' is no longer found.
-    for attempt in range(8):
+    # Only ONE failure mode is worth the 5-min wait: an unfilterable new tag.
+    # Anything else (a blocked click, a missing button) is a page-state problem
+    # that waiting cannot fix — retry it twice, fast, then hand it back. Burning
+    # the full 8x5min on a non-filter failure is what timed out the 2026-08-24
+    # nightly and cost that night's report.
+    res: dict = {}
+    attempt = 0
+    slow_retries = 0
+    while attempt < 8:
         if attempt:
-            logger.info("Tag %r not filterable yet — waiting 5 min and retrying "
-                        "(%d/7)...", tag, attempt)
-            await page.wait_for_timeout(300000)
+            reason = res.get("reason", "error")
+            if reason == "filter_failed":
+                slow_retries += 1
+                logger.info("Tag %r not filterable yet — waiting 5 min and "
+                            "retrying (%d/7)...", tag, slow_retries)
+                await page.wait_for_timeout(300000)
+            elif attempt <= 2:
+                logger.warning("Skip trace failed for a non-filter reason (%s) — "
+                               "reloading and retrying in 60s (%d/2)...",
+                               reason, attempt)
+                await page.wait_for_timeout(60000)
+            else:
+                logger.error("Skip trace keeps failing (%s) — not retryable, "
+                             "giving up early to protect the run's time budget.",
+                             reason)
+                break
         try:
             await page.reload(wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
@@ -280,6 +301,7 @@ async def _skip_trace_week(page, list_name: str, tag: str,
         if res.get("success"):
             logger.info("DataSift skip trace started: %s", res.get("message"))
             return True
+        attempt += 1
     logger.error("DataSift skip trace did NOT start: %s — run it by hand: "
                  "Records -> filter tag %r -> Select all -> Send To -> Skip Trace.",
                  res.get("message"), tag)
