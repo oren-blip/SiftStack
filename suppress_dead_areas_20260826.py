@@ -18,7 +18,7 @@ view but their real market lives in Davie County; those are NOT dead):
     28072  Granite Quarry(Rowan)
 
 STRUCTURE -- keep-set is Oren's buy box: Single Family, Mobile/Manufactured,
-Vacant Land (except commercial-zoned), Residential
+Vacant Land (except commercial- and industrial-zoned), Residential
 (General/Single), and NULL/blank (unknown is not bad -- same philosophy as
 the equity-list exclusion; DataSift enrich fills these over time). Anything
 else -- townhouse, condo, commercial, restaurant, patio home, ... -- is
@@ -93,9 +93,15 @@ DROP_VALUES = ["Townhouse", "Townhouse (Residential)",
                "Duplex (2 units, any combination)",
                "Commercial (General)", "Restaurant", "Patio Home",
                "Mobile Home Park, Trailer Park",
-               # 2026-08-26: Oren reversed the 8/25 keep -- commercial-zoned
-               # vacant land is out of the buy box after all
-               "Commercial-Vacant Land", "commercial-vacant land"]
+               # 2026-08-26: Oren reversed the 8/25 keep -- commercial- and
+               # industrial-zoned vacant land are out of the buy box after all.
+               # The filter is case-SENSITIVE and vendor data mixes cases, so
+               # every value is queried in both observed spellings. Note the
+               # spacing difference is real: Commercial has no spaces around
+               # the hyphen, Industrial does.
+               "Commercial-Vacant Land", "commercial-vacant land",
+               "Industrial - Vacant Land", "industrial - vacant land",
+               "Industrial-Vacant Land", "industrial-vacant land"]
 
 # keep-rules for the lane scan (lowercase substring match). Tuned against the
 # real lane vocabulary 2026-08-26: "modular" keeps Modular/Pre-Fabricated Homes
@@ -108,7 +114,8 @@ KEEP_SUBSTRINGS = ("single family", "mobile home", "manufactured", "modular",
                    "vacant land", "residential (general", "rural",
                    "use not specified")
 DROP_OVERRIDES = ("mobile home park", "commercial-vacant land",
-                  "commercial - vacant land")
+                  "commercial - vacant land", "industrial-vacant land",
+                  "industrial - vacant land")
 
 PLAN = REPO / "output" / "dead_area_plan_20260826.csv"
 SCAN_CACHE = REPO / "output" / "structure_scan_20260826.json"
