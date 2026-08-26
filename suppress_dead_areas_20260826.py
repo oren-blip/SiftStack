@@ -2,8 +2,9 @@
 
 Day 2 universal suppression stack items 4 and 5 (equity was item 3, done
 2026-08-25; sold is item 2, done 2026-08-23). Approved by Oren 2026-08-25:
-the 5-zip roster only, Commercial-Vacant Land KEPT as land, one-time sweep
-now with a quarterly refresh (no nightly wiring).
+the 5-zip roster only, one-time sweep now with a quarterly refresh (no
+nightly wiring). Commercial-Vacant Land was kept on 8/25 and REVERSED to
+suppressed on 8/26 -- commercial-zoned vacant land is out of the buy box.
 
 DEAD ZIPS -- Market Finder measured <=1 investor transaction in 6 months
 (Ty's bar), verified in-footprint (the zip's primary county is one we
@@ -17,7 +18,7 @@ view but their real market lives in Davie County; those are NOT dead):
     28072  Granite Quarry(Rowan)
 
 STRUCTURE -- keep-set is Oren's buy box: Single Family, Mobile/Manufactured,
-Vacant Land (any variant, incl. Commercial-Vacant Land), Residential
+Vacant Land (except commercial-zoned), Residential
 (General/Single), and NULL/blank (unknown is not bad -- same philosophy as
 the equity-list exclusion; DataSift enrich fills these over time). Anything
 else -- townhouse, condo, commercial, restaurant, patio home, ... -- is
@@ -91,7 +92,10 @@ DROP_VALUES = ["Townhouse", "Townhouse (Residential)",
                "Condominium Unit (Residential)",
                "Duplex (2 units, any combination)",
                "Commercial (General)", "Restaurant", "Patio Home",
-               "Mobile Home Park, Trailer Park"]
+               "Mobile Home Park, Trailer Park",
+               # 2026-08-26: Oren reversed the 8/25 keep -- commercial-zoned
+               # vacant land is out of the buy box after all
+               "Commercial-Vacant Land", "commercial-vacant land"]
 
 # keep-rules for the lane scan (lowercase substring match). Tuned against the
 # real lane vocabulary 2026-08-26: "modular" keeps Modular/Pre-Fabricated Homes
@@ -103,7 +107,8 @@ DROP_VALUES = ["Townhouse", "Townhouse (Residential)",
 KEEP_SUBSTRINGS = ("single family", "mobile home", "manufactured", "modular",
                    "vacant land", "residential (general", "rural",
                    "use not specified")
-DROP_OVERRIDES = ("mobile home park",)
+DROP_OVERRIDES = ("mobile home park", "commercial-vacant land",
+                  "commercial - vacant land")
 
 PLAN = REPO / "output" / "dead_area_plan_20260826.csv"
 SCAN_CACHE = REPO / "output" / "structure_scan_20260826.json"
