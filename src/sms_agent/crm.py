@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import logging
 import sys
+from contextlib import contextmanager
 from typing import Any, Optional
 
 from . import config, store
@@ -89,6 +90,35 @@ def unavailable_reason() -> str:
 def _dry(action: str, **kw) -> dict:
     log.info("DRY_RUN crm.%s %s", action, kw)
     return {"_dry_run": True, "action": action, **kw}
+
+
+# --------------------------------------------------------------- write scope
+# See config.WRITE_SCOPE. The gate lives here rather than at the call sites so
+# that a write path nobody enumerated is refused by default. Opt-out is the one
+# caller allowed to write while the scope is narrowed, and it says so explicitly
+# by entering the context below.
+_OPT_OUT_DEPTH = 0
+
+
+@contextmanager
+def opt_out_write():
+    """Mark the enclosed CRM writes as belonging to the opt-out path."""
+    global _OPT_OUT_DEPTH
+    _OPT_OUT_DEPTH += 1
+    try:
+        yield
+    finally:
+        _OPT_OUT_DEPTH -= 1
+
+
+def writes_allowed() -> bool:
+    return config.WRITE_SCOPE == "all" or _OPT_OUT_DEPTH > 0
+
+
+def _blocked(action: str, **kw) -> dict:
+    log.info("WRITE_SCOPE=%s blocks crm.%s %s", config.WRITE_SCOPE, action, kw)
+    return {"skipped": f"blocked by SMS_AGENT_WRITE_SCOPE={config.WRITE_SCOPE}",
+            "action": action}
 
 
 # ------------------------------------------------------------------- reads
@@ -185,6 +215,12 @@ def deal_context(record_uuid: str) -> dict:
         "baths": rec.get("bathrooms"),
         "sqft": rec.get("sqft"),
         "year_built": rec.get("year"),
+        # Display-only, for the Slack triage line. NOT in respond._facts_block's
+        # allow-list, so none of this reaches the model. structure_type is what
+        # tells us the estimate below is a house number stamped on raw land.
+        "structure_type": rec.get("structure_type"),
+        "lot_size": rec.get("lot_size"),
+        "parcel_id": rec.get("parcel_id") or rec.get("apn"),
         "estimated_value": rec.get("estimate_value"),
         "equity_percent": rec.get("equity_percent"),
         "last_sold": rec.get("last_sold"),
@@ -495,6 +531,8 @@ def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
     /upsert-phones/ with the FULL phone object. It upserts by number, so the
     type / tags / is_connected must be preserved or they are wiped.
     """
+    if not writes_allowed():
+        return _blocked("set_phone_status")
     status = status.upper()
     if status not in PHONE_STATUSES:
         return {"error": f"invalid phone status {status}"}
@@ -539,6 +577,8 @@ def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
 
 
 def add_tags(record_uuid: str, tags: list[str]) -> dict:
+    if not writes_allowed():
+        return _blocked("add_tags")
     c = client()
     if not c:
         return {"error": unavailable_reason()}
@@ -551,6 +591,8 @@ def add_tags(record_uuid: str, tags: list[str]) -> dict:
 
 
 def set_status(record_uuid: str, status: str) -> dict:
+    if not writes_allowed():
+        return _blocked("set_status")
     c = client()
     if not c:
         return {"error": unavailable_reason()}
@@ -569,6 +611,8 @@ def assign(record_uuid: str, user_uuid: str) -> dict:
     returns 200 and silently no-ops. The field the API actually reads is
     `assigned_to` (a bare uuid, not a dict).
     """
+    if not writes_allowed():
+        return _blocked("assign")
     c = client()
     if not c:
         return {"error": unavailable_reason()}
@@ -600,6 +644,8 @@ def bump_sms_attempts(record_uuid: str) -> dict:
     are paced a minute apart and one record is never texted twice in a day, so
     two writers on one record is not a situation that arises.
     """
+    if not writes_allowed():
+        return _blocked("bump_sms_attempts")
     c = client()
     if not c:
         return {"error": unavailable_reason()}
@@ -682,6 +728,12 @@ def reassert_handoff_assignment(assignee_uuid: str, limit: int = 200) -> dict:
 
 
 def post_note(record_uuid: str, message: str, pinned: bool = False) -> dict:
+    if not config.ALLOW_NOTES:
+        # See config.ALLOW_NOTES. This route is the record-page SMS composer on
+        # this account; a note written through it reached a stranger's phone.
+        # Refusing loudly beats a silent send.
+        log.info("notes disabled; not posting to %s", record_uuid[:8])
+        return {"skipped": "notes disabled (SMS_AGENT_ALLOW_NOTES=0)"}
     c = client()
     if not c:
         return {"error": unavailable_reason()}

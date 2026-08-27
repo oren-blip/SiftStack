@@ -207,6 +207,11 @@ def run(live_model: bool = False) -> int:
     # is a fixed template rather than a draft, which is why it is allowed here.
     _phase, _answer = config.PHASE, config.ANSWER_WHO
     config.PHASE = 2
+    # Force the template ON regardless of production config. This block tests
+    # that the code path WORKS; whether it runs live is .env's decision, and on
+    # this account it is off (SMS_AGENT_ANSWER_WHO=0) because it queues a real
+    # message without a phase gate. The fallback-when-off case is tested below.
+    config.ANSWER_WHO = True
     before = len(stub.slack)
     out = inbound("8650008888", "who is this?")
     r.check("answers the question itself", out.get("action") == "answered_who",
@@ -361,8 +366,22 @@ def run(live_model: bool = False) -> int:
     r.check("routes to opted_out", out.get("action") == "opted_out", str(out.get("action")))
     r.check("suppressed locally", store.is_suppressed("8650001111") == "opt_out")
     r.check("smrtPhone DNT written", "8650001111" in stub.dnt)
-    r.check("Do Not Market tagged",
-            any(w[0] == "add_tags" and config.TAG_OPT_OUT in w[1][1] for w in stub.crm_writes))
+    # How far the opt-out reaches is a policy setting, so assert what the active
+    # policy promises rather than one house style. Either way the number itself
+    # is suppressed and DNC'd, which is the part that must never regress.
+    tagged = any(w[0] == "add_tags" and config.TAG_OPT_OUT in w[1][1] for w in stub.crm_writes)
+    if config.OPT_OUT_SCOPE == "full":
+        r.check("Do Not Market tagged", tagged)
+    else:
+        r.check("scope=phone leaves the record marketable", not tagged,
+                "Do Not Market was tagged anyway")
+    r.check("the number is DNC'd whatever the scope",
+            any(w[0] == "set_phone_status" and "DNC" in str(w[1]).upper()
+                for w in stub.crm_writes),
+            str([w[0] for w in stub.crm_writes]))
+    r.check("no note is written to the message endpoint",
+            not any(w[0] == "post_note" for w in stub.crm_writes) or config.ALLOW_NOTES,
+            "post_note fired with notes disabled")
     r.check("no reply drafted to an opt-out", not stub.sent)
 
     # ---- 3. wrong number -----------------------------------------------
@@ -396,6 +415,87 @@ def run(live_model: bool = False) -> int:
     r.check("post names the owner and the action",
             any("Call within 5 minutes" in s for s in stub.slack), str(stub.slack[:1]))
     r.check("flushing twice does not repost", _w.flush_escalations() == 0)
+
+    # ---- 4b. the triage line: their ask against our estimate --------------
+    # Mark Pilkington (401 W 1St St, 2026-08-22) said "it can be yours for
+    # 350,000". The post carried beds and baths but no value, so deciding it was
+    # over the buy box meant opening the record. Negative controls matter more
+    # than the positives here: a bare year or a house number read as a price
+    # would put a fake asking price on every handoff.
+    print("\ntriage line")
+    for text, want in (
+        ("It is my parents- it can be yours for 350,000", "$350,000"),
+        ("$100,000", "$100,000"),
+        ("I'd take 250k for it", "$250,000"),
+        ("250000 firm", "$250,000"),
+        ("The house was built in 1962", ""),
+        ("we moved here in 1998", ""),
+        ("I live at 401 W 1St St", ""),
+        ("call me at 704 621 0442", ""),
+        ("Wrong number", ""),
+        ("", ""),
+    ):
+        got = escalate._asking_price(text)
+        r.check(f"ask from {text[:34]!r}" if text else "ask from an empty message",
+                got == want, f"got {got!r}, want {want!r}")
+    # Vacant land must never be quoted a house estimate. Real case: 175 Organ
+    # Church Rd carried estimate_value $255,000 on a 1.03-acre empty lot that
+    # LandPortal reads at $69,196, which turned a $100,000 OVER-ask into what
+    # looked like a bargain. Negative controls confirm a real house still shows
+    # its number.
+    r.check("record typed vacant land is caught",
+            escalate._is_vacant_land({"structure_type": "Residential-Vacant Land"}))
+    r.check("lot size with no dwelling is caught",
+            escalate._is_vacant_land({"lot_size": 1.03}))
+    r.check("a house is NOT called land",
+            not escalate._is_vacant_land(
+                {"structure_type": "Single Family Residential", "beds": 3,
+                 "baths": 2, "sqft": 1400, "lot_size": 0.25}))
+    r.check("a house with only beds known is NOT called land",
+            not escalate._is_vacant_land({"beds": 3, "lot_size": 0.3}))
+    r.check("an empty context is NOT called land", not escalate._is_vacant_land({}))
+
+    # LandPortal supplies the honest land number. Stubbed so this stays offline
+    # and spends none of the ~10/day property-data allowance.
+    LAND_CTX = {"structure_type": "Residential-Vacant Land", "lot_size": 1.03,
+                "parcel_id": "3881015", "county": "Rowan", "street": "175 Organ Church Rd",
+                "owner_first": "Penny", "estimated_value": "255000.00"}
+    _real_land = escalate._land_value
+    try:
+        escalate._land_value = lambda ctx: {"tlp_estimate": 69196.0, "county_value": 16429.0,
+                                            "acres": 1.03, "source": "landportal"}
+        stub.slack.clear()
+        escalate.hot_lead("8650007777", "$100,000", "INTERESTED", context=LAND_CTX)
+        post = stub.slack[-1] if stub.slack else ""
+        r.check("land ask is priced against LandPortal", "LandPortal $69,196" in post, post)
+        r.check("the DataSift house estimate never appears on land",
+                "255,000" not in post, post)
+
+        # And when LandPortal cannot answer, say so — never fall back to the
+        # dwelling estimate. This is the regression that inverts a decision:
+        # $100,000 looks like a bargain against a fake $255,000 and an over-ask
+        # against the real ~$69,000.
+        escalate._land_value = lambda ctx: None
+        stub.slack.clear()
+        escalate.hot_lead("8650007778", "$100,000", "INTERESTED", context=LAND_CTX)
+        post = stub.slack[-1] if stub.slack else ""
+        r.check("no LandPortal read means no estimate is quoted",
+                "no reliable estimate" in post, post)
+        r.check("still no DataSift estimate on the fallback path",
+                "255,000" not in post, post)
+    finally:
+        escalate._land_value = _real_land
+
+    # The lookup must refuse quietly rather than reach the network half-armed.
+    r.check("no parcel means no LandPortal call", escalate._land_value({"county": "Rowan"}) is None)
+    r.check("no county means no LandPortal call",
+            escalate._land_value({"parcel_id": "3881015"}) is None)
+    r.check("an empty context means no LandPortal call", escalate._land_value({}) is None)
+
+    r.check("money formats with separators", escalate._fmt_money(205000) == "$205,000",
+            escalate._fmt_money(205000))
+    r.check("money ignores what is not a number",
+            escalate._fmt_money("n/a") == "" and escalate._fmt_money(None) == "")
     # The agent must NOT advance lead status. Interest is not qualification, and
     # only the person who makes the call decides that. It also kept the record
     # inside the Hottest cadence and out of the sequence that reassigns new

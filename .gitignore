@@ -110,3 +110,7 @@ state/pipeline.lock
 
 # KPI engine cached auth token (secret)
 .claude/skills/kpi-engine/scripts/reisift_token.txt
+
+# smrtPhone browser session (a live credential) + SMS agent local config
+smrtphone_state.json
+config/sms_senders.json

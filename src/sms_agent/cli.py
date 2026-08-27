@@ -382,6 +382,16 @@ def cmd_reconcile(args) -> int:
     from . import reconcile
 
     result = reconcile.run(pages=args.pages, apply=not args.dry_run)
+
+    # Reconcile is the whole worker when the agent runs poll-only (no FastAPI
+    # box), and _do_hot_lead only QUEUES the Slack handoff — worker.run_once is
+    # what flushes the queue. Without this, a hot lead sits in the escalations
+    # table forever (3364237887 + 7042985346 did exactly that, 2026-08-26).
+    # Flush here rather than run_once(): run_once also drains the outbox and
+    # kicks the campaign scheduler, which a read-only poll must not do.
+    if not args.dry_run and config.PHASE >= 2:
+        result["handoffs_posted"] = worker.flush_escalations()
+
     print(json.dumps({k: v for k, v in result.items() if k != "results"}, indent=2))
     for r in result.get("results", [])[:20]:
         print(f"  {r['phone']}  -> {r['action']}")

@@ -154,6 +154,32 @@ TAG_AI_HANDLED = f"{TAG_PREFIX}ai_handled"
 TAG_ESCALATED = f"{TAG_PREFIX}escalated"
 TAG_OPT_OUT = "Do Not Market"
 
+# How far an opt-out reaches into the CRM.
+#   "phone" - set the DNC status on the number that said stop, and nothing else.
+#             The record stays marketable on its other channels. This is Oren's
+#             rule (2026-08-24): a stop is about that line, not the lead.
+#   "full"  - Ty's default: also tag the whole record `Do Not Market`.
+# Local suppression and the smrtPhone DNT attempt happen either way, so the
+# agent never texts that number again regardless of this setting.
+OPT_OUT_SCOPE = _env("SMS_AGENT_OPT_OUT_SCOPE", "phone").lower()
+
+# WHICH writes are allowed at all, independent of DRY_RUN.
+#   "opt_out" - ONLY the opt-out path may touch the CRM. Everything else (wrong
+#               numbers, escalation tags, needs-answer CORRECT, sms counters) is
+#               refused even with DRY_RUN off. Oren, 2026-08-24: honor stops for
+#               real, leave the rest of the data alone until he says otherwise.
+#   "all"     - every write function is live, gated only by DRY_RUN.
+# Enforced inside crm.py, NOT at the call sites, so a write path nobody thought
+# about is blocked by default rather than discovered in production.
+WRITE_SCOPE = _env("SMS_AGENT_WRITE_SCOPE", "opt_out").lower()
+
+# Notes post to /api/internal/property/{uuid}/message/. On this account that
+# endpoint family is the RECORD-PAGE SMS COMPOSER: a "note" written there on
+# 2026-08-10 was TEXTED to a stranger. Until someone proves this specific route
+# is inert here, the agent does not write notes at all. Nothing depends on them;
+# every action it takes is already visible in Slack and the local event log.
+ALLOW_NOTES = _env("SMS_AGENT_ALLOW_NOTES", "0") in ("1", "true", "True")
+
 # Identity. The thread is signed by the person ACTUALLY ASSIGNED to the record
 # (the `assigned_to` uuid), so the name in the text is the name that calls.
 # SENDER_NAME is only the fallback for an unassigned record. If both are empty

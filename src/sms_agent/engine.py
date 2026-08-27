@@ -268,12 +268,20 @@ def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
     # trace attaches one line to several owners; leaving the others untagged
     # means the number gets dialled again tomorrow by someone else.
     targets = _all_records_for(phone, record_uuid, matches)
-    for uuid in targets:
-        acts.append(
-            f"CRM tag {config.TAG_OPT_OUT} on {uuid[:8]}: "
-            f"{_report(crm.add_tags(uuid, [config.TAG_OPT_OUT]))}"
-        )
-        crm.post_note(uuid, f"SMS opt-out received from {phone}. Suppressed from all texting.")
+    if config.OPT_OUT_SCOPE == "full":
+        with crm.opt_out_write():
+            for uuid in targets:
+                acts.append(
+                    f"CRM tag {config.TAG_OPT_OUT} on {uuid[:8]}: "
+                    f"{_report(crm.add_tags(uuid, [config.TAG_OPT_OUT]))}"
+                )
+                crm.post_note(
+                    uuid, f"SMS opt-out received from {phone}. Suppressed from all texting."
+                )
+    else:
+        # Oren's rule: a stop is about the LINE, not the lead. The number gets
+        # DNC'd below; the record keeps its other numbers and its mail.
+        acts.append(f"scope=phone: no {config.TAG_OPT_OUT} tag, record left marketable")
     if len(targets) > 1:
         acts.append(f"applied across {len(targets)} records sharing this number")
 
@@ -284,11 +292,16 @@ def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
     # dispositioned DNC there is excluded at the source, for us and for callers,
     # forever, without depending on a vendor endpoint we cannot reach.
     wrong = bool(body and classify.classify_rules_wrong_number(body))
-    for uuid in targets:
-        status = crm.dnc_status(uuid, phone, wrong_number=wrong)
-        acts.append(
-            f"phone -> {status} on {uuid[:8]}: {_report(crm.set_phone_status(uuid, phone, status))}"
-        )
+    # The one CRM write the narrowed scope permits. Everything else the agent
+    # might want to write is refused by crm.writes_allowed() until Oren widens
+    # SMS_AGENT_WRITE_SCOPE.
+    with crm.opt_out_write():
+        for uuid in targets:
+            status = crm.dnc_status(uuid, phone, wrong_number=wrong)
+            acts.append(
+                f"phone -> {status} on {uuid[:8]}: "
+                f"{_report(crm.set_phone_status(uuid, phone, status))}"
+            )
 
     if not ok and config.PHASE >= 2:
         # Sift now carries the suppression, so this is a note rather than the
