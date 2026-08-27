@@ -106,6 +106,7 @@ _SUFFIX = {
     "NORTHWEST": "NW", "NORTHEAST": "NE", "SOUTHWEST": "SW", "SOUTHEAST": "SE",
 }
 _STATES = {"NC", "SC", "VA", "TN", "GA", "FL", "DE"}
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 _CANON_SUFFIX = set(_SUFFIX.values()) | {
     "ST", "RD", "DR", "LN", "CT", "CIR", "PL", "BLVD", "HWY", "PKWY", "TER",
     "TRL", "PT", "AVE", "RUN", "WAY", "LOOP", "XING", "BND", "RDG",
@@ -240,7 +241,12 @@ def find_record(h: dict, e: dict, out) -> dict | None:
     def owner_ok(rec):
         ow = rec.get("owner") or {}
         first = (ow.get("first_name") or "").strip().lower()
-        last = (ow.get("last_name") or "").strip().lower()
+        # Strip suffix tokens from the record's surname before comparing:
+        # DataSift holds 'Maurice Jan Foster Ii' with surname 'Foster Ii'
+        # (the suffix-in-surname import flaw), which made the guard reject
+        # the court PR's own record (found 2026-08-26).
+        last = " ".join(t for t in (ow.get("last_name") or "").strip().lower().split()
+                        if t.rstrip(".") not in _NAME_SUFFIXES)
         return last == want_pr or (first == "heirs" and last == want_dec)
 
     def try_term(term):
