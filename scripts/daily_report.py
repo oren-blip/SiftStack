@@ -446,6 +446,29 @@ def tracerfy_budget_line() -> str:
         return ""
 
 
+def pr_push_queue_line() -> str:
+    """Cases the nightly corrected in the WORKBOOK that still await their
+    DataSift push, or '' when the queue is clear.
+
+    fix_addresses_and_prep queues a case whenever the court's Parties list
+    replaces an invented/placeholder PR on an already-uploaded row (Headen
+    26E002921-590 sat 16 days with a phantom co-owner at the decedent's
+    property because nothing surfaced this). The consumer is manual:
+    python pr_upgrade_step.py --queued  (pushes name + mailing together).
+    """
+    try:
+        cases = [ln.strip() for ln in
+                 (OUTPUT / "pr_push_queue.txt").read_text(encoding="utf-8")
+                 .splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    if not cases:
+        return ""
+    preview = ", ".join(cases[:5]) + ("..." if len(cases) > 5 else "")
+    return (f"PR PUSH QUEUE: {len(cases)} corrected case(s) not yet in DataSift "
+            f"— run  python pr_upgrade_step.py --queued  ({preview})")
+
+
 def kpi_section(today: date, condensed: bool = False) -> list[str]:
     """Short phone-KPI block from output/kpi_daily_ledger.csv (maintained by
     scripts/kpi_refresh.py, which pulls DataSift call activity nightly).
@@ -951,6 +974,10 @@ def render_report(
     # Condensed email stops here: fold runtime, drop total, and Tracerfy burn
     # into a two-line footer that points at the attached full report.
     ts_line = tracerfy_budget_line()
+    q_line = pr_push_queue_line()
+    if q_line:
+        lines.append(q_line)
+        lines.append("")
     if condensed:
         total_drops = sum(polish_stats.get(k, 0) for k in (
             "over_500k", "under_min_value", "heir_occupied", "commercial",

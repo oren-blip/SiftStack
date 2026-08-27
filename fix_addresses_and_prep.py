@@ -3747,12 +3747,24 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
         fill = detail_to_fill_dict(detail)   # None for guardianships, {} if no PR
         if fill:
             had_benef = bool((r.get("Beneficiaries") or "").strip())
+            prev_pr = (r.get("Personal Representative") or "").strip()
             apply_fill_to_row(r, fill)
             if fill.get("Personal Representative"):
                 tag_reason(r, "pr-backfill-parties")
                 filled += 1
                 print(f"  PR backfill {r.get('Case No.')} {r.get('Deceased Owner')}: "
                       f"-> {fill['Personal Representative']}")
+                # The court just REPLACED a name (a promoted co-owner guess,
+                # a "Heirs of" placeholder, or blank). If the case was already
+                # uploaded, DataSift still shows the old contact at the old
+                # mailing — queue the push (pr_upgrade_step --queued carries
+                # name + mailing together). Without this, corrections sat in
+                # the workbook until a manual sweep: Headen 26E002921-590
+                # kept phantom co-owner "Bryn Co" at the decedent's property
+                # for 16 days. queue_pr_push self-guards (upload ledger,
+                # dedup), so an unchanged name simply isn't queued.
+                if fill["Personal Representative"].strip().casefold() != prev_pr.casefold():
+                    queue_pr_push(r)
             # A case can list beneficiaries with no formal PR yet — apply those
             # too rather than discarding the whole fill for want of a PR.
             if fill.get("Beneficiaries") and not had_benef:
@@ -3787,12 +3799,17 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
             fill = detail_to_fill_dict(detail)
             if fill:
                 had_benef = bool((r.get("Beneficiaries") or "").strip())
+                prev_pr = (r.get("Personal Representative") or "").strip()
                 apply_fill_to_row(r, fill)
                 if fill.get("Personal Representative"):
                     tag_reason(r, "pr-backfill-parties")
                     filled += 1
                     print(f"  PR backfill (2nd pass) {r.get('Case No.')} {r.get('Deceased Owner')}: "
                           f"-> {fill['Personal Representative']}")
+                    # Same as the first pass: a replaced name on an uploaded
+                    # case must reach DataSift (see the Headen note above).
+                    if fill["Personal Representative"].strip().casefold() != prev_pr.casefold():
+                        queue_pr_push(r)
                 if fill.get("Beneficiaries") and not had_benef:
                     benef_filled += 1
                     print(f"  BENEFICIARIES (2nd pass) {r.get('Case No.')} "
