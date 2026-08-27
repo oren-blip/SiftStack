@@ -286,6 +286,105 @@ python src/main.py nc-daily \
 - Auto-picks latest per week from `output/`
 - Output: `output/FTM_YYYY_NC_Estates_throughWeekN.xlsx`
 
+## Skip-Trace Stack (build 1.0.35+)
+
+Three sources is the sweet spot; past that is diminishing returns (Ty, 5DDF Day 3
+2026-08-19). **DataSift is source 1 and unlimited since 2026-08-23** — always trace
+there first. Sources 2 and 3 are the only metered decision.
+
+| Provider | Role | Cost | Access |
+|---|---|---|---|
+| DataSift | source 1 | unlimited on plan | in-app |
+| **SmartSkip** | source 2 — the relative cluster | **$0.15/row** | **CSV only, NO API** |
+| Enformion | PR phone fallback, nightly | $0.35/match | API (`src/enformion_client.py`) |
+| Tracerfy | heir traces | $0.02/hit | API |
+| Trestle | scores every resulting number | $0.015/phone | API |
+
+**Where it's worth it:** first-to-market county data — yes. Deep prospecting — a
+must-have. Bulk Priority 1 / SiftMap — **no**, DataSift + Trestle already reaches
+~90% of what's reachable and 3x tracing bulk burns money fast.
+
+### SmartSkip round-trip (`src/smartskip_io.py`)
+
+SmartSkip has **no API and never will** — their own "API vs manual" post argues
+against them. So this is a CSV round-trip with a human in the middle:
+
+```bash
+# 1. build the upload file (dedupes across weeks; writes a sidecar keymap)
+python src/smartskip_io.py export output/*_dm_enriched.csv --filter heirs
+python src/smartskip_io.py export <csv...> --filter no-phone --dry-run   # cost only, $0
+
+# 2. upload that CSV at smartskip.io, download the campaign-format result
+
+# 3. parse it back: cluster -> signer gate -> Trestle -> review CSV
+python src/smartskip_io.py ingest <download> --keymap <the_keymap.csv>
+python src/smartskip_io.py ingest <download> --max-people 3 --no-trestle
+```
+
+- **Subject = the DECEASED OWNER at the PROPERTY address**, not the PR. Ty:
+  *"the input name is the person who is the owner on title."* Tracing the PR
+  returns the PR's own numbers, which we usually already have; tracing the
+  decedent returns the family cluster. `--subject pr` exists for the narrow case.
+- **The signer gate is load-bearing.** One $0.15 hit returned **41 associated
+  people**; the flow keeps ~3. DataSift caps phones per record (~30), so a raw
+  cluster would blow the record up. `shortlist()` drops
+  neighbours/associates/roommates outright, then ranks spouse > child >
+  grandchild > sibling > parent > niece/nephew > in-law, preferring people who
+  actually have a phone and a mailing address.
+- **Only Dial First / Dial Second survive** Trestle scoring. Cached numbers
+  (`output/.trestle_score_cache.json`, ~2,900 entries) are free; only new ones
+  bill, and `--max-spend` (default $5) is a hard ceiling. A number that could
+  not be scored is KEPT — unscored is unknown, not bad.
+- **Rejoin** is via `SiftKey` (`surname-firstinitial-zip5`), emitted as a column
+  AND a sidecar keymap, because a vendor template may strip unknown columns.
+- **Confirmed export schema** (live run 2026-08-24, 79 columns, one row per
+  person). Two columns carry different things and it matters:
+  - `Relationship` = the ROLE — `Subject` / `Relative` / `Associate`
+  - `Possible Type` = the actual TIE — Spouse, Child, Parent, Sibling, In-law,
+    Other Relative, Unknown, Neighbor, Past neighbor, Friend, Tenant,
+    Coworker, Landlord
+
+  We rank on the tie and filter on the role. **The `Subject` row is the dead
+  owner returned inside their own cluster** — dropped, along with the whole
+  `Associate` role and anyone flagged `Deceased`. The found person's name is in
+  plain `First Name`/`Last Name`; `Input Name` is the SUBJECT we searched for,
+  so mixing them up would stamp the decedent's name on every heir.
+  Phones ship as trios (`Phone N number` / `type` / `connected`) up to 15, plus
+  16 email slots; connected numbers are ordered first (only ~10% carry the flag).
+- `SiftKey` does NOT survive the round trip — SmartSkip strips unknown columns.
+  Rejoin falls back to `Input Name` + `Property Zip`, which matched **82/82** on
+  the live run. Keep the sidecar keymap.
+- **Their spouse detection is weak** — 9 `Spouse` labels in 1,178 rows. A
+  95-year-old living at the subject property came back typed `Unknown`. The
+  `At Property` column in the review CSV catches these (47 of 330 on the live
+  run) and doubles as the occupied-hold signal.
+- The parser sniffs LONG (one row per person) vs WIDE (`Relative N Name` groups)
+  and raises with the headers it saw rather than silently returning nothing.
+  `UPLOAD_COLUMNS` was verified against their real mapping screen — all ten
+  fields auto-mapped, no `Middle Name` (leave it blank; putting anything there
+  poisons every search).
+- Writes a **review CSV only**. Nothing is uploaded to DataSift, ever, without
+  being asked first.
+
+Measured 2026-08-24 on 31 weekly files: 1,350 rows → 220 "Heirs of" → **82 unique
+traceable subjects = $12.30** one-time backlog (121 were cross-week duplicates,
+17 had no address anchor). **Live result:** 1,178 people returned (median 15 per
+estate, max 30) → **330 kept across 70 of the 82 estates** — 114 Child, 71
+In-law, 55 Sibling, 53 Parent, 9 Spouse. 12 estates returned nothing usable.
+
+### Enformion spend cap
+
+`src/enformion_client.py` bills $0.35 per MATCH (misses free) and ran **uncapped**
+until 2026-08-24 — 150 matches over 10 days, $52.50, ~$160/mo. Now every billed
+match counts against `NC_ENFORMION_MAX_SPEND` (default **$10.00 per process**);
+past that the client goes inert for the run and logs once. Cache hits and misses
+never count. `NC_ENFORMION_MAX_SPEND=0` disables the cap. Spend is reported in the
+nightly log line from `nc_deep_prospect.py`.
+
+Note: Ty stopped naming Enformion in his taught stack on Day 3, but **his own v5
+skill still ships it as the primary heir-resolution path**, and SmartSkip cannot
+run unattended inside the nightly build. Keep it until the bake-off says otherwise.
+
 ## DataSift.ai (REISift) Integration
 
 DataSift.ai (formerly REISift) is the CRM where scraped records land for niche sequential marketing campaigns. There is **no REST API** — upload is via Playwright browser automation of the web UI.

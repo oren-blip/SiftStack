@@ -22,7 +22,8 @@ the NC probate pipeline comes from. When cohorts disagree, the August run is the
 |-----|------|-------|---|
 | [1](notes/day-1-2026-08-17-key-teachings.md) | 2026-08-17 (Mon) | **Market & data strategy** — Doors Per Deal v2 web tool (market-share stacking, per-county FTM Excel roadmap), first cohort with the DataSift API live, obituary timing split-tests, one-command install of the 74-agent/22-skill library | ✅ real names |
 | [2](notes/day-2-2026-08-18-key-teachings.md) | 2026-08-18 (Tue) | **Niche sequential marketing** — tags/presets conveyor, sold suppression ("most important workflow"), Trestle 2,000-number experiment, Number Verifier spam playbook, autonomous two-way SMS agent, not-interested campaigns (20–30% of deals), team ladder. 4h17m, longest session; Tyler co-teaches | ✅ real names |
-| 3–5 | 2026-08-19 → 21 | *not yet recorded/imported* | — |
+| [3](notes/day-3-2026-08-19-key-teachings.md) | 2026-08-19 (Wed) | **Deep prospecting** — skip-trace tiers explained, DataSift+SmartSkip+DirectSkip at $0.25–0.45/record (SmartSkip $0.15/hit returns 41 relatives in one call), "find the top 100 opportunities" account-wide ranking, one-shot account build via plan mode + Fable, handwritten mail to 3–6 heirs per record. 2h37m, lightest day; API-gated throughout | ✅ real names |
+| 4–5 | 2026-08-20 → 21 | *not yet recorded/imported* | — |
 
 Each August notes file opens with a **"What changed since the July cohort"** section — read that
 before quoting July numbers. Headline Day 1 deltas: DataSift API shipped (Deal Room beta), Ty
@@ -30,7 +31,7 @@ resumed FTM probate (July's "paused entirely" is stale), Claude model advice now
 AI plan threshold lowered to $3–5K/mo spend.
 
 **Written guides:** the August Challenge Hub links written modules per day (13 on Day 1, 6 on
-Day 2). Local copies live in [guides/day-1/](guides/day-1/) and [guides/day-2/](guides/day-2/)
+Day 2, 2 on Day 3). Local copies live in [guides/day-1/](guides/day-1/), [guides/day-2/](guides/day-2/) and [guides/day-3/](guides/day-3/)
 (start at each folder's `README.md` digest — it says which guide holds which table so you don't
 have to open them all). Fetch future days with `python scripts/fetch_challenge_guides.py <day>`
 the week they air — **hub pages are sunset each cohort**, so the local copy is the durable one.
@@ -38,6 +39,10 @@ the week they air — **hub pages are sunset each cohort**, so the local copy is
 The remaining August days import with
 `python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — the 8/18–8/21
 dates auto-map to Days 2–5.
+
+Day 3's downloadable assets (skill file, example research pack, tech-stack SOP, and the 83-resource
+hub sheet whose Day 4–5 tabs are already populated) are in
+[guides/day-3/downloads/](guides/day-3/downloads/) — see that folder's `README.md`.
 
 ### July 2026 cohort (complete)
 

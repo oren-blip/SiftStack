@@ -35,6 +35,29 @@ Links Ty posted in chat:
 
 Student/community links: https://tactiq.io/r/transcribing (Tactiq transcription), https://addleverage.com/ + https://realva.services/ + https://www.ninjaassistants.com/#hero + https://vainusa.com/apply/ (VA hiring services), https://code.visualstudio.com/ (VS Code for newcomers). Notable chat intel: "scrapling gets past cloudflare" (John Sterling); Ty hinted he's building his own caller-reputation site (per Ryan Hawker's read); Quo dialer mentioned as a smrtphone alternative.
 
+## August 2026 cohort — Day 3 (2026-08-19)
+
+Links Ty posted in chat:
+
+| Link | What it is |
+|---|---|
+| https://smartskip.io/ | **SmartSkip** — the day's "big unlock" second skip-trace source, $0.15/hit. One hit returned 41 associated relatives with phones. Non-affiliate |
+| https://get.directskip.com/easylists/ | **DirectSkip** — the third source; Ty is migrating off Tracerfy to this for teaching simplicity. Non-affiliate |
+| https://learn.datasift.ai/agent-org-chart | Agent org chart again — 9 divisions / 74 agents / 22 skills |
+| https://learn.datasift.ai/deal-room | Deal Room — the only way to get API access before the end-of-September public rollout (110 members at the time of the call) |
+| https://learn.datasift.ai/county-list-playbook#39049I | County list playbook, deep-linked to a specific FIPS |
+
+Day 3's downloadable assets are archived locally in [guides/day-3/downloads/](guides/day-3/downloads/):
+the Deep Prospecting skill file (byte-identical to our installed copy), Ty's example research pack for
+5100 Stokely Ln, the Deal Flow Tech Stack SOP spreadsheet, and the 83-resource hub sheet — whose
+**Day 4 and Day 5 tabs are already populated**. Two items listed on the Day 3 sheet have no URL
+anywhere on the hub: the Day 3 Workbook PDF (email/Zoom-chat attachment) and
+`probate-property-finder.skill` (already installed).
+
+Student/community links: https://tactiq.io/r/transcribing (Tactiq again). Notable chat intel: Nick
+Redmond posted full door-knocking metrics for 6/3–8/17/26 — 95 hrs, 188 doors, 59 contacts, 11 leads,
+4 contracts, $52,500 gross profit logged.
+
 ## Challenge material
 
 | Link | What it is |
