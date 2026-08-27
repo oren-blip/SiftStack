@@ -265,7 +265,9 @@ def _enformion_fallback_pr_phones(trace_notices: list, meta: dict,
         _mark_reason(row, "enformion-phone")
         filled += 1
     logger.info("%s: Enformion filled phones for %d row(s), flagged %d "
-                "deceased PR(s)", src_name, filled, flagged)
+                "deceased PR(s) - billed $%.2f this run%s", src_name, filled,
+                flagged, enformion_client.spend_this_run(),
+                " (SPEND CAP HIT)" if enformion_client.cap_reached() else "")
     return filled, flagged
 
 

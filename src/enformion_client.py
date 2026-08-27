@@ -10,6 +10,12 @@ Inert until credentials exist: set ENFORMION_AP_NAME / ENFORMION_AP_PASSWORD
 in .env (Enformion Console -> API access profile, NOT the website login).
 Off-switch: NC_ENFORMION=0.
 
+Spend cap: every BILLED match counts against NC_ENFORMION_MAX_SPEND
+(default $10.00 per process). Cache hits and misses are free and never
+count. Once the cap is reached the client goes inert for the rest of the
+run and logs a single warning — a runaway loop can no longer quietly bill
+hundreds of dollars. Set NC_ENFORMION_MAX_SPEND=0 for no cap.
+
 Persistent disk cache (output/.nc_enformion_cache.json): the daily build
 re-runs deep prospecting on the same in-progress week each night, so
 successful lookups are remembered for NC_ENFORMION_CACHE_TTL_DAYS (default
@@ -43,6 +49,25 @@ _MAX_PHONES = 6                # cap per person (skill Step D discipline)
 _CACHE_PATH = Path("output") / ".nc_enformion_cache.json"
 _PERSIST_VERSION = 1
 _TTL_DAYS = float(os.environ.get("NC_ENFORMION_CACHE_TTL_DAYS", "14"))
+
+# ── Per-process spend cap ─────────────────────────────────────────────────
+# Measured run rate on 2026-08-24: 150 billed matches over 10 days (~$52.50,
+# ~$160/mo) with NO ceiling of any kind. $10/run is ~2x the observed daily
+# spend — high enough never to truncate a normal nightly build, low enough
+# that a bug cannot run up a month's budget in one night.
+_MAX_SPEND = float(os.environ.get("NC_ENFORMION_MAX_SPEND", "10.00"))
+_spend = 0.0
+_cap_logged = False
+
+
+def spend_this_run() -> float:
+    """Dollars billed by this process so far (matches only)."""
+    return _spend
+
+
+def cap_reached() -> bool:
+    """True once the per-process spend cap is exhausted (0 == no cap)."""
+    return _MAX_SPEND > 0 and _spend >= _MAX_SPEND
 
 
 def credentials_present() -> bool:
@@ -177,6 +202,16 @@ def person_search_phones(first: str, last: str, city: str, state: str,
     if hit and (time.time() - hit.get("ts", 0)) < _TTL_DAYS * 86400:
         return hit["result"]
 
+    global _spend, _cap_logged
+    if cap_reached():
+        if not _cap_logged:
+            logger.warning(
+                "Enformion spend cap reached ($%.2f of $%.2f) - no further "
+                "lookups this run. Raise NC_ENFORMION_MAX_SPEND or set it to "
+                "0 to disable the cap.", _spend, _MAX_SPEND)
+            _cap_logged = True
+        return None
+
     addr2 = " ".join(p for p in (f"{city.strip()}," if city.strip() else "",
                                  (state or "NC").strip(), zip_code.strip()) if p)
     body = {"FirstName": first, "LastName": last,
@@ -210,6 +245,9 @@ def person_search_phones(first: str, last: str, city: str, state: str,
     person = _best_match(resp, last, city, zip_code)
     if person is None:
         return None  # miss — free, and NOT cached so late indexing retries
+
+    # Billed: a match is the only thing Enformion charges for.
+    _spend += COST_PER_MATCH
 
     nm = person.get("name") or {}
     result = _extract_phones(person)
