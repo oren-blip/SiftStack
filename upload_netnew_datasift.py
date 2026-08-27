@@ -645,6 +645,28 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             logger.warning("Text-touch backfill sweep failed (%s) — run by hand: "
                            "python text_touch_api_backfill.py --apply", e)
 
+    # ── APN backfill sweep (2026-08-26): the upload CSV dropped its APN column
+    # 2026-07-12 (the wizard really does ignore an uploaded APN), and DataSift's
+    # enrich resolves parcels by ADDRESS — so vacant lots with "0 <street>" /
+    # numberless addresses sit in the NSM presets with a blank parcel field
+    # forever (9 found across the flow when Oren flagged it). The parcel field
+    # IS writable by API PATCH, and the pipeline already knows every parcel.
+    # Free — reads the weekly *_datasift.csv files, no paid APIs.
+    if backfill:
+        try:
+            from apn_backfill_step import run_sweep as apn_sweep
+            logger.info("APN backfill sweep (NSM folder presets; "
+                        "unresolvable-address land records)...")
+            arc = await asyncio.to_thread(apn_sweep, apply=True)
+            if arc == 0:
+                logger.info("APN backfill sweep complete.")
+            else:
+                logger.warning("APN backfill sweep exited %d — run by hand: "
+                               "python apn_backfill_step.py --apply", arc)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("APN backfill sweep failed (%s) — run by hand: "
+                           "python apn_backfill_step.py --apply", e)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
