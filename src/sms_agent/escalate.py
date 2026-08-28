@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # The only alert kinds allowed to reach the channel. A live seller, and the
 # daily campaign summary that was explicitly asked for. Everything else is
 # bookkeeping and belongs in the digest.
-ALWAYS_POST = {"handoff", "campaign"}
+ALWAYS_POST = {"handoff", "campaign", "needs_reply"}
 
 RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
@@ -280,9 +280,9 @@ def alert(title: str, detail: str = "", record_uuid: str = "", kind: str = "ops"
     fifth is the seller. Anything not on ALWAYS_POST is logged and left for the
     digest instead of being posted.
 
-    `kind="campaign"` and `kind="handoff"` are the exceptions: one is the daily
-    "here is what went out" that was explicitly asked for, the other is a live
-    seller.
+    `kind="campaign"`, `kind="handoff"`, and `kind="needs_reply"` are the
+    exceptions: the daily "here is what went out" that was explicitly asked
+    for, a live seller, and a live thread waiting on a human answer.
     """
     if config.SLACK_INTERESTED_ONLY and kind not in ALWAYS_POST:
         log.info("slack suppressed (%s): %s | %s", kind, title, detail[:200])

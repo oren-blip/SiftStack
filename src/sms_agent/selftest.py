@@ -240,10 +240,11 @@ def run(live_model: bool = False) -> int:
     out = inbound("8650009111", "who is this?")
     r.check("falls back to a human when the template is off",
             out.get("action") == "needs_human_reply", str(out.get("action")))
-    # The channel is interested parties only, so this reaches the digest and the
-    # log rather than Slack. Asserted so the trade-off is deliberate: a question
-    # nobody answers is now visible only to whoever reads the digest.
-    r.check("bookkeeping stays out of the channel", len(stub.slack) == before,
+    # Reversed 2026-08-27 (Oren): a live thread waiting on a human answer DOES
+    # post — `needs_reply` is on ALWAYS_POST, so the interested-only filter lets
+    # it through. A question visible only in the digest went unanswered in
+    # practice; that was the trade-off this check used to pin.
+    r.check("a waiting question reaches the channel", len(stub.slack) == before + 1,
             f"{len(stub.slack) - before} posts")
     config.PHASE, config.ANSWER_WHO = _phase, _answer
 

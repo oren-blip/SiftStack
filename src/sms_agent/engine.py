@@ -28,7 +28,11 @@ TERMINAL_INTENTS = {"OPT_OUT", "WRONG_NUMBER"}
 
 # A real person asked something and is waiting. Not a hot lead, but it cannot
 # be left in silence while the agent is below the phase that can answer.
-NEEDS_HUMAN_REPLY_INTENTS = {"ASKING_WHO"}
+# OTHER is included (Oren, 2026-08-27): a live person on a mapped thread saying
+# anything at all — "try in about 3 weeks", "who is this" — waits on a human,
+# and the suppressed-alert route meant nobody was told. The cost is an
+# occasional "I'm the roofer" post, which the day's traffic put at 1-2 a day.
+NEEDS_HUMAN_REPLY_INTENTS = {"ASKING_WHO", "OTHER"}
 
 
 def _all_records_for(phone: str, record_uuid: str, matches: Optional[list]) -> list[str]:
@@ -445,10 +449,11 @@ def _do_needs_answer(phone: str, record_uuid: str, body: str, result) -> list[st
 
     if store.mark_notified(phone, "needs_reply"):
         ok = escalate.alert(
-            f"{config.HANDOFF_NAME}: someone replied with a question",
+            f"{config.HANDOFF_NAME}: someone replied - waiting on you",
             f"> {body[:300]}\n\n_Live thread, no auto-reply is sent at this phase. "
             f"Answer from the smrtPhone inbox._",
             record_uuid,
+            kind="needs_reply",
         )
         acts.append("posted: awaiting a human answer" if ok else "notify FAILED")
     else:
