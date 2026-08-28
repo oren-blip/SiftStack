@@ -326,8 +326,16 @@ python src/smartskip_io.py ingest <download> --max-people 3 --no-trestle
   returns the PR's own numbers, which we usually already have; tracing the
   decedent returns the family cluster. `--subject pr` exists for the narrow case.
 - **The signer gate is load-bearing.** One $0.15 hit returned **41 associated
-  people**; the flow keeps ~3. DataSift caps phones per record (~30), so a raw
-  cluster would blow the record up. `shortlist()` drops
+  people**; the flow keeps ~3. **A DataSift record holds up to 30 phones (UI
+  shows N/30), but the API owner-PATCH saves only the FIRST 15 entries of the
+  phones array** — so 15 is the working ceiling for API pushes. Measured
+  2026-08-27 on case 26E000919-170 (14 existing + 5 pushed = 1 accepted) and
+  re-confirmed live the same day (15 existing + 4 pushed = 0 accepted, HTTP
+  200 both times). The server truncates without error, so only a read-back
+  after the write catches it. Slots 16-30 are reachable only via the UI /
+  the "Upload phone numbers by property address" wizard
+  (`upload_phone_numbers_by_address.py`, untested past 15). A raw cluster
+  would blow the record up. `shortlist()` drops
   neighbours/associates/roommates outright, then ranks spouse > child >
   grandchild > sibling > parent > niece/nephew > in-law, preferring people who
   actually have a phone and a mailing address.

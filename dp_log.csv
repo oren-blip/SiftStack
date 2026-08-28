@@ -1,4 +1,4 @@
-Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
+﻿Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-02,31,26E002835-590,Mecklenburg,Dixon,L3,resolved,output/reports/DP_Week31_Dixon_26E002835-590.md,
 2026-08-02,31,26E000740-480,Iredell,Hill,L3,resolved,output/reports/DP_Week31_Hill_26E000740-480.md,
 2026-08-02,31,26E001011-350,Gaston,Lineberger,L3,resolved,output/reports/DP_Week31_Lineberger_26E001011-350.md,
@@ -9,7 +9,7 @@ Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-12,32,26E001041-350,Gaston,"Preidt, Suzanne Josephine",L3,resolved,output/reports/DP_Week32_Preidt_26E001041-350.md,"Court PR Julia Stone (sister, Angola IN); 'Kaiya' was a grandchild; trust flag; son occupies property"
 2026-08-12,32,26E000801-790,Rowan,"Williams, Dortha Conner",L3,resolved,output/reports/DP_Week32_Williams_26E000801-790.md,"Court PR Joseph Michael Conner, China Grove"
 2026-08-12,33,26E002976-590,Mecklenburg,"Robertson, Evelyn Ann",L3,resolved,output/reports/DP_Week33_Robertson_26E002976-590.md,"PR Ann Fiery (daughter); deed-confirmed 4336 Silo Ln; 2 out-of-state sibling signers + per-stirpes branch"
-2026-08-12,33,26E000811-790,Rowan,"Shands, Sadie Sescelia",L3,resolved,output/reports/DP_Week33_Shands_26E000811-790.md,"8/13 Enformion: Sadie's household was Baltimore MD (no NC obit — that's why searches missed); heir Patricia Anne Shands, 546 N Payson St Baltimore 21223, (410) 669-0706 — her address appears in Sadie's history + Sadie in her relatives. Promoted via manual_corrections"
+2026-08-12,33,26E000811-790,Rowan,"Shands, Sadie Sescelia",L3,resolved,output/reports/DP_Week33_Shands_26E000811-790.md,"8/13 Enformion: Sadie's household was Baltimore MD (no NC obit â€” that's why searches missed); heir Patricia Anne Shands, 546 N Payson St Baltimore 21223, (410) 669-0706 â€” her address appears in Sadie's history + Sadie in her relatives. Promoted via manual_corrections"
 2026-08-12,33,26E000808-790,Rowan,"Mahaffey, Clive Loyd",L1,resolved,output/reports/DP_Week33_Mahaffey_26E000808-790.md,"8/13 Enformion found PR Phillip Lee Mahaffey at 850 Luther Barger Rd # Q Salisbury (estate's own street), (704) 279-0798 + 3 emails; relatives list contains decedent Clive + DM2 Dale = identity certain. Record PATCHed (fix_mahaffey_20260813.py) + manual_corrections"
 2026-08-12,33,26E000492-540,Lincoln,"Brown, Kimberly Grahl",L1,partial,output/reports/DP_Week33_Brown_26E000492-540.md,"PR Ashlynn Stanley unlocatable; DM2 Gary Ray Grahl found (Iron Station) + Tracerfy mobile pushed"
 2026-08-12,33,26E000785-480,Iredell,"Dickens, Christian Meguel",L1,open,output/reports/DP_Week33_Dickens_26E000785-480.md,"All lookups missed; property is in Yadkin Co (outside GIS coverage); mail-only"
@@ -72,7 +72,7 @@ Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-19,34,NSM10 124 W Church St,Gaston,"Emma Helms (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 3 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 1535 W Ridge Rd,Rowan,"Philip Childers (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Matched but no dialable new phones. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 1345 Wildale Ln,Lincoln,"Michael Haynes (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Matched but no dialable new phones. Push: dp_push_nsm10_20260819.py
-2026-08-19,34,NSM10 1206 3Rd Street Dr Se,Catawba,"Jean Connor Heirs (DM, no-response)",API,open,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Entity owner — needs manual heir research. Push: dp_push_nsm10_20260819.py
+2026-08-19,34,NSM10 1206 3Rd Street Dr Se,Catawba,"Jean Connor Heirs (DM, no-response)",API,open,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Entity owner â€” needs manual heir research. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 273 Bethesda Rd,Iredell,"Kevin Santibanez (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 1 dialable new phone(s), best score 30. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 170 Dove Ln,Rowan,"Mickey Sizemore (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 4 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 520 E Martin Luther King Blvd Unit 1101,Mecklenburg,"Nilpa Patel (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 6 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
@@ -111,7 +111,7 @@ Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-19,34,NSM10 10985 Lower Rocky River Rd,Cabarrus,"Nancy Funderburk (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 2 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 115 River Birch Dr,Rowan,"Carol Ingram (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Matched but no dialable new phones. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 3235 Oxford School Rd,Catawba,"Betty Jones (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 3 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
-2026-08-19,34,NSM10 S New Hope Rd,Gaston,"Cheryl Department Of Transportation (DM, no-response)",API,open,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Entity owner — needs manual heir research. Push: dp_push_nsm10_20260819.py
+2026-08-19,34,NSM10 S New Hope Rd,Gaston,"Cheryl Department Of Transportation (DM, no-response)",API,open,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Entity owner â€” needs manual heir research. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 1203 S Belvedere Ave,Gaston,"Sandra Cornel (DM, no-response)",API,partial,output/reports/DP_NSM10_NoResponse_20260819.md,NSM step-10 re-trace: Enformion no confident match at DM mailing. Push: dp_push_nsm10_20260819.py
 2026-08-19,34,NSM10 3562 Maiden Hwy,Lincoln,"Richard Cantrell (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 2 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
 2026-08-19,34,NSM10 112 Peaceful Plains Ln,Gaston,"Larry Hill (DM, no-response)",API,resolved,output/reports/DP_NSM10_NoResponse_20260819.md,"NSM step-10 re-trace: 2 dialable new phone(s), best score 100. Push: dp_push_nsm10_20260819.py"
@@ -289,3 +289,23 @@ Date,Week,Case No.,County,Decedent,Level,Outcome,Doc,Notes
 2026-08-22,31,26E000740-480,Iredell,Hill,push,resolved,output/reports/DP_Week31_Hill_26E000740-480.md,"8/22 rename gap closed: owner Heirs Hill -> Raymond Hill, PR set Raymond Stephen Hill. Phones/tags/lists untouched. 4 co-equal children must sign; named the recommended first-call son"
 2026-08-22,33,26E001070-350,Gaston,Peche,push,resolved,output/reports/DP_Week33_Peche_26E001070-350.md,"8/22 rename gap closed: owner Heirs Peche -> Richard Peche, PR set Richard S Peche. Phones/tags/lists untouched. 3 sons must sign; named the recommended first-call son"
 2026-08-22,33,26E002977-590,Mecklenburg,Silverthorne,push,resolved,output/reports/DP_Week33_Silverthorne_26E002977-590.md,"8/22 rename gap closed: owner Heirs Silverthorne -> Henry Silverthorne, PR set Henry Doug Silverthorne. Phones/tags/lists untouched. DP flags husband-or-father relationship as VERIFY"
+2026-08-27,35,26E000835-480,Iredell,Merkel,L3,resolved,output/reports/DP_Week35_Merkel_26E000835-480.md,"Court Executor + sole beneficiary Robert T Andaloro (Lexington NC). No obit, DOD unknown, thin Enformion graph (only Rita Merkel b1919 deceased). 3 Dial First Andaloro mobiles scored; record Tracerfy phones/emails unverified (Contarino). PUSHED 8/27 (Oren go): renamed Robert Andaloro, PR set, court mailing 2032 Old Linwood Rd Lexington, 3 Dial First mobiles added (6 total), +Court Mailing Applied +DP Complete -Needs DP, PDF attached. All verified by record GET."
+2026-08-27,35,26E001146-350,Gaston,McClure,SmartSkip-b3,resolved,output/smartskip_heirs_20260827_213346.csv,"batch 3: 5 heirs (3 children), 8 Dial-1 phones pushed, owner stays Heirs Mcclure, verified by GET"
+2026-08-27,35,26E001145-350,Gaston,Brooks,SmartSkip-b3,resolved,output/smartskip_heirs_20260827_213346.csv,"batch 3: 5 heirs (3 siblings + parents; Dan Brooks at property no phone), 7 phones pushed, verified"
+2026-08-27,35,26E000844-480,Iredell,Privott,SmartSkip-b3,resolved,output/smartskip_heirs_20260827_213346.csv,"batch 3: 5 heirs (3 children), 7 phones pushed, verified"
+2026-08-27,35,26E000888-790,Rowan,Smith,SmartSkip-b3,open,,"batch 3: subject-only return, 0 phones - SmartSkip holds nothing; no court PR yet, parked for Parties top-up"
+2026-08-27,,26E000795-790,Rowan,Foster,SmartSkip-b3-pr,open,,"PR-subject retrace (Martha Foster): subject-only, 0 phones - dead end as seed script predicted"
+2026-08-27,,26E000806-790,Rowan,Bryan,SmartSkip-b3-pr,open,,"PR-subject retrace (William Bryan): subject-only, 0 phones"
+2026-08-27,,26E000485-540,Lincoln,Allen,SmartSkip-b3-pr,open,,"PR-subject retrace (Teddy Allen): subject-only, 0 phones"
+2026-08-27,,26E000785-480,Iredell,Beck,SmartSkip-b3-pr,open,,"PR-subject retrace (Karen Beck): subject-only, 0 phones"
+2026-08-27,,26E000983-170,Catawba,Dedmon,SmartSkip-b3-pr,open,,"PR-subject retrace (Patricia Dedmon): subject-only, 0 phones"
+2026-08-27,,26E001093-350,Gaston,Mack,push,partial,,"queue push: +6 heir phones (labelled per heir), owner stays Heirs Mack, no court PR yet"
+2026-08-27,,26E000508-540,Lincoln,Ingle,push,partial,,"queue push: +5 heir phones, owner stays Heirs Ingle"
+2026-08-27,,26E000834-790,Rowan,Bean,push,partial,,"queue push: +4 heir phones onto Karla Bean record"
+2026-08-27,,26E001111-350,Gaston,Bradley,push,partial,,"queue push: +8 heir phones onto Mark Bradley record"
+2026-08-27,,26E000826-480,Iredell,Jolly,push,partial,,"queue push: +1 heir phone onto Thomas Jolly record"
+2026-08-27,,26E000880-120,Cabarrus,Vonhall,push,partial,,"queue push: +2 heir phones onto Britany Vonhall record"
+2026-08-27,,26E000982-170,Catawba,Beach,push,partial,,"queue push: +2 heir phones, owner stays Heirs Beach"
+2026-08-27,,26E001066-350,Gaston,Burrier,push,open,,"queue push SKIPPED by owner guard: record owner Catherine Scotto vs decedent Burrier - hand-verify relationship before pushing family phones"
+2026-08-27,,26E001126-350,Gaston,Beavers,push,open,,"queue push SKIPPED by owner guard: record owner Edward Mcmillen vs decedent Beavers - hand-verify before pushing"
+2026-08-27,35,26E000991-170,Catawba,Short,audit,resolved,,"orphan audit: Heirs Short 4558 N Wynswept Dr WAS traced+pushed in 8/26 batch (7 phones, SmartSkip Heirs 2026-08 tag); Needs DP stale; owner-occupied - call only, no mail"

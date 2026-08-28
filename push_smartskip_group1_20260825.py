@@ -44,6 +44,7 @@ import copy
 import datetime as _dt
 import json
 import sys
+import time as _time
 from pathlib import Path
 
 REPO = Path(r"d:\SiftStack")
@@ -76,9 +77,25 @@ for i, a in enumerate(sys.argv):
             SRC = REPO / SRC
 LOG = REPO / "logs" / f"push_{SRC.stem}.log"
 
+# The run tag is what makes this script rerun-safe, so a DIFFERENT push over the
+# same records needs a DIFFERENT tag - otherwise the backup-heir pass would see
+# the court-PR pass's tag and skip every record it already touched.
 RUN_TAG = "SmartSkip 2026-08"
+for i, a in enumerate(sys.argv):
+    if a == "--tag" and i + 1 < len(sys.argv):
+        RUN_TAG = sys.argv[i + 1]
+
 # Trestle score < 21 is "Drop" — never worth a dial, never pushed.
 PUSH_TIERS = {"Dial First", "Dial Second", "Dial Third", "Dial Fourth"}
+
+# A record holds up to 30 phones (the UI shows N/30), but the API owner-PATCH
+# saves only the FIRST 15 entries of the phones array, so 15 is the ceiling for
+# THIS script's write path. Measured 2026-08-27 on 26E000919-170 (Punch): the
+# record held 14 phones, the push sent 5 more, HTTP 200 - exactly ONE persisted,
+# leaving 15; re-confirmed same day (15 + 4 sent = still 15). The server
+# truncates silently and still answers 200, so nothing but a read-back catches
+# it. Slots 16-30 need the UI or the phone-number upload wizard.
+PHONE_CAP = 15
 
 
 def headers(tok: str) -> dict:
@@ -250,9 +267,24 @@ def find_record(h: dict, e: dict, out) -> dict | None:
         return last == want_pr or (first == "heirs" and last == want_dec)
 
     def try_term(term):
-        r = requests.post(f"{API}/api/internal/property/",
-                          headers={**h, "x-http-method-override": "GET"},
-                          json={"query": {"must": {"search": term}}}, timeout=30)
+        # DataSift drops the connection partway through a long search loop
+        # (WinError 10054). Unretried, that aborts the whole run and the
+        # estates after it never get looked at - which is how the 2026-08-26
+        # group 3 dry run died on its first pass. Back off and retry; only a
+        # persistent failure is allowed to skip the estate.
+        r = None
+        for attempt in range(4):
+            try:
+                r = requests.post(f"{API}/api/internal/property/",
+                                  headers={**h, "x-http-method-override": "GET"},
+                                  json={"query": {"must": {"search": term}}},
+                                  timeout=30)
+                break
+            except requests.exceptions.RequestException as exc:
+                if attempt == 3:
+                    out(f"  search {term!r} -> connection failed 4x ({exc}) - SKIP")
+                    return None, []
+                _time.sleep(2 * (attempt + 1))
         if r.status_code != 200:
             out(f"  search {term!r} -> HTTP {r.status_code}")
             return None, []
@@ -334,6 +366,7 @@ def main() -> int:
         # Deep copy and append only. Nothing existing is overwritten or blanked.
         new_owner = copy.deepcopy(owner)
         existing = {digits(p.get("number")) for p in (owner.get("phones") or [])}
+        batch_seen: set[str] = set()
 
         added = []
         for ph in e["phones"]:
@@ -344,12 +377,35 @@ def main() -> int:
             if digits(num) in existing:
                 out(f"  {num} already on record - skip")
                 continue
+            # ALSO dedupe within this batch. Group 1 carried one person's
+            # numbers per estate so this could not arise; a backup-heir push
+            # carries a whole family, and relatives share household lines -
+            # the 2026-08-26 dry run queued 8653858328 twice on one record and
+            # 7046899117 twice on another. Writing a number twice bloats the
+            # record toward the phone cap and reads as sloppy to a caller.
+            if digits(num) in batch_seen:
+                out(f"  {num} already queued for this record - skip (duplicate)")
+                continue
+            batch_seen.add(digits(num))
             ltype = ("MOBILE" if "mobile" in str(ph.get("line_type") or "").lower()
                      else "LANDLINE")
+            # The API PATCH persists only the first PHONE_CAP entries (see the
+            # PHONE_CAP note up top). A cluster push can carry 10+ numbers onto
+            # a record that already holds some, so stop before the cap rather
+            # than let the CRM silently truncate and leave us believing a
+            # number landed.
+            if len(new_owner.get("phones") or []) >= PHONE_CAP:
+                out(f"  phone cap {PHONE_CAP} reached on this record - "
+                    f"{num} and any after it NOT added")
+                break
+            # Honest provenance: whose number this is and where it came from.
+            # Backup-heir pushes set a per-phone label, because on those the
+            # number belongs to a relative, NOT to the owner of record - a
+            # caller must be able to see that before dialling.
+            label = ph.get("label") or f"Court PR {e['court_pr']}"
             new_owner.setdefault("phones", []).append({
                 "number": num, "type": ltype,
-                # Honest provenance: whose number this is and where it came from.
-                "tags": [tier, f"Court PR {e['court_pr']}", "SmartSkip"],
+                "tags": [tier, label, "SmartSkip"],
             })
             added.append(num)
 

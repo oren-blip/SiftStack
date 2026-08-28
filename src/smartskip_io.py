@@ -14,9 +14,12 @@ with a human in the middle:
 
 That gate is not decoration. Ty's 2026-08-19 demo pulled **41 associated
 individuals from one $0.15 hit** on decedent "Tomas" and the flow whittled it
-to **the 3 people who matter** — DataSift caps phones per record (~30), so
-writing a raw 41-person cluster back would blow the record up. Shortlist
-first, always.
+to **the 3 people who matter** — a DataSift record holds up to **30** phones
+(the UI shows N/30), but the API owner-PATCH write path saves only the FIRST
+15 entries of the phones array (measured 2026-08-27, re-confirmed live same
+day: sent 19, HTTP 200, exactly 15 persisted). So 15 is the working ceiling
+for API pushes; the server truncates silently and you would not be told.
+Shortlist first, always.
 
 Subject = the DECEASED OWNER anchored to the PROPERTY address, not the PR.
 Straight from the transcript: *"the input name is the person who is the owner
