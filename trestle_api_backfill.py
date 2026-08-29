@@ -32,6 +32,20 @@ Trestle returns `line_type` on the very call we already pay for the activity
 score, so this pass is FREE — it reads the score cache and never calls Trestle
 on its own. Phones with no cached line type are left alone, not guessed.
 
+BUDGET, NOT A TRIPWIRE (2026-08-29)
+-----------------------------------
+`--max-cost` used to abort the whole run when the untiered backlog cost more
+than the cap — tagging nothing at all, not even the phones already in the score
+cache that cost $0.00. The nightly passes a small cap, so once the backlog grew
+past it the sweep tagged nothing, cached nothing, and the next night's backlog
+was strictly larger: the cap tripped every night and '02. Ready to Call' filled
+up with untiered phones. It is now a real per-run budget — cached phones are
+always tagged, fresh ones are scored up to the budget (Ready-to-Call records
+first), and the remainder is reported and drains on subsequent runs.
+
+Exit codes: 0 clean · 1 upload/line-type failure · 2 no API key ·
+4 budget-deferred phones remain · 5 the preset could not be resolved.
+
 Default run is a FREE AUDIT (no Trestle spend, no writes).
 
     python trestle_api_backfill.py                    # audit RTC + last 7 days
@@ -162,15 +176,48 @@ def tag_uuid_map(h: dict) -> dict:
     return out
 
 
+def _all_presets(h: dict) -> list[dict]:
+    """Every filter preset, paginated.
+
+    The old single `limit=200` GET silently truncated: this account runs enough
+    presets to have hit DataSift's "Filter presets limit reached!", so a preset
+    sitting past the first page made the lookup below fall through to
+    "not found" — and the sweep then quietly ran with the Ready-to-Call scope
+    missing entirely.
+    """
+    out, offset = [], 0
+    while True:
+        r = requests.get(f"{API}/api/internal/filter-preset/", headers=h,
+                         params={"limit": 200, "offset": offset}, timeout=30)
+        if r.status_code != 200:
+            logger.warning("filter-preset list %s: %s", r.status_code, r.text[:200])
+            break
+        rows = r.json().get("results") or []
+        out.extend(rows)
+        if len(rows) < 200:
+            break
+        offset += 200
+    return out
+
+
 def collect_scope(h: dict, preset_name: str | None, tags: list[str],
-                  recent_days: int) -> dict:
-    """Return {uuid: record} for every record in the audit scope."""
+                  recent_days: int, diag: dict | None = None) -> dict:
+    """Return {uuid: record} for every record in the audit scope.
+
+    Records that came from the preset are marked `_rtc` so the budget pass can
+    spend on what Oren actually dials before the wider tag window.
+
+    `diag`, when given, receives {"preset_found": bool} so the caller can fail
+    loudly instead of sweeping a silently-narrowed scope.
+    """
     pool: dict[str, dict] = {}
+    if diag is not None:
+        diag["preset_found"] = True   # vacuously true when no preset asked for
 
     if preset_name:
-        r = requests.get(f"{API}/api/internal/filter-preset/", headers=h,
-                         params={"limit": 200}, timeout=30)
-        presets = r.json().get("results") or [] if r.status_code == 200 else []
+        if diag is not None:
+            diag["preset_found"] = False
+        presets = _all_presets(h)
         target = next((p for p in presets
                        if preset_name.lower() in
                        (p.get("title") or p.get("name") or "").lower()), None)
@@ -181,6 +228,8 @@ def collect_scope(h: dict, preset_name: str | None, tags: list[str],
             body = d.json() if d.status_code == 200 else {}
             q = body.get("query") or body.get("filters") or body.get("filter")
             if q:
+                if diag is not None:
+                    diag["preset_found"] = True
                 rows = _search(h, q)
                 # The preset's nested must_not (any status) is not honoured by
                 # the search API -> replicate it client-side: statusless only.
@@ -188,11 +237,18 @@ def collect_scope(h: dict, preset_name: str | None, tags: list[str],
                     st = rec.get("status")
                     st_txt = (st.get("title") if isinstance(st, dict) else st) or ""
                     if not str(st_txt).strip():
+                        rec["_rtc"] = True
                         pool[rec["uuid"]] = rec
                 logger.info("Preset %r: %d hit(s) -> %d statusless",
                             target.get("title"), len(rows), len(pool))
+            else:
+                logger.error("Preset %r has no query body — Ready-to-Call scope "
+                             "is EMPTY this run.", preset_name)
         else:
-            logger.warning("preset %r not found", preset_name)
+            logger.error("Preset %r NOT FOUND among %d presets — the sweep would "
+                         "silently skip every Ready-to-Call record. Fix the preset "
+                         "name/access before trusting this run.",
+                         preset_name, len(presets))
 
     want_tags = list(tags)
     if recent_days > 0:
@@ -427,10 +483,38 @@ def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
                     "%d fresh phone(s) for $%.2f and tag all %d.",
                     len(fresh), cost, len(unique))
         return 0
+    # ── Budget: spend UP TO --max-cost, never abort on it.
+    #
+    # This used to be an all-or-nothing tripwire: if the fresh spend exceeded
+    # --max-cost the sweep returned before tagging ANYTHING — including the
+    # already-scored, $0.00 cached phones. That made the nightly run (which
+    # passes a $1.00 cap = 66 phones) a ratchet: nothing got scored, so nothing
+    # got cached, so the next night the same phones were still "fresh" PLUS
+    # that night's new arrivals. Cost only ever climbed, the cap tripped every
+    # night forever, and untiered phones piled up in '02. Ready to Call'.
+    #
+    # Now the cap is a real per-run budget. Cached phones are ALWAYS tagged
+    # (they cost nothing and holding them hostage to the fresh spend was the
+    # bug). Fresh phones are scored up to the budget, Ready-to-Call first, and
+    # whatever doesn't fit is reported and picked up on the next run — each
+    # run caches what it scored, so the backlog strictly drains.
+    deferred: list[str] = []
     if cost > max_cost:
-        logger.error("Cost $%.2f exceeds --max-cost $%.2f — aborting before "
-                     "any spend.", cost, max_cost)
-        return 3
+        budget_n = max(0, int(max_cost / COST_PER_PHONE))
+        # Spend on what Oren actually dials first: phones on a record that came
+        # from the Ready-to-Call preset outrank the wider 7-day tag window.
+        rtc_phones = {f["phone"] for f in findings
+                      if (pool.get(f["uuid"]) or {}).get("_rtc")}
+        fresh.sort(key=lambda ph: 0 if ph in rtc_phones else 1)
+        fresh, deferred = fresh[:budget_n], fresh[budget_n:]
+        cost = len(fresh) * COST_PER_PHONE
+        logger.warning(
+            "Budget $%.2f covers %d of the %d fresh phone(s) this run "
+            "(Ready-to-Call prioritised). %d deferred to the next run — they "
+            "are NOT lost, and every phone scored now is cached, so the "
+            "backlog drains ~%d/run instead of stalling.",
+            max_cost, len(fresh), len(fresh) + len(deferred), len(deferred),
+            budget_n or 1)
 
     results = []
     if fresh:
@@ -474,6 +558,15 @@ def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
                      TAGS_CSV)
         return 1
     logger.info("Done — dial-priority tags are live.")
+    if deferred:
+        logger.warning("%d phone(s) still untiered (deferred by the $%.2f "
+                       "budget). Raise TRESTLE_SWEEP_MAX_COST, or run "
+                       "`python trestle_api_backfill.py --apply --max-cost %.2f` "
+                       "to clear the rest now ($%.2f).",
+                       len(deferred), max_cost,
+                       len(deferred) * COST_PER_PHONE + 0.01,
+                       len(deferred) * COST_PER_PHONE)
+        return 4
     return 0
 
 
@@ -490,8 +583,16 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
     Importable so the nightly upload can call it directly.
     """
     h = headers(get_token())
-    pool = collect_scope(h, preset or None, list(tags or []), recent_days)
-    logger.info("Scope: %d unique record(s)", len(pool))
+    diag: dict = {}
+    pool = collect_scope(h, preset or None, list(tags or []), recent_days, diag)
+    n_rtc = sum(1 for r in pool.values() if r.get("_rtc"))
+    logger.info("Scope: %d unique record(s) (%d from preset %r)",
+                len(pool), n_rtc, preset)
+    if not diag.get("preset_found", True):
+        # Don't let a silently-narrowed scope look like a clean run: the whole
+        # point of this sweep is the Ready-to-Call records.
+        logger.error("Ready-to-Call scope could not be resolved — this run "
+                     "covers ONLY the recent upload tags.")
     if not pool:
         logger.info("Nothing in scope.")
         return 0
@@ -506,6 +607,8 @@ def run_sweep(*, preset: str | None = "02. Ready to Call",
         report_line_types(summary, apply=apply)
         if summary["failed"] and rc == 0:
             rc = 1
+    if not diag.get("preset_found", True) and rc == 0:
+        rc = 5
     return rc
 
 
@@ -522,7 +625,10 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true",
                     help="score untiered phones + upload tags (default: free audit)")
     ap.add_argument("--max-cost", type=float, default=5.0,
-                    help="abort --apply if fresh Trestle spend exceeds this (default 5.00)")
+                    help="per-run Trestle BUDGET for --apply (default 5.00). Not "
+                         "an abort: cached phones are always tagged, fresh ones "
+                         "are scored up to this much (Ready-to-Call first) and "
+                         "the remainder is reported and drains on the next run.")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--no-types", action="store_true",
                     help="skip the free line-type (Mobile/Landline/VOIP) pass")

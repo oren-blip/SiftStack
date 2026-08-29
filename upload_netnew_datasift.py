@@ -571,11 +571,31 @@ async def run(csv_path: Path, list_name: str, week: int | None, year: int,
             logger.info("Tier backfill sweep (API; RTC preset + last 7 days "
                         "of upload batches; also fills in Mobile/Landline/"
                         "VOIP, which the CSV upload cannot carry)...")
+            # Budget, not a tripwire. This was $1.00 (= 66 phones) and the
+            # sweep used to ABORT when the untiered backlog cost more than the
+            # cap — tagging nothing, not even the free cached phones. Since
+            # nothing got scored nothing got cached, so the next night's cost
+            # was higher still: the cap tripped every night and Ready to Call
+            # filled up with untiered phones. run_sweep now spends up to this
+            # number and defers the rest, so the ceiling is real spend, and a
+            # night's normal volume (a batch's skip trace can add ~5 phones per
+            # owner) fits instead of being thrown away.
+            sweep_budget = float(os.environ.get("TRESTLE_SWEEP_MAX_COST", "5.0"))
             brc = await asyncio.to_thread(
                 run_sweep, preset="02. Ready to Call", tags=None,
-                recent_days=7, apply=True, max_cost=1.0, headless=headless)
+                recent_days=7, apply=True, max_cost=sweep_budget,
+                headless=headless)
             if brc == 0:
                 logger.info("Tier backfill sweep complete.")
+            elif brc == 4:
+                logger.warning("Tier backfill sweep hit its $%.2f budget — it "
+                               "tagged what it could and the rest drains on the "
+                               "next run. Raise TRESTLE_SWEEP_MAX_COST to clear "
+                               "it faster.", sweep_budget)
+            elif brc == 5:
+                logger.error("Tier backfill sweep could not resolve the "
+                             "'02. Ready to Call' preset — Ready-to-Call records "
+                             "were NOT swept. Check the preset name/access.")
             else:
                 logger.warning("Tier backfill sweep exited %d — run by hand: "
                                "python trestle_api_backfill.py --apply", brc)
