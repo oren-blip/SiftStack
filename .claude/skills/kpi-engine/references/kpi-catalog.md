@@ -35,12 +35,15 @@ Never report a single "connect rate": answer, conversation, and contact rates me
 ## Dispositions
 
 Phone-status events (deduped per phone, latest wins): CORRECT / CORRECT_DNC = correct number; WRONG / WRONG_DNC; DEAD; NO_ANSWER; DNC.
-Property-status events (deduped per record): lead statuses (below), not_interested, follow_up, Dead Lead, dnc / opt_out.
+Property-status events (deduped per record **per day**): lead statuses (below), not_interested, follow_up, Dead Lead, dnc / opt_out. Per day, not per window: a record moved to Warm Lead Monday and to Not Interested Wednesday counts as a lead on Monday AND not-interested on Wednesday. Crediting only the window-final status let a nightly re-pull erase Monday's lead.
+
+Status labels are compared case- and separator-insensitively, so `Cold Lead`, `cold_lead` and `COLD LEAD` are one status. Every status the account emits is written to `output/.kpi_status_vocabulary.json`, with the ones that matched no bucket listed separately - that file is the answer to "why does the report say 0 leads".
 
 ## Leads
 
 - **A record becomes a lead the moment its status changes to a lead status.** First-touch leads land in `new_lead` / `No Contact New Lead` - count those, not just Cold/Warm/Hot Lead, or your lead KPI reads zero while callers produce 2-3/day.
 - Default lead-status set: Cold Lead, Warm Lead, Hot Lead, new_lead, New Lead, No Contact New Lead, Nurture New Lead (edit for custom statuses).
+- **A lead status the account renamed still won't count** - "Ghosting Lead", "Nurture Lead", a numbered "01. Hot Lead" all fall outside the set above. Check the account's real spelling with `python scripts/lead_audit.py --statuses-only` and add what's missing to `benchmarks.json` -> `lead_statuses`.
 - Qualification = 4 Pillars of Motivation (Reason, Timeline, Condition, Price). 2+ hot pillars = hot lead straight to the closer; 1 = warm; 0 = cold.
 - **Baseline: 2-3 leads per caller per dialing day** at the 150-dial floor.
 

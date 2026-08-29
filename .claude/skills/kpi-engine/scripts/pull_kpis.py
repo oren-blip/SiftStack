@@ -31,6 +31,7 @@ import csv
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -71,6 +72,22 @@ CORRECT_STATES = {"CORRECT", "CORRECT_DNC"}
 WRONG_STATES = {"WRONG", "WRONG_DNC"}
 CALL_EVENTS = {"owner.call.made", "owner.call.answered", "owner.call.noanswer",
                "owner.call.received", "owner.call.missed"}
+
+
+def norm_status(s) -> str:
+    """Squash a property status to lowercase alphanumerics for comparison.
+
+    DataSift emits its built-in statuses as slugs ("not_interested",
+    "follow_up", "new_lead") and account-created ones by title ("Cold Lead").
+    Raw string equality matched only whichever spelling happened to be in the
+    benchmark list, and a miss is invisible -- it just reads as "0 leads".
+    "Cold Lead", "cold_lead" and "COLD LEAD" all normalise to "coldlead".
+    """
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
+NOT_INTERESTED_STATUSES = {norm_status("not_interested")}
+FOLLOW_UP_STATUSES = {norm_status("follow_up")}
 
 
 def log(msg: str) -> None:
@@ -162,8 +179,17 @@ def author_of(ev):
     return (email, (f"{info.get('first_name', '')} {info.get('last_name', '')}".strip() or email))
 
 
-def detect_new_index(events, key):
-    """Status payloads carry [a,b] with no guaranteed order; vote by chaining."""
+def detect_new_index(events, key, current=None):
+    """Status payloads carry [a,b] with no guaranteed order; vote by chaining.
+
+    `current` maps target -> the status that record/phone holds right now. When
+    chaining can't vote (the common case: most records get exactly one status
+    change inside the window, so there is no pair to chain), the last event's
+    pair is matched against that current value: whichever element equals it is
+    the new one. Without the tiebreak a sparse window silently fell back to
+    index 1, and if the payload is really [new, old] every status read as the
+    PREVIOUS one -- so a record just moved to a lead status never counted.
+    """
     by_tgt = defaultdict(list)
     for ev in events:
         obj = (ev.get("payload") or {}).get("owner" if key == "phone" else "property")
@@ -181,7 +207,21 @@ def detect_new_index(events, key):
                 old_new += 1
             elif e1[0] == e2[1] and e1[0] != e2[0]:
                 new_old += 1
-    return 0 if new_old > old_new else 1
+    if old_new != new_old:
+        return 0 if new_old > old_new else 1
+    hits = [0, 0]
+    for tgt, seq in by_tgt.items():
+        cur = norm_status((current or {}).get(tgt))
+        if not cur:
+            continue
+        seq.sort()
+        pair = seq[-1][1]
+        for i in (0, 1):
+            if norm_status(pair[i]) == cur and norm_status(pair[1 - i]) != cur:
+                hits[i] += 1
+    if hits[0] != hits[1]:
+        return 0 if hits[0] > hits[1] else 1
+    return 1
 
 
 def new_status(ev, key, idx):
@@ -196,12 +236,13 @@ def blank():
             "sms_received": 0, "conversations": 0, "meaningful_conversations": 0,
             "band_vm": 0, "band_brief": 0, "correct_numbers": 0, "wrong_numbers": 0,
             "dead_numbers": 0, "dnc_numbers": 0, "leads": 0, "not_interested": 0,
-            "follow_ups": 0, "appointments": 0, "records": set(), "days": set(),
+            "follow_ups": 0, "appointments": 0, "status_changes": 0,
+            "records": set(), "days": set(),
             "first_call": None, "last_call": None}
 
 
 def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
-    lead_set = set(bench["lead_statuses"])
+    lead_set = {norm_status(s) for s in bench["lead_statuses"]}
     excluded = {e.lower() for e in bench["excluded_callers"]}
     conv_s, mean_s, vm_s = (bench["conversation_min_seconds"],
                             bench["meaningful_conversation_min_seconds"],
@@ -226,7 +267,10 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
                 keep.append((dt, e))
         if keep:
             rec_events[uuid] = keep
-            rec_meta[uuid] = {"address": r.get("address") or "", "status": r.get("status") or ""}
+            st = r.get("status") or ""
+            if isinstance(st, dict):
+                st = st.get("title") or st.get("name") or ""
+            rec_meta[uuid] = {"address": r.get("address") or "", "status": st}
         if i % 50 == 0:
             log(f"  {i}/{len(cand)} scanned...")
     log(f"{len(rec_events)} records had activity in window")
@@ -235,11 +279,24 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
                  if e.get("event_type") == "owner.phone.status.updated"]
     all_prop = [e for evs in rec_events.values() for _, e in evs
                 if e.get("event_type") == "property.status.updated"]
+    prop_current = {}
+    for uuid, evs in rec_events.items():
+        for _dt, e in evs:
+            if e.get("event_type") == "property.status.updated" and e.get("resource"):
+                prop_current[e["resource"]] = rec_meta[uuid]["status"]
     p_idx = detect_new_index(all_phone, "phone")
-    s_idx = detect_new_index(all_prop, "property")
+    s_idx = detect_new_index(all_prop, "property", prop_current)
 
     acct, per, daily = blank(), defaultdict(blank), defaultdict(blank)
     names, phone_final, prop_final, seen = {}, {}, {}, set()
+    # (record, day) -> last status set that day. Dispositions are credited to
+    # the day they happened, not to the record's final status in the window:
+    # the nightly refresh re-pulls the trailing 3 days and rewrites those
+    # ledger rows, so a window-final status made Monday's lead disappear from
+    # the ledger as soon as Wednesday re-dispositioned the same record.
+    prop_day_final: dict[tuple[str, str], tuple] = {}
+    status_seen: Counter = Counter()      # every new status observed, by label
+    unmatched: Counter = Counter()        # ...that matched no known bucket
 
     def bump(email, day, field, amt=1):
         acct[field] += amt
@@ -299,9 +356,14 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             elif et == "property.status.updated":
                 ns = new_status(ev, "property", s_idx)
                 if ns:
+                    status_seen[str(ns)] += 1
+                    bump(author_of(ev)[0], day, "status_changes")
                     prev = prop_final.get(uuid)
                     if prev is None or dt >= prev[0]:
                         prop_final[uuid] = (dt, ns, author_of(ev)[0])
+                    prevd = prop_day_final.get((uuid, day))
+                    if prevd is None or dt >= prevd[0]:
+                        prop_day_final[(uuid, day)] = (dt, ns, author_of(ev)[0])
             elif et == "task.completed":
                 title = (((ev.get("payload") or {}).get("task") or {}).get("title") or "").lower()
                 if any(k in title for k in ("appoint", "appt", "meeting", "consult")):
@@ -317,14 +379,16 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             bump(email, day, "dead_numbers")
         elif ns == "DNC":
             bump(email, day, "dnc_numbers")
-    for uuid, (dt, ns, email) in prop_final.items():
-        day = dt.date().isoformat()
-        if ns in lead_set:
+    for (_uuid, day), (_dt, ns, email) in prop_day_final.items():
+        nsn = norm_status(ns)
+        if nsn in lead_set:
             bump(email, day, "leads")
-        elif ns == "not_interested":
+        elif nsn in NOT_INTERESTED_STATUSES:
             bump(email, day, "not_interested")
-        elif ns == "follow_up":
+        elif nsn in FOLLOW_UP_STATUSES:
             bump(email, day, "follow_ups")
+        else:
+            unmatched[str(ns)] += 1
 
     # pull excluded/admin callers out of rollups
     for email in list(per):
@@ -354,12 +418,14 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             _, ns, email = prop_final[uuid]
             d["status_set_to"] = ns
             d["status_set_by"] = names.get(email, email)
-            d["is_lead"] = ns in lead_set
+            d["is_lead"] = norm_status(ns) in lead_set
         details.append(d)
     details.sort(key=lambda d: (-d["is_lead"], -d["dials"]))
     return {"from": day_from, "to": day_to, "account_totals": acct,
             "callers": dict(per), "daily": dict(daily), "names": names,
-            "records_detail": details}
+            "records_detail": details,
+            "status_vocabulary": dict(status_seen),
+            "unmatched_statuses": dict(unmatched)}
 
 
 # ---- rendering ----
@@ -388,6 +454,12 @@ def render_md(res: dict, bench: dict) -> str:
            f"- Leads: {a['leads']}  |  Not interested: {a['not_interested']}  |  "
            f"Follow-ups: {a['follow_ups']}  |  Appointments logged: {a['appointments']}",
            f"- Talk time: {fmt_hms(a['talk_seconds'])}  |  Texts: {a['sms_sent']} out / {a['sms_received']} in",
+           f"- Status changes seen: {a['status_changes']}"
+           + ("  |  NOT counted as lead/NI/follow-up: "
+              + ", ".join(f"{k} x{v}" for k, v in
+                          sorted(res.get("unmatched_statuses", {}).items(),
+                                 key=lambda kv: -kv[1])[:6])
+              if res.get("unmatched_statuses") else ""),
            "", "## By caller", "",
            "| Caller | Days | Dials | Dials/day | Ans% | Convos | Correct | NI | Leads | Floor |",
            "|---|---|---|---|---|---|---|---|---|---|"]

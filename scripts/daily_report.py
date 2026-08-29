@@ -465,7 +465,8 @@ def kpi_section(today: date, condensed: bool = False) -> list[str]:
         for d, r in rows.items():
             if day_from.isoformat() <= d <= day_to.isoformat():
                 for f in ("dials", "answered", "conversations", "correct_numbers",
-                          "leads", "not_interested", "talk_seconds", "sms_sent"):
+                          "leads", "not_interested", "talk_seconds", "sms_sent",
+                          "status_changes"):
                     t[f] += int(r.get(f) or 0)
         return t
 
@@ -487,6 +488,11 @@ def kpi_section(today: date, condensed: bool = False) -> list[str]:
     out.append(_line("Last week:", lw))
     if wk["sms_sent"] or lw["sms_sent"]:
         out.append(f"  Texts sent:   {wk['sms_sent']} this week, {lw['sms_sent']} last week")
+    # "0 leads" reads as "nothing happened", but it can equally mean statuses
+    # WERE changed and none of them matched the lead-status list. Say which.
+    if not wk["leads"] and wk["status_changes"]:
+        out.append(f"  ({wk['status_changes']} property status changes this week, none "
+                   f"in a lead status — see output/.kpi_status_vocabulary.json)")
     stale = max(rows) if rows else ""
     if stale and (today - date.fromisoformat(stale)).days > 2:
         out.append(f"  (numbers only current through {stale} — KPI refresh hasn't run since)")

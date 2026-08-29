@@ -19,6 +19,7 @@ import argparse
 import csv
 import datetime
 import importlib.util
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -28,10 +29,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SKILL_SCRIPTS = ROOT / ".claude" / "skills" / "kpi-engine" / "scripts"
 LEDGER = ROOT / "output" / "kpi_daily_ledger.csv"
 
+# status_changes is last so an older ledger (written before it existed) still
+# reads cleanly -- the missing column just defaults to 0.
 LEDGER_FIELDS = ["day", "dials", "answered", "noanswer", "conversations",
                  "meaningful_conversations", "correct_numbers", "wrong_numbers",
                  "dead_numbers", "dnc_numbers", "leads", "not_interested",
-                 "follow_ups", "appointments", "talk_seconds", "sms_sent"]
+                 "follow_ups", "appointments", "talk_seconds", "sms_sent",
+                 "status_changes"]
+VOCAB = ROOT / "output" / ".kpi_status_vocabulary.json"
 
 
 def _load_pull_kpis(called_only: bool = True):
@@ -93,6 +98,29 @@ def upsert_ledger(daily: dict[str, dict]) -> None:
         w.writeheader()
         for day in sorted(rows):
             w.writerow({f: rows[day].get(f, 0) for f in LEDGER_FIELDS})
+
+
+def save_status_vocabulary(res: dict) -> dict:
+    """Record which property-status labels the account actually emits.
+
+    "0 leads" has two very different causes -- nobody moved a record, or the
+    statuses came back spelled in a way the lead-status list doesn't match.
+    Writing the observed labels (and the ones that matched no bucket) makes
+    that answerable the next morning instead of needing a fresh pull.
+    """
+    payload = {"pulled": datetime.datetime.now().isoformat(timespec="seconds"),
+               "from": res.get("from"), "to": res.get("to"),
+               "seen": res.get("status_vocabulary") or {},
+               "unmatched": res.get("unmatched_statuses") or {}}
+    VOCAB.parent.mkdir(parents=True, exist_ok=True)
+    VOCAB.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    if payload["unmatched"]:
+        top = sorted(payload["unmatched"].items(), key=lambda kv: -kv[1])[:8]
+        print("[kpi] status values counted as neither lead/NI/follow-up: "
+              + ", ".join(f"{k!r} x{v}" for k, v in top)
+              + " -- add real lead statuses to benchmarks.json lead_statuses",
+              file=sys.stderr)
+    return payload
 
 
 def week_key(day: str) -> tuple[int, int]:
@@ -177,6 +205,7 @@ def main() -> int:
         token = pk.get_token()
         res = pk.pull(token, day_from, day_to, tz, pk.load_benchmarks())
         upsert_ledger(res["daily"])
+        save_status_vocabulary(res)
         print(f"[ledger] upserted {len(res['daily'])} day(s) into {LEDGER}", file=sys.stderr)
         if args.refresh_days:
             return 0  # nightly mode: ledger update is the whole job

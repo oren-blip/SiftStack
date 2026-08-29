@@ -73,13 +73,14 @@ def main() -> int:
             return 1
         TOKEN_FILE.write_text(tok, encoding="utf-8")
 
-    from weekly_kpis import _load_pull_kpis, upsert_ledger
+    from weekly_kpis import _load_pull_kpis, save_status_vocabulary, upsert_ledger
     tz = ZoneInfo("America/New_York")
     today = datetime.datetime.now(tz).date()
     day_from = (today - datetime.timedelta(days=args.days - 1)).isoformat()
     pk = _load_pull_kpis()
     res = pk.pull(tok, day_from, today.isoformat(), tz, pk.load_benchmarks())
     upsert_ledger(res["daily"])
+    save_status_vocabulary(res)
     print(f"[kpi] ledger refreshed for {day_from}..{today}", file=sys.stderr)
     return 0
 
