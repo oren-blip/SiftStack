@@ -58,6 +58,43 @@ Student/community links: https://tactiq.io/r/transcribing (Tactiq again). Notabl
 Redmond posted full door-knocking metrics for 6/3–8/17/26 — 95 hrs, 188 doors, 59 contacts, 11 leads,
 4 contracts, $52,500 gross profit logged.
 
+## August 2026 cohort — Day 4 (2026-08-20)
+
+Links Ty posted in chat:
+
+| Link | What it is |
+|---|---|
+| https://learn.datasift.ai/county-list-playbook#47093 | County list playbook deep-linked to Knox County TN |
+| https://intercom.help/reisift/en/articles/14646968-how-to-the-lead-manager-playbook-turning-marketing-dollars-into-closed-deals | **Lead Manager Playbook article** — the day's lead-management segment follows it |
+| https://intercom.help/reisift/en/articles/7156704-managing-sold-properties | Managing Sold Properties article (posted twice; our sold sweep implements this) |
+| https://drive.google.com/drive/folders/1yDo99yx34scB_EpUuM02_3pneCQwhkDn | **3014 Sandland walkthrough videos** — folder of phone videos Ty fed to Claude for the rehab-from-video demo (not archived locally, large media) |
+| https://docs.google.com/spreadsheets/d/1imTEnS7UbuM15LEJR0Qqu3fby1KWOfAm/edit | **Private Lender Package** for 3014 Sanland Ave Knoxville — archived as `guides/day-4/downloads/private-lender-package-3014-sanland.xlsx` |
+| https://docs.google.com/spreadsheets/d/100BqEVosr2Ngn4YWvUQo09zquWTvnJN5/edit | **Knox top-25 buyers output** from the buyer-prospector live demo — archived as `guides/day-4/downloads/knox-top-25-buyers-example.xlsx` |
+| https://drive.google.com/file/d/17sHGwdaLH2VQJqSnaIbHv-S0C659uS0d/view | 20-page homeowner-facing foreclosure guide (lead-magnet example) — archived as `guides/day-4/downloads/foreclosure-homeowner-guide-knox-example.pdf` |
+| https://www.facebook.com/groups/KnoxRealEstateInvestors | Knox REI Facebook group — target of the vendor-directory and every-3-hours deal-scrape prompts |
+| https://learn.datasift.ai/agent-org-chart | Agent org chart again (posted at close) |
+
+**Prompts Ty pasted in chat** (he types the prompt into chat, then runs it live): rehab-from-video
+(3014 Sandland ZIP + comp package, "closely mirror the finishes that are on the comps... do not
+overrenovate"); fix the phone-validator skill with skill-creator (Trestle API errors + support
+screenshots); "top 25 buyers in Knox County" via buyer-prospector (remove government agencies +
+iBuyers, local cash buyers only); clone the SiftStack repo into a private team GitHub repo; vendor
+directory from the Knox REI Facebook group ("every single trade... to flip a house"); scheduled task
+scraping that group every 3 hours 9am–9pm via the Chrome Extension.
+
+Day 4's hub downloads (4 skills/plugins, drip SOP PDF, 5532 Joyce Ann comp + rehab workbooks,
+Investor Bootz sample inspection report, fresh tech-stack SOP + 83-resource hub sheet) are archived
+in [guides/day-4/downloads/](guides/day-4/downloads/) — see that folder's `README.md`, including the
+Day-4-sheet items with no public URL (`deal-analyzer.plugin`, `sift-operations.plugin`, the 3
+interactive HTML guides, Default Account Setup guide).
+
+Student/community links: https://tactiq.io/r/transcribing (Tactiq again),
+https://www.ninjaassistants.com/discovery-call + https://vainusa.com/apply/ (DataSift-trained VA
+hiring). Notable chat intel: kev hernandez's "Ty's Enemies: Bulk, Drip Campaigns, PPL"; duyn paid
+$125–150/address on PPL; Eddie Briant scrapes probates in 7 of 21 NJ counties; Christian Hernandez
+distills the day's list reveal as "obituary + 2 years tax del"; replays sunset when next month's
+challenge replaces them (download the week of).
+
 ## Challenge material
 
 | Link | What it is |
