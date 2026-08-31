@@ -306,7 +306,19 @@ def process_phones(
                     errors.append({"phone_number": phone, "error": str(e)})
                     continue
 
-                if "error" in data and not data.get("is_valid"):
+                # Trestle's own 200 body for a non-existent number carries
+
+                # "error": null next to "is_valid": false — that is a RESULT
+
+                # (an invalid phone), not an error. Only a populated error
+
+                # (HTTP 4xx/5xx, timeout) goes to the errors list; otherwise the
+
+                # invalid number never got a terminal tag and re-surfaced as
+
+                # untiered on every sweep (2314907573, 8/23-8/30).
+
+                if data.get("error") and not data.get("is_valid"):
                     if data.get("error") == "Invalid API key":
                         logger.error("Invalid Trestle API key — aborting")
                         raise ValueError("Invalid Trestle API key")

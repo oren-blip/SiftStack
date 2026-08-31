@@ -32,6 +32,19 @@ Trestle returns `line_type` on the very call we already pay for the activity
 score, so this pass is FREE — it reads the score cache and never calls Trestle
 on its own. Phones with no cached line type are left alone, not guessed.
 
+WHEN IT RUNS (2026-08-30)
+-------------------------
+Two clocks, same sweep:
+  * inside `upload_netnew_datasift.py`, after every nightly upload;
+  * on its own — Task Scheduler "SiftStack Tier Sweep" runs
+    `scripts/trestle_sweep.bat` daily at 07:00 and 13:00, every day.
+The second one exists because the first only fires on nights something was
+uploaded (never on weekends), while phones keep landing regardless — so
+"02. Ready to Call" kept refilling with untiered numbers between uploads.
+
+Trestle-invalid numbers (`is_valid` False) are tagged "Drop": they can never
+score, and without a terminal tag the same phone re-surfaced every night.
+
 Default run is a FREE AUDIT (no Trestle spend, no writes).
 
     python trestle_api_backfill.py                    # audit RTC + last 7 days
@@ -452,9 +465,20 @@ def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
             logger.error("TRESTLE_API_KEY not set")
             return 2
         scored, errors = process_phones([(p, p) for p in fresh], api_key)
-        if errors:
-            logger.warning("%d phone(s) errored and won't be tagged.", len(errors))
+        for e in errors:
+            # Say WHY, not just "errored": a transient timeout / 5xx is retried
+            # next run, and nothing else can be decided without the reason.
+            logger.warning("  Trestle error on %s: %s %s", e.get("phone_number"),
+                           e.get("error"), (e.get("detail") or "")[:80])
         for r in scored:
+            if r.get("is_valid") is False:
+                # Trestle says this is not a real phone number, so it can never
+                # earn an activity score. Without a terminal tag it re-surfaces
+                # as "untiered" on every sweep (305 S Greenbriar Rd looped for
+                # 8 nights, 8/23-8/28) and the sweep exits 1 with "no taggable
+                # results". "Drop" is the not-dialable tier, which is exactly
+                # what an invalid number is.
+                r["assigned_tag"] = "Drop"
             cache[r["phone_number"]] = r
         CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
         results.extend(scored)
@@ -465,9 +489,17 @@ def _tier_sweep(*, h: dict, pool: dict, props: dict, apply: bool,
         w = csv.writer(f)
         w.writerow(["Phone Number", "Phone Tag"])
         for r in results:
-            if r.get("is_valid") is not False and r.get("assigned_tag"):
-                w.writerow([r["phone_number"], r["assigned_tag"]])
-                n_tags += 1
+            tag = r.get("assigned_tag") or ""
+            if r.get("is_valid") is False and tag != "Drop":
+                tag = "Drop"                      # older cache entries pre-fix
+            if not has_tier([tag]):
+                # "Unknown" (valid number, no score) is not a tier — writing
+                # it would create a junk phone tag and still count as untiered.
+                logger.warning("  %s: no tier from Trestle (%r) — left untagged",
+                               r.get("phone_number"), tag)
+                continue
+            w.writerow([r["phone_number"], tag])
+            n_tags += 1
     by_tier: dict[str, int] = {}
     for r in results:
         if r.get("assigned_tag"):

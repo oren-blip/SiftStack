@@ -380,6 +380,25 @@ traceable subjects = $12.30** one-time backlog (121 were cross-week duplicates,
 estate, max 30) → **330 kept across 70 of the 82 estates** — 114 Child, 71
 In-law, 55 Sibling, 53 Parent, 9 Spouse. 12 estates returned nothing usable.
 
+### Tier sweep — two clocks (build 1.0.36, 2026-08-30)
+
+Every phone in the NSM call presets must carry a Dial First/Second/Third/Fourth/
+Drop tag. `trestle_api_backfill.py` is the sweep that guarantees it (reads phones
+from `GET property/{uuid}/` — the Phone Enrichment export is blind to most of
+them; also fills Mobile/Landline/VOIP from the Trestle cache for free). It runs:
+
+1. inside `upload_netnew_datasift.py` after every nightly upload, and
+2. on its own clock — Task Scheduler **"SiftStack Tier Sweep"** →
+   `scripts/trestle_sweep.bat`, **daily 07:00 + 13:00, every day** (no workday
+   gate). Log: `logs/trestle_sweep.log`.
+
+Why two: phones land independently of our uploads (DataSift's own skip trace
+finishes hours after the upload, DP/SmartSkip API pushes, hand re-traces in the
+UI), and clock 1 never fires on a no-net-new night or a weekend — so "02. Ready
+to Call" kept refilling with untiered numbers. Trestle-invalid numbers get a
+terminal "Drop" tag so they stop re-surfacing. Free audit:
+`python trestle_api_backfill.py`; repair: `... --apply --max-cost 2 --headless`.
+
 ### Enformion spend cap
 
 `src/enformion_client.py` bills $0.35 per MATCH (misses free) and ran **uncapped**
