@@ -97,6 +97,34 @@ PUSH_TIERS = {"Dial First", "Dial Second", "Dial Third", "Dial Fourth"}
 # it. Slots 16-30 need the UI or the phone-number upload wizard.
 PHONE_CAP = 15
 
+# Trestle line type -> DataSift phone enum. The old mapping here defaulted
+# everything non-mobile to LANDLINE, which stamped 299 Mobile/VOIP phones
+# LANDLINE across groups 3/4 and the 8/27 queue (their builders read the
+# review CSVs, which carried no line-type column, so every phone arrived
+# blank) — repaired 2026-09-01 by fix_smartskip_line_types_20260901.py.
+# A blank line_type now falls back to the Trestle score cache (every pushed
+# phone was Trestle-scored, so it's there); still unknown -> NO type at all,
+# which lands as UNKNOWN and the tier sweep's free type pass fills it later.
+_TRESTLE_CACHE_PATH = REPO / "output" / ".trestle_score_cache.json"
+try:
+    _TRESTLE_CACHE = json.loads(_TRESTLE_CACHE_PATH.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    _TRESTLE_CACHE = {}
+
+
+def ds_type(line_type: str | None, num: str) -> str | None:
+    lt = str(line_type or "").lower().replace(" ", "").replace("_", "")
+    if not lt:
+        lt = str((_TRESTLE_CACHE.get(digits(num)) or {}).get("line_type")
+                 or "").lower()
+    if "voip" in lt:                          # FixedVOIP / NonFixedVOIP
+        return "VOIP"
+    if "mobile" in lt or "wireless" in lt:
+        return "MOBILE"
+    if "landline" in lt or "fixedline" in lt:
+        return "LANDLINE"
+    return None
+
 
 def headers(tok: str) -> dict:
     return {"authorization": f"Bearer {tok}", "content-type": "application/json",
@@ -387,8 +415,7 @@ def main() -> int:
                 out(f"  {num} already queued for this record - skip (duplicate)")
                 continue
             batch_seen.add(digits(num))
-            ltype = ("MOBILE" if "mobile" in str(ph.get("line_type") or "").lower()
-                     else "LANDLINE")
+            ltype = ds_type(ph.get("line_type"), num)
             # The API PATCH persists only the first PHONE_CAP entries (see the
             # PHONE_CAP note up top). A cluster push can carry 10+ numbers onto
             # a record that already holds some, so stop before the cap rather
@@ -403,10 +430,10 @@ def main() -> int:
             # number belongs to a relative, NOT to the owner of record - a
             # caller must be able to see that before dialling.
             label = ph.get("label") or f"Court PR {e['court_pr']}"
-            new_owner.setdefault("phones", []).append({
-                "number": num, "type": ltype,
-                "tags": [tier, label, "SmartSkip"],
-            })
+            entry = {"number": num, "tags": [tier, label, "SmartSkip"]}
+            if ltype:
+                entry["type"] = ltype
+            new_owner.setdefault("phones", []).append(entry)
             added.append(num)
 
         if not added:

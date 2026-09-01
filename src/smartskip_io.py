@@ -778,11 +778,16 @@ def score_people(people: list[Person], api_key: str | None = None,
 
 # ── Review artifact ───────────────────────────────────────────────────────
 
+# Phone N Type carries Trestle's line_type (Mobile / Landline / FixedVOIP /
+# NonFixedVOIP) through to whatever builds a push file from this CSV. It was
+# missing until 2026-09-01, which left push builders with no type at all and
+# the push script's old default stamped 299 Mobile/VOIP phones LANDLINE.
 REVIEW_COLUMNS = ["SiftKey", "County", "Case No.", "Deceased Owner",
                   "Property Address", "Heir Name", "Relationship", "Age",
                   "At Property", "Heir Mailing Address", "Heir City",
                   "Heir State", "Heir Zip",
-                  "Phone 1", "Phone 1 Tier", "Phone 2", "Phone 2 Tier",
+                  "Phone 1", "Phone 1 Tier", "Phone 1 Type",
+                  "Phone 2", "Phone 2 Tier", "Phone 2 Type",
                   "Email", "Source"]
 
 
@@ -807,6 +812,7 @@ def write_review_csv(clusters: list[Cluster], keymap: dict[str, dict],
             prop_key = _addr_key(meta.get("Property Address") or c.subject_address)
             for p in shortlist(c, max_people):
                 tiers = {s["phone"]: s.get("tier") or "" for s in p.scored}
+                types = {s["phone"]: s.get("line_type") or "" for s in p.scored}
                 ph = p.phones[:2] + ["", ""]
                 w.writerow({
                     "SiftKey": c.key,
@@ -828,7 +834,9 @@ def write_review_csv(clusters: list[Cluster], keymap: dict[str, dict],
                     "Heir State": p.state,
                     "Heir Zip": p.zip,
                     "Phone 1": ph[0], "Phone 1 Tier": tiers.get(ph[0], ""),
+                    "Phone 1 Type": types.get(ph[0], ""),
                     "Phone 2": ph[1], "Phone 2 Tier": tiers.get(ph[1], ""),
+                    "Phone 2 Type": types.get(ph[1], ""),
                     "Email": p.emails[0] if p.emails else "",
                     "Source": "smartskip",
                 })
