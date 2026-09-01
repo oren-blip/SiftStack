@@ -116,6 +116,12 @@ def find_upgrades(export_csv: Path, week: int) -> list[dict]:
         by_addr = {_norm(r.get("Property Address")): r for r in csv.DictReader(f)}
     out = []
     mismatches = []
+    # Cases that need NO push: DataSift already carries the workbook PR (same
+    # person), or the workbook slid back to "Heirs of". Only consulted against
+    # the queue, so a queued case that is already right gets cleared instead
+    # of nagging in the nightly "PR PUSH QUEUE" line forever (12 of 17 on
+    # 2026-08-31 were exactly that).
+    settled: list[str] = []
     with export_csv.open(newline="", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             first = (r.get("First Name") or "").strip()
@@ -124,6 +130,7 @@ def find_upgrades(export_csv: Path, week: int) -> list[dict]:
                 continue
             pr = (wb.get("Personal Representative") or "").strip()
             if not pr or pr.lower().startswith("heirs of"):
+                settled.append((wb.get("Case No.") or "").strip())
                 continue
             ds_name = f"{first} {(r.get('Last Name') or '').strip()}".strip()
             if not first.lower().startswith("heirs"):
@@ -143,6 +150,8 @@ def find_upgrades(export_csv: Path, week: int) -> list[dict]:
                     mismatches.append({"case": wb.get("Case No.", ""),
                                        "address": (r.get("Property address") or "").strip(),
                                        "ds": ds_name, "wb": pr})
+                else:
+                    settled.append((wb.get("Case No.") or "").strip())
                 continue
             # A workbook contact without BOTH a first and last name is a bare
             # token a prior night shipped before the single-token guard
@@ -167,7 +176,7 @@ def find_upgrades(export_csv: Path, week: int) -> list[dict]:
                 "mail_state": (wb.get("Mailing State") or "NC").strip() or "NC",
                 "mail_zip": (wb.get("Mailing Zip") or "").strip(),
             })
-    return out, mismatches
+    return out, mismatches, settled
 
 
 async def _open_owner_page(page, address: str) -> bool:
@@ -335,7 +344,16 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
                     logger.error("export failed: %s", res.get("message"))
                     rc = 1
                     continue
-                ups, mismatches = find_upgrades(Path(res["download_path"]), week)
+                ups, mismatches, settled = find_upgrades(
+                    Path(res["download_path"]), week)
+                already = {c for c in settled if c in queued}
+                if already:
+                    logger.info("  already correct in DataSift (or back to "
+                                "Heirs-of) — %s from queue: %s",
+                                "would clear" if dry_run else "clearing",
+                                ", ".join(sorted(already)))
+                    if not dry_run:
+                        pushed |= already
                 if skip_cases:
                     skipped = [u for u in ups if u["case"] in skip_cases]
                     for u in skipped:
