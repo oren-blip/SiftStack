@@ -303,7 +303,12 @@ def main() -> int:
         # Only reuse a month tag that already exists — don't spawn new ones.
         month_tag = f"Sold {month}" if tags.get(f"sold {month}") else None
         want = ["Sold"] + ([month_tag] if month_tag else [])
-        rec, how = find_record(h, street, r.get("decedent", ""), r.get("pr", ""))
+        if (r.get("uuid") or "").strip():
+            # CRM-sourced row (sold_audit --crm-legacy): the parcel came FROM
+            # this record, so there is nothing to search for.
+            rec, how = {"uuid": r["uuid"].strip()}, "CRM uuid"
+        else:
+            rec, how = find_record(h, street, r.get("decedent", ""), r.get("pr", ""))
         case = r.get("case") or "NO CASE#"
         if rec is None:
             print(f"  {how[:26]:26s} {case} | {street[:38]}")

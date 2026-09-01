@@ -9,10 +9,21 @@ A parcel is also flagged when its GIS reading moved forward since the last run,
 which is the only way some counties are visible at all — see
 CHANGE_MAX_AGE_DAYS below.
 
+A parcel is ALSO flagged when the sale falls on/after the estate's file date
+(a transfer after the estate opened is a settlement or a sale no matter how
+old the window is — that is how a January sale on a Week-50 case stayed in
+the mail lane until August 2026).
+
 Usage:
     python sold_audit.py                       # since 2026-06-01
     python sold_audit.py --since 2026-01-01    # any 2026 sale
     python sold_audit.py --since-days 90       # rolling window (nightly uses this)
+    python sold_audit.py --since-days 90 --crm-legacy
+        # + every "Courthouse Data" record in DataSift that is NOT in the
+        #   workbook (Jul-2025..May-2026 vintages, ~2,000 parcels). Self-
+        #   throttled to once per --crm-every days (default 7) because it is
+        #   ~2,700 record reads + ~2,000 GIS calls. --crm-force ignores the
+        #   throttle. Needs a DataSift token (same path push_sold_tags uses).
 Output: output/sold_audit_<today>.csv + console summary (Case No. included).
 Feeds push_sold_tags.py, which tags the real sales "Sold" in DataSift.
 """
@@ -231,8 +242,22 @@ _FIELD_ATTEMPTS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# Cabarrus was 0-for-98 on sale dates until 2026-08-30: the `Parcels` layer
+# nc_gis_lookup uses for name search carries owner + mailing but NO sale
+# fields, so every Cabarrus parcel read "found, never sold". The OpenData
+# Tax_Parcels layer publishes SaleYear / SaleMonth / SalePrice / DeedBook /
+# DeedPage on the same PIN14 key (verified current: it showed the Jan-2026
+# estate deed on 5607 Dorchester Ave that Parcels could not). Sale-date
+# resolution is month-level there (we synthesize the 1st).
+_SALE_LAYER: dict[str, str] = {
+    "cabarrus": ("https://location.cabarruscounty.us/arcgisservices/rest/"
+                 "services/OpenData/Tax_Parcels/MapServer/1"),
+}
+
+
 def q_arcgis(county: str, pid: str) -> dict | None:
     cfg = _ARCGIS_CONFIG[county]
+    url = _SALE_LAYER.get(county, cfg["url"])
     pid = norm_pid(pid)
     pid_esc = pid.replace("'", "''")
     attempts = _FIELD_ATTEMPTS.get(county, [(cfg["parcel_field"], "exact")])
@@ -247,7 +272,7 @@ def q_arcgis(county: str, pid: str) -> dict | None:
         else:
             continue
         try:
-            r = requests.get(f"{cfg['url']}/query", params={
+            r = requests.get(f"{url}/query", params={
                 "where": where,
                 "outFields": "*", "returnGeometry": "false", "f": "json",
             }, headers=_ARCGIS_HEADERS, timeout=30)
@@ -342,12 +367,180 @@ def q_meck(pid: str) -> dict | None:
         return None
 
 
+def _iso(d: str) -> str:
+    """'2026-07-15', '2026-07-15 00:00:00', '07/15/2026' -> '2026-07-15' ('' if unreadable)."""
+    d = (d or "").strip()
+    if not d:
+        return ""
+    if len(d) >= 10 and d[4] == "-" and d[7] == "-":
+        return d[:10]
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", d)
+    if m:
+        return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    return ""
+
+
+# Sale-date resolution per county. Lincoln and Rowan publish only a YEAR
+# (read as Jan 1), Cabarrus a year+month (read as the 1st), so "on/after the
+# file date" has to be compared at that resolution or a Rowan estate filed in
+# May whose house sold in June reads 2026-01-01 < 2026-05-xx and never flags.
+YEAR_ONLY = {"lincoln", "rowan"}
+MONTH_ONLY = {"cabarrus"}
+
+
+def _post_filing(county: str, sale_date: str | None, filed: str) -> bool:
+    """True when the GIS sale lands on/after the estate's file date, compared
+    at the county's date resolution. classify() then decides whether it is a
+    settlement to family (report-only) or a sale (suppress)."""
+    if not sale_date or not filed:
+        return False
+    if county in YEAR_ONLY:
+        return sale_date[:4] >= filed[:4]
+    if county in MONTH_ONLY:
+        return sale_date[:7] >= filed[:7]
+    return sale_date >= filed
+
+
+CRM_CACHE = "output/.sold_crm_parcels.json"
+CRM_STAMP = "output/.sold_crm_legacy_last_run"
+CRM_VINTAGE_SLACK_DAYS = 45   # a sale can record a few weeks before the list was pulled
+_SUPPORTED = ARC_COUNTIES | {"catawba", "mecklenburg"}
+
+
+def load_crm_rows(skip_keys: set[tuple], every_days: int, force: bool) -> list[dict]:
+    """Courthouse Data records in DataSift that the workbook does not cover.
+
+    The sweep read only the CURRENT-year consolidated workbook (Week 24+), so
+    ~2,000 courthouse records uploaded Jul-2025..May-2026 had no GIS check at
+    all and were protected solely by DataSift's own `last_sold` field, which
+    stopped refreshing in July 2026. This pulls every record tagged
+    "Courthouse Data", keeps the ones with a county + parcel that the workbook
+    does not already sweep, and shapes them like workbook rows. Because the
+    case file date is not on the record, the floor is the upload vintage
+    ("List Purchased County MM/YYYY") minus CRM_VINTAGE_SLACK_DAYS.
+
+    Record reads are cached 7 days (CRM_CACHE); the whole pass is throttled to
+    once per `every_days` (CRM_STAMP) unless `force`. Sold-tagged records are
+    skipped — nothing left to suppress. Any failure returns [] so the workbook
+    sweep still runs.
+    """
+    if not force and os.path.exists(CRM_STAMP):
+        try:
+            last = date.fromisoformat(open(CRM_STAMP, encoding="utf-8").read().strip())
+            if (date.today() - last).days < every_days:
+                print(f"CRM legacy sweep: last ran {last}, next due in "
+                      f"{every_days - (date.today() - last).days} day(s) — skipped")
+                return []
+        except ValueError:
+            pass
+    import json
+    recs: list[dict] | None = None
+    if os.path.exists(CRM_CACHE):
+        try:
+            blob = json.load(open(CRM_CACHE, encoding="utf-8"))
+            if (date.today() - date.fromisoformat(blob["fetched"])).days < 7:
+                recs = blob["rows"]
+                print(f"CRM legacy: {len(recs)} records from cache ({blob['fetched']})")
+        except (ValueError, KeyError, OSError):
+            recs = None
+    if recs is None:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from push_sold_tags import headers, tag_map
+            h = headers()
+            tags = tag_map(h)
+            ch = tags.get("courthouse data")
+            if not ch:
+                print("CRM legacy: no 'Courthouse Data' tag on the account — skipped")
+                return []
+            api = "https://apiv2.reisift.io/api/internal/property/"
+            listing: list[dict] = []
+            off = 0
+            while True:
+                r = requests.post(api, headers={**h, "x-http-method-override": "GET"},
+                                  json={"limit": 200, "offset": off,
+                                        "query": {"must": {"any_tags": [ch]}}}, timeout=120)
+                r.raise_for_status()
+                page = r.json().get("results") or r.json().get("data") or []
+                listing += page
+                if len(page) < 200:
+                    break
+                off += 200
+            print(f"CRM legacy: {len(listing)} Courthouse Data records, reading details...")
+            recs = []
+            for i, row in enumerate(listing, 1):
+                try:
+                    d = requests.get(f"{api}{row['uuid']}/", headers=h, timeout=60).json()
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ! detail {row.get('uuid')}: {e}")
+                    continue
+                a = d.get("address") or {}
+                o = d.get("owner") or {}
+                tg = [t.get("title") if isinstance(t, dict) else t for t in (d.get("tags") or [])]
+                recs.append({
+                    "uuid": d.get("uuid"), "county": (a.get("county") or "").lower(),
+                    "street": a.get("street") or "", "city": a.get("city") or "",
+                    "parcel": str(d.get("parcel_id") or "").strip(),
+                    "owner": " ".join(x for x in (o.get("first_name"), o.get("last_name")) if x),
+                    "tags": [t for t in tg if t],
+                    "last_sold": d.get("last_sold") or "",
+                })
+                if i % 250 == 0:
+                    print(f"  ...{i}/{len(listing)}")
+            json.dump({"fetched": date.today().isoformat(), "rows": recs},
+                      open(CRM_CACHE, "w", encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            print(f"CRM legacy: DataSift read failed ({e}) — workbook sweep only")
+            return []
+    out: list[dict] = []
+    skipped = {"no parcel": 0, "in workbook": 0, "sold-tagged": 0, "county": 0}
+    for rec in recs:
+        county, pid = rec["county"], norm_pid(rec["parcel"])
+        if not pid:
+            skipped["no parcel"] += 1
+            continue
+        if county not in _SUPPORTED:
+            skipped["county"] += 1
+            continue
+        if (county, pid) in skip_keys:
+            skipped["in workbook"] += 1
+            continue
+        if any(t.lower() == "sold" for t in rec["tags"]):
+            skipped["sold-tagged"] += 1
+            continue
+        vintage = ""
+        for t in rec["tags"]:
+            m = re.match(r"List Purchased County (\d{2})/(\d{4})", t)
+            if m:
+                vintage = f"{m.group(2)}-{m.group(1)}"
+        floor = ""
+        if vintage:
+            floor = (date.fromisoformat(vintage + "-01")
+                     - timedelta(days=CRM_VINTAGE_SLACK_DAYS)).isoformat()
+        out.append({
+            "week": f"CRM {vintage or 'unknown vintage'}", "county": county, "case": "",
+            "decedent": "", "pr": rec["owner"], "filed": floor,
+            "address": rec["street"], "parcel": pid, "uuid": rec["uuid"],
+        })
+    print(f"CRM legacy: {len(out)} parcels to sweep "
+          f"(skipped {', '.join(f'{v} {k}' for k, v in skipped.items())})")
+    open(CRM_STAMP, "w", encoding="utf-8").write(date.today().isoformat())
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="2026-06-01")
     ap.add_argument("--since-days", type=int,
                     help="rolling window instead of a fixed --since date; what "
                          "the nightly run uses so the cutoff can't go stale")
+    ap.add_argument("--crm-legacy", action="store_true",
+                    help="also sweep Courthouse Data records in DataSift that "
+                         "the workbook does not cover (throttled, see --crm-every)")
+    ap.add_argument("--crm-every", type=int, default=7,
+                    help="days between --crm-legacy passes (default 7)")
+    ap.add_argument("--crm-force", action="store_true",
+                    help="run --crm-legacy now even if it ran recently")
     args = ap.parse_args()
     if args.since_days:
         args.since = (date.today() - timedelta(days=args.since_days)).isoformat()
@@ -361,6 +554,10 @@ def main() -> None:
         key = (r["county"], r["parcel"])
         seen.setdefault(key, r)  # keep first (oldest week) occurrence
     print(f"Unique (county, parcel): {len(seen)}")
+    if args.crm_legacy:
+        for r in load_crm_rows(set(seen), args.crm_every, args.crm_force):
+            seen.setdefault((r["county"], r["parcel"]), r)
+        print(f"Unique (county, parcel) incl. CRM legacy: {len(seen)}")
 
     results = []
     stats: dict[str, list[int]] = {}
@@ -379,8 +576,14 @@ def main() -> None:
         if gis:
             st[1] += 1
             sd = gis.get("sale_date")
+            filed = _iso(r.get("filed", ""))
             if sd and sd >= args.since:
                 flag = f"SOLD since {args.since}"
+            elif _post_filing(county, sd, filed):
+                # Older than the window but on/after the estate opened: the
+                # window never sees it, and the first run's baseline already
+                # held the post-sale reading so change detection is blind too.
+                flag = f"SOLD after filing {filed}"
             elif changed_since_last_run(prior, county, pid, sd):
                 flag = f"SOLD - GIS record changed (was {prior[(county, pid)]})"
             if flag:
@@ -400,7 +603,8 @@ def main() -> None:
             # deeded to a married daughter who is the PR reads HEIR TRANSFER
             # here and MARKET SALE there, which would suppress a hot lead.
             "flag", "county", "case", "decedent", "pr", "parcel", "address",
-            "sale_date", "sale_price", "owner", "week"], extrasaction="ignore")
+            "sale_date", "sale_price", "owner", "week", "filed", "uuid"],
+            extrasaction="ignore")
         w.writeheader()
         w.writerows(results)
     print(f"\nWrote {out_path}")

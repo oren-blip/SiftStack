@@ -2088,6 +2088,17 @@ def _parse_arcgis_sale_date(rec: dict) -> str | None:
                     return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
                 except ValueError:
                     continue
+    # Priority 1.5: year + month (Cabarrus OpenData/Tax_Parcels publishes
+    # SaleYear/SaleMonth and no day) — synthesize the 1st of that month.
+    yr_v, mo_v = rec.get("SaleYear"), rec.get("SaleMonth")
+    if yr_v not in (None, "", 0, 0.0):
+        try:
+            yr = int(float(yr_v))
+            mo = int(float(mo_v)) if mo_v not in (None, "", 0, 0.0) else 1
+            if 1900 <= yr <= 2100 and 1 <= mo <= 12:
+                return f"{yr:04d}-{mo:02d}-01"
+        except (TypeError, ValueError):
+            pass
     # Priority 2: year-only fallback — synthesize Jan 1
     for field in ("Sale_Yr", "SALE_YEAR", "DEEDYR", "DEEDYEAR"):
         v = rec.get(field)

@@ -175,12 +175,19 @@ REM Tagging "Sold" is enough on its own -- the 12 NSM presets now exclude that
 REM tag AND any sale since 2023-01-01, so no sequence has to fire (bulk tag
 REM adds do NOT fire sequences on this account). HEIR TRANSFERs are never
 REM suppressed: estate settled + title cleared = hot re-target lead.
-REM ~17 min for ~700 parcels, non-fatal.  Off-switch:  set NC_SOLD_SWEEP=0
+REM Also flags any transfer dated on/after the estate's file date (a 90-day
+REM window alone let a Jan-2026 sale on a Week-50 case stay in the mail lane
+REM until Aug 2026), reads Cabarrus sales from the OpenData/Tax_Parcels layer
+REM (the Parcels layer has no sale fields at all), and once a week
+REM (--crm-legacy) also sweeps the ~2,000 "Courthouse Data" records that
+REM predate the 2026 workbook.
+REM ~17 min for ~1,000 parcels (+~35 min on the weekly legacy day), non-fatal.
+REM Off-switch:  set NC_SOLD_SWEEP=0
 echo [6.95/7] Sold sweep (county GIS -^> DataSift "Sold" tag)...
 if "%NC_SOLD_SWEEP%"=="0" (
     echo   skipped -- NC_SOLD_SWEEP=0 >> "logs\nc_daily_run.log"
 ) else (
-    "D:\SiftStack\.venv\Scripts\python.exe" sold_audit.py --since-days 90 >> "logs\nc_daily_run.log" 2>&1
+    "D:\SiftStack\.venv\Scripts\python.exe" sold_audit.py --since-days 90 --crm-legacy >> "logs\nc_daily_run.log" 2>&1
     "D:\SiftStack\.venv\Scripts\python.exe" push_sold_tags.py --apply >> "logs\nc_daily_run.log" 2>&1
 )
 

@@ -399,6 +399,38 @@ to Call" kept refilling with untiered numbers. Trestle-invalid numbers get a
 terminal "Drop" tag so they stop re-surfacing. Free audit:
 `python trestle_api_backfill.py`; repair: `... --apply --max-cost 2 --headless`.
 
+### Nightly GIS sold sweep — what it can and cannot see (build 1.0.37, 2026-08-30)
+
+`sold_audit.py` + `push_sold_tags.py` run as nightly step [6.95/7]. Three
+blind spots were found by tracing a home that sold in Jan 2026 and was still
+mailed in Aug 2026 (5607 Dorchester Ave, Cabarrus, Week 50 2025 — 7 mail
+pieces, 4 calls, a DP re-trace, all after the sale). All three are fixed:
+
+1. **Cabarrus was 0-for-98 on sale dates.** The `Parcels` layer used for name
+   search has NO sale fields. Sales come from
+   `OpenData/Tax_Parcels/MapServer/1` (SaleYear/SaleMonth/SalePrice/DeedBook,
+   same PIN14 key) — `_SALE_LAYER` override in `sold_audit.py`; the shared
+   `_parse_arcgis_sale_date` now reads year+month as the 1st of that month.
+2. **A 90-day window never looks back.** A parcel is now also flagged when its
+   sale lands on/after the estate's **file date** (`_post_filing`), compared
+   at the county's date resolution (Lincoln/Rowan year-only, Cabarrus
+   month-only). Change detection cannot catch these either — the first run's
+   baseline already held the post-sale reading.
+3. **The sweep read only the 2026 workbook (Week 24+).** ~2,000 "Courthouse
+   Data" records uploaded Jul-2025..May-2026 had no GIS check at all and were
+   protected solely by DataSift's `last_sold`, which stopped refreshing in
+   July. `--crm-legacy` (nightly flag, self-throttled to once/7 days, cache
+   `output/.sold_crm_parcels.json`, stamp `output/.sold_crm_legacy_last_run`,
+   `--crm-force` to run now) sweeps them too; the floor is the "List Purchased
+   County MM/YYYY" vintage minus 45 days and the audit CSV carries the record
+   `uuid` so `push_sold_tags` tags without searching.
+
+Unchanged rules: HEIR TRANSFER / UNCLEAR are report-only (family settlement =
+hot re-target lead), only MARKET SALE / INVESTOR PURCHASE get the "Sold" tag,
+and the 12 NSM presets exclude the Sold tag + `last_sold >= 2023-01-01`. The
+preset rule is the only thing that protects a record whose sale DataSift
+already knows; the GIS sweep is what protects the rest.
+
 ### Enformion spend cap
 
 `src/enformion_client.py` bills $0.35 per MATCH (misses free) and ran **uncapped**
