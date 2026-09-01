@@ -208,6 +208,446 @@ def pipeline_runtime_min(log_path: Path) -> float | None:
     return ((h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1)) / 60.0
 
 
+# ── Tonight's run — summary (Oren, 2026-08-31: "send a summary like this
+# with the daily report") ─────────────────────────────────────────────
+# Reads tonight's slice of logs/nc_daily_run.log and turns the step-by-step
+# chatter into the same shape as a hand-written run recap: headline, per-week
+# polish, DataSift upload, deep prospecting, sold sweep, cost, and a
+# NEEDS A HAND list. Everything is best-effort — a missing line just drops
+# its sentence, never the section.
+
+
+def _read_log_text(log_path: Path) -> str:
+    if not log_path.exists():
+        return ""
+    for enc in ("utf-8", "utf-16-le", "utf-16"):
+        try:
+            text = log_path.read_text(encoding=enc, errors="ignore")
+            if text:
+                return text
+        except (OSError, UnicodeDecodeError):
+            continue
+    return ""
+
+
+def tonight_log_slice(log_path: Path) -> str:
+    """Text from the last '=== Daily run started' marker onward, cut before
+    any echoed daily report (the bat tees this script's own output into the
+    same log, so a manual re-run must not read last night's report as data)."""
+    text = _read_log_text(log_path)
+    marker = "=== Daily run started"
+    if marker not in text:
+        return ""
+    return text[text.rindex(marker):]
+
+
+_TN_WEEK_HDR = re.compile(r"=== WEEK(\d+): (\S+) ===")
+
+
+def parse_tonight(text: str, today: date | None = None) -> dict:
+    """Pull the numbers a human would quote from tonight's log slice."""
+    today = today or date.today()
+    t: dict = {"ok": bool(text)}
+    if not text:
+        return t
+    # A finished run prints its done stamp AFTER this report is echoed into
+    # the log; grab it before cutting the echo away (manual re-runs only —
+    # inside the nightly the run is still going when this parses).
+    m = re.search(r"Daily run done \w+ \d{2}/\d{2}/\d{4} (\d{2}):(\d{2}):(\d{2})", text)
+    t["done_hms"] = tuple(int(x) for x in m.groups()) if m else None
+    echo = text.find("NC Probate Pipeline")
+    if echo > 0:
+        text = text[:echo]
+
+    m = re.search(r"Daily run started \w+ (\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2}):(\d{2})", text)
+    if m:
+        mo, dd, yy, hh, mi, ss = map(int, m.groups())
+        t["start"] = datetime(yy, mo, dd, hh, mi, ss)
+    t["budget_hit"] = "*** BUDGET" in text
+    t["tracebacks"] = len(re.findall(r"^Traceback \(most recent call last\)", text, re.M))
+
+    m = re.search(r"Summary: (\d+) pass, (\d+) fail, (\d+) skip", text)
+    if m:
+        t["smoke"] = tuple(int(x) for x in m.groups())
+
+    # Raw scrape rows landed tonight (files stamped with today's date).
+    raw_today: Counter = Counter()
+    for d, wk, n in re.findall(
+            r"nc_estates_ftm_(\d{4}-\d{2}-\d{2})_\d+\.csv -> week (\d+) \d{4} \((\d+) rows\)", text):
+        if d == today.isoformat():
+            raw_today[int(wk)] += int(n)
+    t["raw_today"] = dict(raw_today)
+
+    # Per-week polish blocks.
+    weeks: dict[int, dict] = {}
+    hdrs = list(_TN_WEEK_HDR.finditer(text))
+    for i, h in enumerate(hdrs):
+        wk = int(h.group(1))
+        blk = text[h.end(): hdrs[i + 1].start() if i + 1 < len(hdrs) else len(text)]
+        # The polish output ends where the next pipeline step starts.
+        for stop in ("LLM USAGE this process", "[budget]"):
+            j = blk.find(stop)
+            if j > 0:
+                blk = blk[:j]
+        w: dict = {}
+        m = re.search(r"Loaded (\d+) rows", blk)
+        w["loaded"] = int(m.group(1)) if m else 0
+        w["pr_backfilled"] = len(re.findall(r"^\s+PR backfill ", blk, re.M))
+        w["dm_mailing_found"] = len(re.findall(r"DM-MAILING FOUND", blk))
+        m = re.search(r"parties backfill: skipped (\d+) case", blk)
+        w["parties_skipped"] = int(m.group(1)) if m else 0
+        m = re.search(r"parties backfill: (\d+) rows need the court; doing (\d+) this run", blk)
+        w["parties_pending"] = (int(m.group(1)), int(m.group(2))) if m else None
+        m = re.search(r"Rows in: (\d+)\s+Dropped \(no parcel\): (\d+)\s+DM-promoted: (\d+)"
+                      r"\s+Beneficiary-promoted: (\d+)\s+Generic Heirs-of: (\d+).*?Out: (\d+)", blk)
+        if m:
+            (w["step4_in"], w["no_parcel"], w["dm_promoted"], w["ben_promoted"],
+             w["heirs_of"], w["step4_out"]) = (int(x) for x in m.groups())
+        w["heir_occupied"] = sum(int(x) for x in re.findall(r"Dropped heir-occupied: (\d+)", blk))
+        m = re.search(r"Dropped via Zillow status: (\d+)", blk)
+        w["zillow_drops"] = int(m.group(1)) if m else 0
+        w["zillow_lines"] = [
+            (cty, dec.strip(), addr, why) for cty, dec, addr, why in
+            re.findall(r"ZILLOW DROP (\w+)/(.+?): '(.*?)'\s*\W*\s*(\w+)", blk)]
+        m = re.search(r"Same-property rows merged: (\d+)", blk)
+        w["spouse_merged"] = int(m.group(1)) if m else 0
+        m = re.search(r"Rows held from upload: (\d+)", blk)
+        w["held"] = int(m.group(1)) if m else 0
+        w["held_lines"] = re.findall(r"OCCUPIED-HOLD (\w+)/(\S+): '(.+?)' at the home", blk)
+        m = re.search(r"_upload\.csv\s+\((\d+) rows", blk)
+        w["upload_ready"] = int(m.group(1)) if m else None
+        m = re.search(r"Rows updated from fetched case-doc cache: (\d+)", blk)
+        w["casedoc_updates"] = int(m.group(1)) if m else 0
+        weeks[wk] = w
+    t["weeks"] = weeks
+
+    # DataSift upload (auto_upload_netnew + upload_netnew_datasift).
+    up: dict = {"uploaded": {}, "skipped": []}
+    for wk, n in re.findall(r"auto-upload: week (\d+): uploading (\d+) row", text):
+        up["uploaded"][int(wk)] = int(n)
+    for wk in re.findall(r"auto-upload: week (\d+): \S+ has 0 rows -- skip", text):
+        up["skipped"].append(int(wk))
+    up["committed"] = "Upload committed (wizard closed)" in text
+    up["skip_trace"] = "Skip trace started" in text
+    up["tiers"] = "Phone tags uploaded" in text
+    up["touches"] = "Text touches uploaded" in text
+    up["tagpush"] = len(re.findall(r"Upload the file: tagpush_", text))
+    up["disabled"] = "NC_AUTO_UPLOAD=0" in text
+    t["upload"] = up
+
+    # Deep prospecting (nc_deep_prospect + tracers).
+    dp: dict = {}
+    m = re.search(r"Tracerfy batch complete: (\d+)/(\d+) matched, (\d+) phones, (\d+) emails, \$([\d.]+)", text)
+    if m:
+        dp["tracerfy"] = (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                          int(m.group(4)), float(m.group(5)))
+    m = re.search(r"Enformion filled phones for (\d+) row\(s\).*?billed \$([\d.]+)", text)
+    if m:
+        dp["enformion"] = (int(m.group(1)), float(m.group(2)))
+    dp["enformion_rejected"] = len(re.findall(r"Enformion match rejected", text))
+    m = re.search(r"Trestle scoring (\d+) unique phones across (\d+) records \(~\$([\d.]+)\)", text)
+    if m:
+        dp["trestle"] = (int(m.group(1)), int(m.group(2)), float(m.group(3)))
+    m = re.search(r"Deep prospecting complete: (\d+) DM names found, (\d+) phones traced", text)
+    if m:
+        dp["complete"] = (int(m.group(1)), int(m.group(2)))
+    t["dp"] = dp
+
+    # LLM spend — the line prints twice per process (stdout + logger), so
+    # dedupe consecutive identical readings before summing.
+    llm_calls = 0
+    llm_cost = 0.0
+    last = None
+    for calls, cost in re.findall(r"LLM USAGE this process: (\d+) Anthropic calls, est \$([\d.]+)", text):
+        if (calls, cost) == last:
+            continue
+        last = (calls, cost)
+        llm_calls += int(calls)
+        llm_cost += float(cost)
+    t["llm"] = (llm_calls, llm_cost)
+
+    # Sold sweep (sold_audit + push_sold_tags).
+    sold: dict = {}
+    m = re.search(r"Rows with parcels: (\d+)", text)
+    if m:
+        sold["parcels"] = int(m.group(1))
+    m = re.search(r"Unique \(county, parcel\) incl\. CRM legacy: (\d+)", text)
+    if m:
+        sold["checked"] = int(m.group(1))
+    m = re.search(r"=== FLAGGED: (\d+) probate properties transferred since (\S+)", text)
+    if m:
+        sold["flagged"] = int(m.group(1))
+        sold["since"] = m.group(2)
+    m = re.search(r"(\d+) flagged sales: (\d+) to suppress, (\d+) report-only", text)
+    if m:
+        sold["to_suppress"] = int(m.group(2))
+        sold["report_only"] = int(m.group(3))
+    sold["tagged"] = re.findall(r"TAGGED \(verified\)\s+(\S+) \| (.+)", text)
+    sold["not_in_crm"] = len(re.findall(r"^\s+NOT IN CRM", text, re.M))
+    sold["failed"] = re.findall(r"^\s+FAILED\s+(\S+) \| (.+)", text, re.M)
+    sold["would_tag"] = len(re.findall(r"^\s+would tag\s", text, re.M))
+    m = re.search(r"CRM legacy sweep: (.+)", text)
+    sold["legacy"] = m.group(1).strip() if m else ""
+    sold["ran"] = bool(sold.get("parcels") or "No flagged sales" in text)
+    sold["disabled"] = "NC_SOLD_SWEEP=0" in text
+    t["sold"] = sold
+
+    # Post-upload sweeps.
+    m = re.search(r"Tier backfill sweep failed \((.*)\)", text)
+    t["tier_fail"] = ("DataSift dropped the connection" if m and "ConnectionReset" in m.group(1)
+                      else (m.group(1)[:80] if m else ""))
+    m = re.search(r"UNTIERED: (\d+) phone\(s\) on (\d+) record\(s\)", text)
+    if m:
+        t["untiered"] = (int(m.group(1)), int(m.group(2)))
+    m = re.search(r"Text touches: (\d+) record\(s\) OK, (\d+) MISSING, (\d+) DRIFT", text)
+    if m:
+        t["touch_audit"] = tuple(int(x) for x in m.groups())
+
+    # Owner/mailing drift (audit_owner_mailing_drift).
+    t["drift"] = re.findall(
+        r"^\s*(?:\d\d:\d\d:\d\d\s+)?(\S+): '(.+?)' -> '(.+?)', mailing still '(.+?)'", text, re.M)
+
+    # Warnings — grouped so the report says "Lincoln GIS x2", not 2 raw lines.
+    warn: Counter = Counter()
+    for ln in re.findall(r"^.*\[WARNING\].*$", text, re.M):
+        if "Tier backfill sweep failed" in ln:
+            continue  # surfaced as its own NEEDS A HAND item
+        if "ArcGIS error at" in ln:
+            mm = re.search(r"https?://[^/]*?(\w+)county", ln, re.I)
+            warn[f"{(mm.group(1).title() if mm else 'a county')} GIS query error"] += 1
+        elif "Connection aborted" in ln or "ConnectionReset" in ln:
+            mm = re.search(r"https?://[^/]*?(\w+)county", ln, re.I)
+            who = (mm.group(1).title() + " GIS" if mm
+                   else ("DataSift" if "netnew_upload" in ln else "a remote host"))
+            warn[f"{who} dropped the connection"] += 1
+        elif "No manual archive found" in ln:
+            continue  # expected since manual pulls stopped (Week 32)
+        else:
+            mm = re.search(r"\[WARNING\]\s*(?:\S+:\s*)?(.{0,70})", ln)
+            warn[(mm.group(1).strip() if mm else ln[:70])] += 1
+    t["warnings"] = warn
+    return t
+
+
+def _money(x: float) -> str:
+    return f"${x:.2f}"
+
+
+def tonight_summary_section(t: dict, condensed: bool = False) -> tuple[list[str], list[str]]:
+    """Render TONIGHT'S RUN — SUMMARY. Returns (lines, needs_a_hand) so the
+    caller can also fold the hand-items into WHAT TO WORK ON NEXT."""
+    lines: list[str] = []
+    hand: list[str] = []
+    if not t.get("ok"):
+        return lines, hand
+    lines.append("TONIGHT'S RUN — SUMMARY")
+
+    # Headline: when it ran, how long, whether it finished clean.
+    start = t.get("start")
+    if start:
+        end = datetime.now()
+        if t.get("done_hms"):
+            hh, mi, ss = t["done_hms"]
+            end = start.replace(hour=hh, minute=mi, second=ss)
+            if end < start:
+                end += timedelta(days=1)
+        mins = int((end - start).total_seconds() // 60)
+        span = f"{mins // 60}h {mins % 60:02d}m" if mins >= 60 else f"{mins} min"
+        if t.get("budget_hit"):
+            state = "*** KILLED BY THE TIME BUDGET — back half did not run ***"
+        elif t.get("tracebacks"):
+            state = f"{t['tracebacks']} step(s) crashed (see log)"
+        else:
+            state = "finished clean"
+        lines.append(f"  Ran {start:%H:%M} -> {end:%H:%M} ({span}), {state}.")
+        if t.get("budget_hit"):
+            hand.append("Tonight's run hit the 4.5h time budget — the back half (upload/DP/sold sweep) "
+                        "did not run; grep '*** BUDGET' in logs/nc_daily_run.log")
+    raw = t.get("raw_today") or {}
+    smoke = t.get("smoke")
+    bits = []
+    if raw:
+        bits.append(f"Scraped {sum(raw.values())} raw row(s) today (" +
+                    ", ".join(f"wk{w}: {n}" for w, n in sorted(raw.items())) + ")")
+    elif start:
+        bits.append("Scrape landed 0 new rows today")
+    if smoke:
+        p, f, _ = smoke
+        bits.append(f"GIS smoke test {p}/{p + f} pass" + (" — SEE OUTAGE BELOW" if f else ""))
+    if bits:
+        lines.append("  " + "; ".join(bits) + ".")
+    lines.append("")
+
+    # Per-week polish, newest week first.
+    weeks = t.get("weeks") or {}
+    up = t.get("upload") or {}
+    for i, wk in enumerate(sorted(weeks, reverse=True)):
+        w = weeks[wk]
+        label = "new" if i == 0 else "re-polish"
+        ready = w.get("upload_ready")
+        if ready is None:
+            ready = max(0, w.get("step4_out", 0) - w.get("zillow_drops", 0) - w.get("held", 0))
+        kept = ready + w.get("held", 0)
+        head = f"  Week {wk} ({label}):"
+        parts = [f"{w.get('loaded', 0)} in -> {kept} kept"
+                 + (f" ({ready} mail-ready, {w['held']} held)" if w.get("held") else "")]
+        n_up = up.get("uploaded", {}).get(wk)
+        if n_up:
+            parts.append(f"{n_up} uploaded to DataSift tonight")
+        elif wk in up.get("skipped", []):
+            parts.append("0 net-new to upload (all already in DataSift)")
+        lines.append(f"{head:23}{', '.join(parts)}.")
+        detail = []
+        if w.get("pr_backfilled"):
+            detail.append(f"{w['pr_backfilled']} PRs from the court")
+        if w.get("dm_mailing_found"):
+            detail.append(f"{w['dm_mailing_found']} contact addresses")
+        if w.get("dm_promoted"):
+            detail.append(f"{w['dm_promoted']} heirs promoted to contact")
+        if w.get("heirs_of"):
+            detail.append(f'{w["heirs_of"]} still "Heirs of"')
+        if detail:
+            lines.append(f"{'':23}found: " + ", ".join(detail))
+        drops = []
+        if w.get("no_parcel"):
+            drops.append(f"{w['no_parcel']} no parcel")
+        if w.get("heir_occupied"):
+            drops.append(f"{w['heir_occupied']} heir-occupied")
+        if w.get("zillow_drops"):
+            drops.append(f"{w['zillow_drops']} Zillow (listed/sold)")
+        if w.get("spouse_merged"):
+            drops.append(f"{w['spouse_merged']} spouse pair merged")
+        if w.get("held"):
+            drops.append(f"{w['held']} occupied-hold (workbook only, not uploaded)")
+        if drops:
+            lines.append(f"{'':23}dropped: " + ", ".join(drops))
+        if w.get("parties_skipped"):
+            lines.append(f"{'':23}court hasn't indexed Parties for {w['parties_skipped']} "
+                         "case(s) yet — PR/heirs retry tomorrow")
+        elif w.get("parties_pending"):
+            need, did = w["parties_pending"]
+            lines.append(f"{'':23}Parties backfill: {did} of {need} pending done tonight, rest tomorrow")
+        if not condensed:
+            for cty, dec, addr, why in w.get("zillow_lines", []):
+                lines.append(f"{'':25}Zillow drop  {cty:11} {dec[:26]:26} {addr[:28]:28} {why}")
+            for cty, case, who in w.get("held_lines", []):
+                lines.append(f"{'':25}Held         {case:16} {cty:11} '{who}' lives at the property")
+    if weeks:
+        lines.append("")
+
+    # DataSift.
+    if up.get("disabled"):
+        lines.append("  DataSift:     auto-upload OFF (NC_AUTO_UPLOAD=0) — nothing pushed tonight.")
+    elif up.get("uploaded"):
+        n = sum(up["uploaded"].values())
+        steps = [f"uploaded {n} record(s)"]
+        steps.append("skip trace started" if up.get("skip_trace") else "skip trace NOT started")
+        steps.append("dial tiers tagged" if up.get("tiers") else "dial tiers NOT tagged")
+        steps.append("text touches written" if up.get("touches") else "text touches NOT written")
+        lines.append("  DataSift:     " + ", ".join(steps) + ".")
+        if not up.get("skip_trace"):
+            hand.append(f"DataSift skip trace did not start on tonight's {n} upload(s) — "
+                        "trace them by hand (Send To -> Skip Trace on tag 'NC Upload "
+                        f"{date.today().isoformat()}')")
+    elif weeks:
+        lines.append("  DataSift:     nothing net-new to upload tonight.")
+
+    # Deep prospecting.
+    dp = t.get("dp") or {}
+    if dp:
+        parts = []
+        if "tracerfy" in dp:
+            hit, tot, ph, em, cost = dp["tracerfy"]
+            parts.append(f"Tracerfy {hit}/{tot} matched ({ph} phones) {_money(cost)}")
+        if "enformion" in dp:
+            n, cost = dp["enformion"]
+            rej = dp.get("enformion_rejected", 0)
+            parts.append(f"Enformion filled {n}"
+                         + (f" (rejected {rej} wrong-town match(es))" if rej else "")
+                         + f" {_money(cost)}")
+        if "trestle" in dp:
+            ph, rec, cost = dp["trestle"]
+            parts.append(f"Trestle scored {ph} phones ~{_money(cost)}")
+        if parts:
+            lines.append("  Deep prosp.:  " + "; ".join(parts) + ".")
+
+    # Sold sweep.
+    sold = t.get("sold") or {}
+    if sold.get("disabled"):
+        lines.append("  Sold sweep:   OFF (NC_SOLD_SWEEP=0).")
+    elif sold.get("ran"):
+        checked = sold.get("checked") or sold.get("parcels") or 0
+        flagged = sold.get("flagged", 0)
+        sup = sold.get("to_suppress", 0)
+        rep = sold.get("report_only", 0)
+        n_tag = len(sold.get("tagged", []))
+        n_fail = len(sold.get("failed", []))
+        line = (f"  Sold sweep:   {checked} parcels checked -> {flagged} transfers since "
+                f"{sold.get('since', '?')}: ")
+        if flagged:
+            line += (f"{sup} real sale(s) ({n_tag} tagged Sold, {sold.get('not_in_crm', 0)} not in CRM"
+                     + (f", {n_fail} FAILED" if n_fail else "")
+                     + f"), {rep} heir transfer(s) kept as leads.")
+        else:
+            line += "none."
+        lines.append(line)
+        if sold.get("would_tag"):
+            lines.append(f"{'':16}(dry run — {sold['would_tag']} would have been tagged; nothing written)")
+        if sold.get("tagged"):
+            show = sold["tagged"] if not condensed else sold["tagged"][:6]
+            more = len(sold["tagged"]) - len(show)
+            lines.append(f"{'':16}tagged: " + "; ".join(f"{c} {a.strip()[:28]}" for c, a in show)
+                         + (f"; +{more} more" if more else ""))
+        if n_fail:
+            hand.append(f"Sold tag FAILED on {n_fail} record(s): " +
+                        ", ".join(c for c, _ in sold["failed"][:5]) + " — tag them by hand")
+        if sold.get("legacy") and "skipped" not in sold["legacy"]:
+            lines.append(f"{'':16}pre-Week-24 CRM records were swept too (weekly pass)")
+    elif weeks:
+        lines.append("  Sold sweep:   did not run tonight.")
+
+    # Cost.
+    costs = []
+    total = 0.0
+    if "tracerfy" in dp:
+        costs.append(f"Tracerfy {_money(dp['tracerfy'][4])}")
+        total += dp["tracerfy"][4]
+    if "enformion" in dp:
+        costs.append(f"Enformion {_money(dp['enformion'][1])}")
+        total += dp["enformion"][1]
+    if "trestle" in dp:
+        costs.append(f"Trestle ~{_money(dp['trestle'][2])}")
+        total += dp["trestle"][2]
+    calls, llm = t.get("llm", (0, 0.0))
+    if calls:
+        costs.append(f"LLM {_money(llm)} / {calls} calls")
+        total += llm
+    if costs:
+        lines.append(f"  Cost tonight: ~{_money(total)} ({', '.join(costs)}).")
+    lines.append("")
+
+    # Needs a hand — things only a person can close.
+    if t.get("tier_fail"):
+        hand.append(f"Nightly dial-tier sweep died mid-run ({t['tier_fail']}) — the 07:00 "
+                    "'SiftStack Tier Sweep' task will cover it; check logs/trestle_sweep.log "
+                    "tomorrow, or run  python trestle_api_backfill.py --apply --max-cost 2 --headless")
+    for case, was, now, mailing in t.get("drift", []):
+        hand.append(f"{case} was renamed '{was}' -> '{now}' but still MAILS {mailing} "
+                    "(the old heir's address) — fix the mailing address in DataSift "
+                    "(detail: output/owner_mailing_drift.csv)")
+    warn = t.get("warnings") or Counter()
+    if warn:
+        top = "; ".join(f"{k} x{n}" for k, n in warn.most_common(4))
+        lines.append(f"  Blips: {sum(warn.values())} warning(s) — {top}. One-offs unless "
+                     "the same one shows up again tomorrow.")
+    if hand:
+        lines.append("  NEEDS A HAND")
+        for h in hand:
+            lines.append(f"  >> {h}")
+    lines.append("")
+    return lines, hand
+
+
 # ── Render ───────────────────────────────────────────────────────────
 
 
@@ -632,6 +1072,7 @@ def render_report(
     include_heir_transfer: bool = False,
     condensed: bool = False,
     improvements: list[str] | None = None,
+    tonight: dict | None = None,
 ) -> str:
     """Render the report. condensed=True builds the short email body (the
     most important items only, with a pointer to the attached full report);
@@ -717,6 +1158,11 @@ def render_report(
         lines.append(f"    {label:16} {0:>7}   {county_prev[c]:>7}")
     lines.append("")
 
+    # Tonight's run in plain words (Oren, 2026-08-31) — the same recap a
+    # person would write after reading the log, in both email and full report.
+    tn_lines, tn_hand = tonight_summary_section(tonight or {}, condensed=condensed)
+    lines.extend(tn_lines)
+
     lines.extend(kpi_section(today, condensed=condensed))
 
     # A county GIS that went down during the polish. Its rows lost their parcel
@@ -750,6 +1196,7 @@ def render_report(
                      f"named contact: {_cases_preview(late_docs, 'case_number')}")
     # Unscanned court docs are NOT a priority item — Oren doesn't do courthouse
     # trips (2026-08-19). They stay in the full report as an FYI list only.
+    prios.extend(tn_hand)
     if eyeballs:
         prios.append(f"Double-check {len(eyeballs)} uncertain matches before "
                      "mailing (worst listed below)")
@@ -1349,6 +1796,7 @@ def main(argv: list[str] | None = None) -> int:
     # drop counts reflect tonight's run, not the whole log history.
     polish_stats = parse_polish_log(polish_log, since=datetime.now())
     runtime = pipeline_runtime_min(polish_log)
+    tonight = parse_tonight(tonight_log_slice(polish_log))
 
     monday = date.today() - timedelta(days=date.today().weekday())
     improvements = summarize_week_improvements(monday)
@@ -1364,6 +1812,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_min=runtime,
         include_heir_transfer=args.include_heir_transfer,
         improvements=improvements,
+        tonight=tonight,
     )
     # Full report → attached .txt (every fine-print section, uncapped lists);
     # condensed report → the email body itself (most important items only).
