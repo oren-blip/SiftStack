@@ -650,6 +650,34 @@ def run(live_model: bool = False) -> int:
     r.check("worker skips suppressed numbers", result["skipped"] >= 1, str(result))
     r.check("nothing reached the transport in dry run", not stub.sent, str(stub.sent[:2]))
 
+    # A draft whose own text promised a human follow-up pauses the thread at
+    # DRAFT time ("model requested handoff") — before anyone can approve it.
+    # Found live 2026-09-02: the approved draft was then cancelled as
+    # "conversation paused" and silently never sent. That one pause reason must
+    # let the draft through; every other pause still blocks. Quiet hours are
+    # widened for these two checks so they pass at any hour, then restored.
+    _q = (config.QUIET_START_HOUR, config.QUIET_END_HOUR)
+    config.QUIET_START_HOUR, config.QUIET_END_HOUR = 0, 24
+    store.ensure_conversation("8650004444", from_number="+18650000001")
+    store.update_conversation("8650004444", state="paused",
+                              paused_reason="model requested handoff")
+    store.queue_message("8650004444", "a person will call you shortly",
+                        from_number="+18650000001")
+    result = worker.drain_outbox(limit=25)
+    r.check("approved handoff draft still sends despite its own pause",
+            result["sent"] >= 1, str(result))
+    conv4444 = store.get_conversation("8650004444") or {}
+    r.check("thread stays paused after the handoff draft sends",
+            conv4444.get("state") == "paused", str(conv4444.get("state")))
+    store.ensure_conversation("8650005555", from_number="+18650000001")
+    store.update_conversation("8650005555", state="paused",
+                              paused_reason="sensitive: selftest")
+    store.queue_message("8650005555", "must never send", from_number="+18650000001")
+    result = worker.drain_outbox(limit=25)
+    r.check("any other pause still cancels the draft",
+            result["skipped"] >= 1 and result["sent"] == 0, str(result))
+    config.QUIET_START_HOUR, config.QUIET_END_HOUR = _q
+
     # ---- 12. the HTTP surface -------------------------------------------
     # The one part of this that faces the open internet. Neither vendor signs
     # its payloads, so the secret path and the allowlist ARE the auth.

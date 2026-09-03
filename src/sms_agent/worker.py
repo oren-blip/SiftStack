@@ -64,9 +64,22 @@ def drain_outbox(limit: int = 25) -> dict:
 
         conv = store.get_conversation(phone) or {}
         if conv.get("state") not in ("active", None, ""):
-            store.mark_outbox(row["id"], "cancelled", f"conversation {conv.get('state')}")
-            skipped += 1
-            continue
+            # One pause reason is caused by the queued draft ITSELF: a reply
+            # that promises a human follow-up sets reply.handoff, which pauses
+            # the thread at draft time — before anyone can approve. Cancelling
+            # here stranded every approved handoff-flavored draft (found live
+            # 2026-09-02: approve looked accepted, nothing ever sent). That
+            # draft is the goodbye message; send it, keep the pause. Every
+            # other pause (sensitive, handed to a person, turn cap) and every
+            # closed/opted-out state still blocks.
+            handoff_pause = (
+                conv.get("state") == "paused"
+                and (conv.get("paused_reason") or "") == "model requested handoff"
+            )
+            if not handoff_pause:
+                store.mark_outbox(row["id"], "cancelled", f"conversation {conv.get('state')}")
+                skipped += 1
+                continue
 
         if not sender_pool.within_quiet_hours(phone):
             nb = sender_pool.next_send_window(phone).isoformat(timespec="seconds")

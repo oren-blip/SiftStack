@@ -1,12 +1,13 @@
 {
-  "_note": "SMS sending pool. Nothing sends at SMS_AGENT_PHASE=1 — this is staged so `doctor` reads clean and the pool is ready when outreach is turned on.",
-  "_source": "Originally seeded from C:\\tools\\caller-reputation\\config\\numbers.json. That monitor is RETIRED as of 2026-08-24 (Oren: no value beyond his paid CallerIDReputation service), so this file is now maintained by hand. Update it when a number is bought or retired.",
-  "_excluded": "+17048700565 is deliberately absent. It is the direct-mail callback number, kept out of cold rotation to protect its reputation, and it must stay out of the text pool for the same reason.",
-  "_health": "app.calleridrep.com is the ONLY reputation signal now — its daily email, read by Oren. Nothing in this repo watches carrier labels any more, so a flagged number will NOT drop itself out of this pool. Before scaling sends, check that email and delete any flagged number from the list below by hand. (Last automated reading, 2026-07-30: +19805772615 and +19809980892 were both carrier-Flagged. Oren has been texting from -2615 since, so treat that reading as stale rather than current.)",
-  "_continuity": "These are the cold-CALL numbers on purpose. The whole design is that the number that texts is the number that dials and the number that shows on the callback. Do not give SMS its own separate pool.",
+  "_note": "SMS sending pool. At SMS_AGENT_PHASE=3 drafts are held for approval; only an approved draft can send from these numbers.",
+  "_source": "Originally seeded from C:\\tools\\caller-reputation\\config\\numbers.json (monitor RETIRED 2026-08-24). Maintained by hand since. Rebuilt 2026-09-02 from the CallerIDReputation daily email + Hiya unflag events (ticket #3482379/#3503914): these 4 were unflagged by smart_call_hiya on 2026-09-02 and match the summary's '4 Clean Numbers'.",
+  "_excluded": "+17048700565 is deliberately absent (direct-mail callback line, protect its reputation). +19804997918 and +19805772615 REMOVED 2026-09-02 — still flagged (Hiya's unflag pass skipped exactly those two). +19804052646 and +19804854803 are flagged as of 9/1-9/2, never added. Re-add any of these only after CIDR shows them clean.",
+  "_health": "app.calleridrep.com is the ONLY reputation signal — its daily email to Oren. Nothing in this repo watches carrier labels, so a flagged number will NOT drop itself out of this pool. Before scaling sends, check that email and prune by hand.",
+  "_continuity": "These are the cold-CALL numbers on purpose. The number that texts is the number that dials and the number that shows on the callback. Do not give SMS its own separate pool.",
   "numbers": [
-    "+19804997918",
-    "+19805772615",
+    "+19803516039",
+    "+19803897673",
+    "+19804856791",
     "+19809980892"
   ]
 }
