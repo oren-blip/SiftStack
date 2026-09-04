@@ -54,6 +54,24 @@ def _norm(s: str) -> str:
 
 
 def _latest_week_csv(week: int) -> Path | None:
+    """The week's canonical polished CSV -- the same file the workbook is built
+    from, archived weeks included.
+
+    Was a bare glob for `*_week{N}_dm_enriched.csv` in output/, which finds
+    nothing for a week whose latest artifact is a *_datasift.csv or that has
+    been moved into output/archive_week<N>_done/. Week 21 hit both, so an
+    otherwise-correct queued push died on "No week 21 dm_enriched CSV found"
+    (2026-09-04) -- the second half of the same blind spot fixed in
+    weeks_for_cases().
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from consolidate_weeks import auto_pick_weekly_files
+        for (_year, wk), p in auto_pick_weekly_files(include_archived=True).items():
+            if int(wk) == int(week):
+                return p
+    except Exception as e:  # noqa: BLE001
+        logger.warning("week picker unavailable (%s) — falling back to glob", e)
     cands = sorted(glob.glob(f"output/nc_estates_ftm_*_week{week}_dm_enriched.csv"))
     return Path(cands[-1]) if cands else None
 
@@ -65,10 +83,36 @@ PR_PUSH_QUEUE = Path("output") / "pr_push_queue.txt"
 
 
 def load_queue() -> set[str]:
+    """Queued cases, minus any the user has since KILLED in manual_drops.txt.
+
+    A killed case could never leave this queue on its own: clear_from_queue only
+    removes cases a push covered, weeks_for_cases finds a case's week by scanning
+    the polished weekly CSVs -- and killing a case REMOVES it from those CSVs. So
+    it is permanently "not covered by the weeks run", stays in the file, and the
+    nightly report nags about it forever. Worse, if a later run did reach it, the
+    push would resurrect a case Oren deliberately killed.
+
+    Vandall 26E000533-540 (killed 2026-08-31, heir-occupied) sat queued through
+    every drain until this prune was added 2026-09-04. Pruning writes the file
+    back so the report line clears too.
+    """
     if not PR_PUSH_QUEUE.exists():
         return set()
-    return {ln.strip() for ln in
-            PR_PUSH_QUEUE.read_text(encoding="utf-8").splitlines() if ln.strip()}
+    queued = [ln.strip() for ln in
+              PR_PUSH_QUEUE.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from fix_addresses_and_prep import _load_manual_drops
+        killed = set(_load_manual_drops())
+    except Exception:  # noqa: BLE001 — never let bookkeeping kill a push
+        killed = set()
+    keep = [c for c in queued if c.upper() not in killed]
+    if len(keep) != len(queued):
+        gone = sorted(set(queued) - set(keep))
+        logger.info("PR queue: dropping %d killed case(s) (manual_drops.txt): %s",
+                    len(gone), ", ".join(gone))
+        PR_PUSH_QUEUE.write_text("".join(c + "\n" for c in keep), encoding="utf-8")
+    return set(keep)
 
 
 def clear_from_queue(cases: set[str]) -> None:
@@ -80,19 +124,34 @@ def clear_from_queue(cases: set[str]) -> None:
 
 
 def weeks_for_cases(cases: set[str]) -> dict[int, set[str]]:
-    """Map queued Case Nos to the ISO week(s) whose workbook carries them, by
-    scanning the latest dm_enriched CSV per week."""
+    """Map queued Case Nos to the ISO week(s) whose workbook carries them.
+
+    Uses consolidate_weeks.auto_pick_weekly_files -- the SAME picker that builds
+    the workbook -- rather than globbing dm_enriched files.
+
+    The old glob was `output/nc_estates_ftm_*_week*_dm_enriched.csv`, which
+    missed a case two ways: a week whose latest artifact is a *_datasift.csv
+    (weeks 21-25, 28, 29, 34 today) and a week whose file has been moved into
+    output/archive_week<N>_done/. Measured 2026-09-04: of 23 queued cases only 8
+    were reachable -- the other 15, including ELEVEN Week-21 cases carrying
+    freshly-recovered court PRs, could never be pushed and sat in the queue
+    reported as "not covered by the weeks run". That is the concrete reason
+    Oren "wasn't seeing new court PRs in the workflow".
+    """
     out: dict[int, set[str]] = {}
-    seen_weeks: set[int] = set()
-    for p in sorted(glob.glob("output/nc_estates_ftm_*_week*_dm_enriched.csv"),
-                    reverse=True):
-        m = re.search(r"_week(\d+)_dm_enriched", p)
-        if not m:
-            continue
-        wk = int(m.group(1))
-        if wk in seen_weeks:
-            continue  # sorted desc by filename timestamp — first hit is latest
-        seen_weeks.add(wk)
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from consolidate_weeks import auto_pick_weekly_files
+        picked = auto_pick_weekly_files(include_archived=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("week picker unavailable (%s) — falling back to glob", e)
+        picked = {}
+        for p in sorted(glob.glob("output/nc_estates_ftm_*_week*_dm_enriched.csv"),
+                        reverse=True):
+            m = re.search(r"_week(\d+)_dm_enriched", p)
+            if m and (0, int(m.group(1))) not in picked:
+                picked[(0, int(m.group(1)))] = Path(p)
+    for (_year, wk), p in picked.items():
         try:
             with open(p, newline="", encoding="utf-8-sig") as f:
                 wk_cases = {(r.get("Case No.") or "").strip()
@@ -101,7 +160,7 @@ def weeks_for_cases(cases: set[str]) -> dict[int, set[str]]:
             continue
         hit = cases & wk_cases
         if hit:
-            out.setdefault(wk, set()).update(hit)
+            out.setdefault(int(wk), set()).update(hit)
     return out
 
 
