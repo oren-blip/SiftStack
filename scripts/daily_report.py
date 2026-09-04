@@ -433,6 +433,28 @@ def _money(x: float) -> str:
     return f"${x:.2f}"
 
 
+def _tonight_costs(t: dict) -> tuple[float, list[str]]:
+    """Tonight's paid-service burn as (total, ['Tracerfy $0.10', ...]).
+    Shared by the text summary and the HTML email so the two never disagree."""
+    dp = t.get("dp") or {}
+    costs: list[str] = []
+    total = 0.0
+    if "tracerfy" in dp:
+        costs.append(f"Tracerfy {_money(dp['tracerfy'][4])}")
+        total += dp["tracerfy"][4]
+    if "enformion" in dp:
+        costs.append(f"Enformion {_money(dp['enformion'][1])}")
+        total += dp["enformion"][1]
+    if "trestle" in dp:
+        costs.append(f"Trestle ~{_money(dp['trestle'][2])}")
+        total += dp["trestle"][2]
+    calls, llm = t.get("llm", (0, 0.0))
+    if calls:
+        costs.append(f"LLM {_money(llm)} / {calls} calls")
+        total += llm
+    return total, costs
+
+
 def tonight_summary_section(t: dict, condensed: bool = False) -> tuple[list[str], list[str]]:
     """Render TONIGHT'S RUN — SUMMARY. Returns (lines, needs_a_hand) so the
     caller can also fold the hand-items into WHAT TO WORK ON NEXT."""
@@ -607,21 +629,7 @@ def tonight_summary_section(t: dict, condensed: bool = False) -> tuple[list[str]
         lines.append("  Sold sweep:   did not run tonight.")
 
     # Cost.
-    costs = []
-    total = 0.0
-    if "tracerfy" in dp:
-        costs.append(f"Tracerfy {_money(dp['tracerfy'][4])}")
-        total += dp["tracerfy"][4]
-    if "enformion" in dp:
-        costs.append(f"Enformion {_money(dp['enformion'][1])}")
-        total += dp["enformion"][1]
-    if "trestle" in dp:
-        costs.append(f"Trestle ~{_money(dp['trestle'][2])}")
-        total += dp["trestle"][2]
-    calls, llm = t.get("llm", (0, 0.0))
-    if calls:
-        costs.append(f"LLM {_money(llm)} / {calls} calls")
-        total += llm
+    total, costs = _tonight_costs(t)
     if costs:
         lines.append(f"  Cost tonight: ~{_money(total)} ({', '.join(costs)}).")
     lines.append("")
@@ -902,6 +910,17 @@ def pr_push_queue_line() -> str:
                  .splitlines() if ln.strip()]
     except OSError:
         return ""
+    # Never nag about a case the user KILLED. A killed case is gone from the
+    # weekly CSVs, so pr_upgrade_step can never cover it and it would sit here
+    # forever (Vandall 26E000533-540 did, from 8/31). Read-only here — the
+    # actual prune happens in pr_upgrade_step.load_queue().
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from fix_addresses_and_prep import _load_manual_drops
+        killed = set(_load_manual_drops())
+        cases = [c for c in cases if c.upper() not in killed]
+    except Exception:  # noqa: BLE001
+        pass
     if not cases:
         return ""
     preview = ", ".join(cases[:5]) + ("..." if len(cases) > 5 else "")
@@ -909,21 +928,21 @@ def pr_push_queue_line() -> str:
             f"— run  python pr_upgrade_step.py --queued  ({preview})")
 
 
-def kpi_section(today: date, condensed: bool = False) -> list[str]:
-    """Short phone-KPI block from output/kpi_daily_ledger.csv (maintained by
-    scripts/kpi_refresh.py, which pulls DataSift call activity nightly).
-    Returns [] when the ledger is missing or has no rows this week/last week,
-    so quiet weeks don't add an all-zeros section to the email."""
+def kpi_totals(today: date) -> tuple[Counter, Counter, str] | None:
+    """(this-week totals, last-week totals, latest ledger day) from
+    output/kpi_daily_ledger.csv (maintained by scripts/kpi_refresh.py, which
+    pulls DataSift call activity nightly). None when the ledger is missing
+    or has no dials this week/last week — quiet weeks add no section."""
     ledger = OUTPUT / "kpi_daily_ledger.csv"
     if not ledger.exists():
-        return []
+        return None
     try:
         with open(ledger, encoding="utf-8", newline="") as fh:
             rows = {r["day"]: r for r in csv.DictReader(fh)}
     except Exception:
-        return []
+        return None
 
-    def _tot(day_from: date, day_to: date) -> dict:
+    def _tot(day_from: date, day_to: date) -> Counter:
         t = Counter()
         for d, r in rows.items():
             if day_from.isoformat() <= d <= day_to.isoformat():
@@ -936,7 +955,16 @@ def kpi_section(today: date, condensed: bool = False) -> list[str]:
     wk = _tot(monday, today)
     lw = _tot(monday - timedelta(days=7), monday - timedelta(days=1))
     if not wk["dials"] and not lw["dials"]:
+        return None
+    return wk, lw, (max(rows) if rows else "")
+
+
+def kpi_section(today: date, condensed: bool = False) -> list[str]:
+    """Short phone-KPI text block; [] when kpi_totals has nothing to show."""
+    totals = kpi_totals(today)
+    if not totals:
         return []
+    wk, lw, stale = totals
 
     def _line(label: str, t: dict) -> str:
         ans = f"{t['answered'] / t['dials'] * 100:.0f}%" if t["dials"] else "-"
@@ -950,7 +978,6 @@ def kpi_section(today: date, condensed: bool = False) -> list[str]:
     out.append(_line("Last week:", lw))
     if wk["sms_sent"] or lw["sms_sent"]:
         out.append(f"  Texts sent:   {wk['sms_sent']} this week, {lw['sms_sent']} last week")
-    stale = max(rows) if rows else ""
     if stale and (today - date.fromisoformat(stale)).days > 2:
         out.append(f"  (numbers only current through {stale} — KPI refresh hasn't run since)")
     out.append("")
@@ -1060,35 +1087,24 @@ def datasift_upload_status(rows: list[dict]) -> tuple[int, int]:
     return in_ds, len(rows) - in_ds
 
 
-def render_report(
-    workbook_path: Path | None,
+def compute_model(
     workbook_rows: list[dict],
     week_n: int,
     today_csv_rows: list[dict],
     yesterday_csv_rows: list[dict],
-    heir_transfer_rows: list[dict],
-    polish_stats: dict,
-    runtime_min: float | None,
-    include_heir_transfer: bool = False,
-    condensed: bool = False,
-    improvements: list[str] | None = None,
     tonight: dict | None = None,
-) -> str:
-    """Render the report. condensed=True builds the short email body (the
-    most important items only, with a pointer to the attached full report);
-    condensed=False builds the full .txt with every fine-print section."""
-    today = date.today()
-    today_str = today.strftime("%a %b %d, %Y")
-    wd = today.weekday()
-    day_note = f"court day {wd + 1} of 5" if wd < 5 else "weekend catch-up run"
-    monday = today - timedelta(days=wd)
-    diffs = compute_diffs(today_csv_rows, yesterday_csv_rows)
-    new_today = diffs["new"]
+) -> dict:
+    """Everything the report derives from tonight's outputs, computed once.
 
+    Both renderers read from this — render_report (text) and
+    render_html_email — so the email can never disagree with the attached
+    report about a count."""
+    today = date.today()
+    diffs = compute_diffs(today_csv_rows, yesterday_csv_rows)
     # Weekly lens (Oren, 2026-08-14): the current week's polished CSV IS this
     # week's inventory — lead with it, demote day-to-day churn and plumbing.
     week_rows = today_csv_rows
-    this_week_total = len(week_rows)
+
     wk_counts = Counter(_tab_week(r) for r in workbook_rows)
     wk_counts.pop(0, None)
     prev_weeks = sorted(w for w in wk_counts if w < week_n)
@@ -1099,6 +1115,7 @@ def render_report(
              if _has_named_contact(r) and (r.get("Property Address") or "").strip()]
     with_phone = [r for r in week_rows if _has_phone(r)]
     heirs_of = [r for r in week_rows if _is_heirs_of(r)]
+
     # The FULL deep-prospecting queue — every "Heirs of" row still in the
     # workbook, all weeks, not just this week's slice (Oren, 2026-08-19:
     # "how many are in the DP queue total and what are the dates they were
@@ -1120,8 +1137,127 @@ def render_report(
         and not str(r.get("DM Name") or "").strip()
     ]
     dp_already_done = len(all_heirs) - len(dp_queue)
+    dp_wk_counts: Counter = Counter()
+    for r in dp_queue:
+        mm = re.search(r"Week (\d+)\s*(\d{4})?", str(r.get("_tab") or ""))
+        wk = int(mm.group(1)) if mm else 0
+        yr = int(mm.group(2)) if mm and mm.group(2) else today.year
+        dp_wk_counts[(yr, wk)] += 1
+    dp_by_week = [(yr, wk, dp_wk_counts[(yr, wk)])
+                  for (yr, wk) in sorted(dp_wk_counts, reverse=True)]
+
     eyeballs = eyeball_cases(week_rows)
     in_ds, awaiting = datasift_upload_status(week_rows)
+    open_dp = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
+    stale_docs = get_stale_docs()
+    late_docs = get_late_doc_updates()
+
+    # What to work on next — the priority queue, ranked. Hand-entry work that
+    # nothing else surfaces comes first; volume queues last. Case numbers up
+    # front (Oren looks cases up by number). The hand items don't depend on
+    # the condensed flag, so one call covers both renderers.
+    _, tn_hand = tonight_summary_section(tonight or {}, condensed=True)
+    prios: list[str] = []
+    if late_docs:
+        prios.append("Type these into DataSift by hand — archived cases just got a "
+                     f"named contact: {_cases_preview(late_docs, 'case_number')}")
+    # Unscanned court docs are NOT a priority item — Oren doesn't do courthouse
+    # trips (2026-08-19). They stay in the full report as an FYI list only.
+    prios.extend(tn_hand)
+    if eyeballs:
+        prios.append(f"Double-check {len(eyeballs)} uncertain matches before "
+                     "mailing (worst listed below)")
+    if open_dp:
+        prios.append(f"Finish {len(open_dp)} open deep-prospecting case(s): "
+                     f"{_cases_preview(open_dp, 'Case No.')}")
+    if in_ds >= 0 and awaiting > 0:
+        prios.append(f"{awaiting} polished rows are waiting for the next DataSift upload "
+                     "(nothing uploads by itself — they go in when the upload script is run)")
+    if heirs_of:
+        prios.append(f'{len(heirs_of)} new "Heirs of" rows this week — DP queue is '
+                     f"{len(dp_queue)} total (breakdown below)")
+
+    county_this = Counter((r.get("County") or "").strip() for r in week_rows)
+    county_prev = Counter((r.get("County") or "").strip() for r in workbook_rows
+                          if prev_week is not None and _tab_week(r) == prev_week)
+
+    # A county GIS that went down during the polish (see the comment where
+    # this is rendered — rows recover on the next clean run).
+    gis_outage: dict = {}
+    try:
+        import json as _json
+        gis_outage = _json.loads((OUTPUT / ".gis_outage_last_run.json")
+                                 .read_text(encoding="utf-8"))
+    except Exception:
+        gis_outage = {}
+
+    return {
+        "diffs": diffs,
+        "new_today": diffs["new"],
+        "week_rows": week_rows,
+        "wk_counts": wk_counts,
+        "prev_week": prev_week,
+        "prev_total": prev_total,
+        "ready": ready,
+        "with_phone": with_phone,
+        "heirs_of": heirs_of,
+        "dp_rows": dp_rows,
+        "dp_queue": dp_queue,
+        "dp_already_done": dp_already_done,
+        "dp_by_week": dp_by_week,
+        "eyeballs": eyeballs,
+        "in_ds": in_ds,
+        "awaiting": awaiting,
+        "open_dp": open_dp,
+        "stale_docs": stale_docs,
+        "late_docs": late_docs,
+        "prios": prios,
+        "county_this": county_this,
+        "county_prev": county_prev,
+        "gis_outage": gis_outage,
+    }
+
+
+def render_report(
+    workbook_path: Path | None,
+    workbook_rows: list[dict],
+    week_n: int,
+    today_csv_rows: list[dict],
+    yesterday_csv_rows: list[dict],
+    heir_transfer_rows: list[dict],
+    polish_stats: dict,
+    runtime_min: float | None,
+    include_heir_transfer: bool = False,
+    condensed: bool = False,
+    improvements: list[str] | None = None,
+    tonight: dict | None = None,
+    model: dict | None = None,
+) -> str:
+    """Render the report. condensed=True builds the short email body (the
+    most important items only, with a pointer to the attached full report);
+    condensed=False builds the full .txt with every fine-print section."""
+    today = date.today()
+    today_str = today.strftime("%a %b %d, %Y")
+    wd = today.weekday()
+    day_note = f"court day {wd + 1} of 5" if wd < 5 else "weekend catch-up run"
+    monday = today - timedelta(days=wd)
+    m = model or compute_model(workbook_rows, week_n, today_csv_rows,
+                               yesterday_csv_rows, tonight)
+    diffs = m["diffs"]
+    new_today = m["new_today"]
+    week_rows = m["week_rows"]
+    this_week_total = len(week_rows)
+    wk_counts = m["wk_counts"]
+    prev_week = m["prev_week"]
+    prev_total = m["prev_total"]
+    ready = m["ready"]
+    with_phone = m["with_phone"]
+    heirs_of = m["heirs_of"]
+    dp_rows = m["dp_rows"]
+    dp_queue = m["dp_queue"]
+    dp_already_done = m["dp_already_done"]
+    eyeballs = m["eyeballs"]
+    in_ds, awaiting = m["in_ds"], m["awaiting"]
 
     lines: list[str] = []
     lines.append(f"NC Probate Pipeline — Week {week_n}")
@@ -1146,9 +1282,8 @@ def render_report(
     if in_ds >= 0:
         lines.append(f"  In DataSift already:  {in_ds}    ({awaiting} waiting for the next upload)")
     lines.append("")
-    county_this = Counter((r.get("County") or "").strip() for r in week_rows)
-    county_prev = Counter((r.get("County") or "").strip() for r in workbook_rows
-                          if prev_week is not None and _tab_week(r) == prev_week)
+    county_this = m["county_this"]
+    county_prev = m["county_prev"]
     lines.append("  By county:           this wk   last wk")
     for c, _n in county_this.most_common():
         label = c if c else "(blank)"
@@ -1160,7 +1295,7 @@ def render_report(
 
     # Tonight's run in plain words (Oren, 2026-08-31) — the same recap a
     # person would write after reading the log, in both email and full report.
-    tn_lines, tn_hand = tonight_summary_section(tonight or {}, condensed=condensed)
+    tn_lines, _tn_hand = tonight_summary_section(tonight or {}, condensed=condensed)
     lines.extend(tn_lines)
 
     lines.extend(kpi_section(today, condensed=condensed))
@@ -1170,45 +1305,21 @@ def render_report(
     # tonight's sheet is short for that county. The next clean run restores them,
     # and auto_archive_weeks.py won't freeze the week until then; this is just so
     # a short county count doesn't read as a quiet week.
-    try:
-        import json as _json
-        _o = _json.loads((Path("output") / ".gis_outage_last_run.json")
-                         .read_text(encoding="utf-8"))
-        if _o.get("counties"):
-            lines.append("*** COUNTY GIS OUTAGE THIS RUN ***")
-            lines.append(f"  Down: {', '.join(_o['counties'])}")
-            lines.append(f"  Rows for these counties are INCOMPLETE in week(s) "
-                         f"{_o.get('weeks', [])} — they will be recovered on the "
-                         f"next clean run, and the week won't be archived until then.")
-            lines.append("")
-    except Exception:
-        pass
+    _o = m["gis_outage"]
+    if _o.get("counties"):
+        lines.append("*** COUNTY GIS OUTAGE THIS RUN ***")
+        lines.append(f"  Down: {', '.join(_o['counties'])}")
+        lines.append(f"  Rows for these counties are INCOMPLETE in week(s) "
+                     f"{_o.get('weeks', [])} — they will be recovered on the "
+                     f"next clean run, and the week won't be archived until then.")
+        lines.append("")
 
-    # What to work on next — the priority queue, ranked. Hand-entry work that
-    # nothing else surfaces comes first; volume queues last. Only non-empty
-    # items get a number; case numbers up front (Oren looks cases up by number).
-    open_dp = [r for r in dp_rows if (r.get("Outcome") or "").strip() == "open"]
-    stale_docs = get_stale_docs()
-    late_docs = get_late_doc_updates()
-    prios: list[str] = []
-    if late_docs:
-        prios.append("Type these into DataSift by hand — archived cases just got a "
-                     f"named contact: {_cases_preview(late_docs, 'case_number')}")
-    # Unscanned court docs are NOT a priority item — Oren doesn't do courthouse
-    # trips (2026-08-19). They stay in the full report as an FYI list only.
-    prios.extend(tn_hand)
-    if eyeballs:
-        prios.append(f"Double-check {len(eyeballs)} uncertain matches before "
-                     "mailing (worst listed below)")
-    if open_dp:
-        prios.append(f"Finish {len(open_dp)} open deep-prospecting case(s): "
-                     f"{_cases_preview(open_dp, 'Case No.')}")
-    if in_ds >= 0 and awaiting > 0:
-        prios.append(f"{awaiting} polished rows are waiting for the next DataSift upload "
-                     "(nothing uploads by itself — they go in when the upload script is run)")
-    if heirs_of:
-        prios.append(f'{len(heirs_of)} new "Heirs of" rows this week — DP queue is '
-                     f"{len(dp_queue)} total (breakdown below)")
+    # What to work on next — the priority queue, ranked (built in
+    # compute_model so the HTML email shows the identical list).
+    open_dp = m["open_dp"]
+    stale_docs = m["stale_docs"]
+    late_docs = m["late_docs"]
+    prios = m["prios"]
     lines.append("WHAT TO WORK ON NEXT")
     if not prios:
         lines.append("  (nothing urgent — pipeline is clean)")
@@ -1521,57 +1632,67 @@ def render_report(
 
 
 # ── HTML email rendering ─────────────────────────────────────────────
-# The plain-text report above stays the single source of truth for content;
-# the HTML email wraps it in a branded shell (header + stat tiles + county
-# chips) and syntax-highlights the body (section headers, >> eyeball rows,
-# *** alerts). Email-safe: inline styles only, table layout, system fonts.
+# The condensed plain-text report stays the text/plain fallback and the full
+# .txt rides along as the attachment; this builds the HTML part the inbox
+# actually shows. It renders prose + small tables straight from
+# compute_model() — the same numbers as the text report, none of the
+# monospace ledger look (Oren, 2026-09-01: "easier to read, less of a
+# ledger"). Email-safe: inline styles only, table layout, system fonts.
 
 _GREEN = "#1b5e20"
+_F = ("font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+      "Helvetica,Arial,sans-serif;")
+_MONO = ("font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"
+         "'Liberation Mono',monospace;font-size:12px;")
 
 
-def _esc(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _esc(s) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _highlight_body(text: str) -> str:
-    """Turn the plain-text report body into styled, monospace HTML lines.
-    Drops the top title block and the trailing divider/Generated footer
-    (both are rendered elsewhere in the shell)."""
-    lines = text.split("\n")
-    try:
-        start = next(i for i, l in enumerate(lines)
-                     if l.strip() == "THIS WEEK AT A GLANCE")
-    except StopIteration:
-        start = 0
-    end = len(lines)
-    for i in range(len(lines) - 1, -1, -1):
-        s = lines[i].strip()
-        if s and set(s) == {"="}:
-            end = i
-            break
-    mono = ("font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;"
-            "font-size:12.5px;line-height:1.55;white-space:pre;padding:1px 12px;margin:0;")
-    out: list[str] = []
-    for ln in lines[start:end]:
-        stripped = ln.strip()
-        if not stripped:
-            out.append('<div style="height:9px;line-height:9px">&nbsp;</div>')
-            continue
-        esc = _esc(ln)
-        if ln.startswith("***"):
-            out.append(f'<div style="{mono}color:#b91c1c;font-weight:700;'
-                       f'background:#fef2f2;">{esc}</div>')
-        elif ln[0] != " " and not ln.startswith("="):
-            out.append(f'<div style="color:{_GREEN};font-weight:700;font-size:11.5px;'
-                       f'letter-spacing:.5px;text-transform:uppercase;margin:16px 0 4px;'
-                       f'padding:0 12px 5px;border-bottom:1px solid #e4e8eb;">{esc}</div>')
-        elif stripped.startswith(">>"):
-            out.append(f'<div style="{mono}background:#fff8e1;color:#7a5300;">{esc}</div>')
-        elif stripped.startswith("why:"):
-            out.append(f'<div style="{mono}color:#8a919a;">{esc}</div>')
-        else:
-            out.append(f'<div style="{mono}color:#3a3f45;">{esc}</div>')
-    return "\n".join(out)
+def _p(inner: str, *, color: str = "#374151", size: str = "13.5px") -> str:
+    """A paragraph. `inner` is already-escaped/marked-up HTML."""
+    return (f'<p style="{_F}font-size:{size};line-height:1.6;color:{color};'
+            f'margin:0 0 8px;">{inner}</p>')
+
+
+def _case(cn) -> str:
+    """Case numbers stay monospace — Oren looks cases up by number."""
+    return f'<span style="{_MONO}white-space:nowrap;">{_esc(cn)}</span>'
+
+
+def _h(title: str) -> str:
+    return (f'<div style="{_F}font-size:11px;font-weight:700;letter-spacing:.6px;'
+            f'text-transform:uppercase;color:{_GREEN};margin:18px 0 7px;">'
+            f'{_esc(title)}</div>')
+
+
+def _chip(inner: str) -> str:
+    return (f'<span style="display:inline-block;background:#eef1f4;color:#374151;'
+            f'border-radius:12px;padding:3px 10px;margin:0 6px 6px 0;'
+            f'{_F}font-size:12px;">{inner}</span>')
+
+
+def _tbl(headers: list[str], rows: list[list[str]], note: str = "") -> str:
+    """A small data table. Cell values are already-escaped/marked-up HTML."""
+    th = "".join(
+        f'<th align="left" style="{_F}font-size:10.5px;font-weight:700;color:#6b7280;'
+        f'text-transform:uppercase;letter-spacing:.4px;padding:6px 10px;'
+        f'border-bottom:1px solid #e4e8eb;background:#f6f7f9;">{_esc(h)}</th>'
+        for h in headers)
+    body = []
+    for i, cells in enumerate(rows):
+        bg = "background:#fbfcfd;" if i % 2 else "background:#ffffff;"
+        tds = "".join(
+            f'<td valign="top" style="{_F}font-size:13px;color:#374151;line-height:1.45;'
+            f'padding:6px 10px;{bg}">{c}</td>' for c in cells)
+        body.append(f"<tr>{tds}</tr>")
+    note_html = (f'<div style="{_F}font-size:11.5px;color:#8a919a;margin:4px 2px 0;">'
+                 f'{_esc(note)}</div>') if note else ""
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="border:1px solid #e7eaee;border-radius:8px;border-collapse:separate;'
+            f'border-spacing:0;overflow:hidden;">'
+            f"<tr>{th}</tr>" + "".join(body) + "</table>" + note_html)
 
 
 def _stat_tile(number, label, accent_bg, accent_fg) -> str:
@@ -1585,53 +1706,269 @@ def _stat_tile(number, label, accent_bg, accent_fg) -> str:
     )
 
 
-def render_html_email(text: str, *, this_week: int, new_count: int, ready: int,
-                      eyeball_n: int, counties, week_n: int) -> str:
+def _tonight_html(t: dict) -> str:
+    """Tonight's run as short prose — headline sentence, then money + blips."""
+    if not t.get("ok"):
+        return ""
+    sent: list[str] = []
+    start = t.get("start")
+    if start:
+        end = datetime.now()
+        if t.get("done_hms"):
+            hh, mi, ss = t["done_hms"]
+            end = start.replace(hour=hh, minute=mi, second=ss)
+            if end < start:
+                end += timedelta(days=1)
+        mins = int((end - start).total_seconds() // 60)
+        span = f"{mins // 60}h {mins % 60:02d}m" if mins >= 60 else f"{mins} min"
+        if t.get("budget_hit"):
+            state = ('<b style="color:#b91c1c;">was killed by the 4.5-hour time '
+                     'budget</b> — the back half (upload / DP / sold sweep) did not run')
+        elif t.get("tracebacks"):
+            state = (f'<b style="color:#b91c1c;">crashed in {t["tracebacks"]} '
+                     'step(s)</b> (see the log)')
+        else:
+            state = "<b>finished clean</b>"
+        sent.append(f"The run {state} in {span} ({start:%H:%M}&ndash;{end:%H:%M}).")
+    raw = t.get("raw_today") or {}
+    if raw:
+        sent.append(f"It scraped <b>{sum(raw.values())}</b> raw row(s) today.")
+    elif start:
+        sent.append("The scrape landed 0 new rows today.")
+    up = t.get("upload") or {}
+    if up.get("disabled"):
+        sent.append("Auto-upload was OFF (NC_AUTO_UPLOAD=0) — nothing was pushed to DataSift.")
+    elif up.get("uploaded"):
+        n = sum(up["uploaded"].values())
+        after = [
+            "skip trace started" if up.get("skip_trace")
+            else '<b style="color:#b45309;">skip trace NOT started</b>',
+            "dial tiers tagged" if up.get("tiers") else "dial tiers NOT tagged",
+            "text touches written" if up.get("touches") else "text touches NOT written",
+        ]
+        sent.append(f"<b>{n}</b> record(s) went to DataSift ({'; '.join(after)}).")
+    elif t.get("weeks"):
+        sent.append("Nothing net-new to upload to DataSift tonight.")
+    sold = t.get("sold") or {}
+    if sold.get("ran"):
+        checked = sold.get("checked") or sold.get("parcels") or 0
+        flagged = sold.get("flagged", 0)
+        if flagged:
+            n_tag = len(sold.get("tagged", []))
+            rep = sold.get("report_only", 0)
+            sent.append(f"The sold sweep checked {checked} parcels and flagged "
+                        f"<b>{flagged}</b> transfer(s) — {n_tag} tagged Sold, "
+                        f"{rep} heir transfer(s) kept as leads.")
+        else:
+            sent.append(f"The sold sweep checked {checked} parcels — no new transfers.")
+    out = _p(" ".join(sent)) if sent else ""
+    tail: list[str] = []
+    total, costs = _tonight_costs(t)
+    if costs:
+        tail.append(f"Tonight cost about <b>{_money(total)}</b> ({_esc(', '.join(costs))}).")
+    warn = t.get("warnings") or Counter()
+    if warn:
+        top = "; ".join(f"{k} x{n}" for k, n in warn.most_common(3))
+        tail.append(f"{sum(warn.values())} warning blip(s) — {_esc(top)} — one-offs "
+                    "unless they repeat tomorrow.")
+    if tail:
+        out += _p(" ".join(tail), color="#8a919a", size="12.5px")
+    return out
+
+
+def render_html_email(m: dict, *, tonight: dict, week_n: int,
+                      improvements: list[str] | None,
+                      runtime_min: float | None,
+                      polish_stats: dict,
+                      workbook_total: int) -> str:
     d = date.today()
+    wd = d.weekday()
+    day_note = f"court day {wd + 1} of 5" if wd < 5 else "weekend catch-up run"
     date_str = d.strftime("%A, %B ") + str(d.day) + d.strftime(", %Y")
-    gen = next((l for l in reversed(text.split("\n")) if l.startswith("Generated ")), "")
 
     # Stat tiles — eyeball tile turns amber only when there's something to check.
+    eyeball_n = len(m["eyeballs"])
     eye_bg, eye_fg = (("#fff8e1", "#b45309") if eyeball_n else ("#eef1f4", "#374151"))
     tiles = (
-        _stat_tile(this_week, "This week", "#eef1f4", "#111827")
-        + _stat_tile(new_count, "New today", "#e7f4ea", _GREEN)
-        + _stat_tile(ready, "Ready to work", "#e7f4ea", _GREEN)
+        _stat_tile(len(m["week_rows"]), "This week", "#eef1f4", "#111827")
+        + _stat_tile(len(m["new_today"]), "New today", "#e7f4ea", _GREEN)
+        + _stat_tile(len(m["ready"]), "Ready to work", "#e7f4ea", _GREEN)
         + _stat_tile(eyeball_n, "To check", eye_bg, eye_fg)
     )
 
     chips = ""
-    for name, n in counties:
+    for name, n in m["county_this"].most_common():
         label = name if name else "(blank)"
-        chips += (f'<span style="display:inline-block;background:#eef1f4;color:#374151;'
-                  f'border-radius:12px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px;">'
-                  f'{_esc(label)}&nbsp;<b>{n}</b></span>')
+        was = m["county_prev"].get(name, 0)
+        chips += _chip(f'{_esc(label)}&nbsp;<b>{n}</b>'
+                       f'<span style="color:#9aa1a9;">&nbsp;&middot;&nbsp;was {was}</span>')
 
-    body_html = _highlight_body(text)
+    parts: list[str] = []
+
+    outage = m.get("gis_outage") or {}
+    if outage.get("counties"):
+        parts.append(
+            f'<div style="{_F}background:#fef2f2;border:1px solid #fecaca;border-radius:8px;'
+            f'padding:10px 14px;margin:14px 0 4px;color:#b91c1c;font-size:13px;font-weight:600;">'
+            f'County GIS outage this run: {_esc(", ".join(outage["counties"]))} — rows for '
+            f'these counties are incomplete and will be recovered on the next clean run.</div>')
+
+    tn = _tonight_html(tonight or {})
+    if tn:
+        parts.append(_h("Tonight's run"))
+        parts.append(tn)
+
+    parts.append(_h("What to work on next"))
+    if m["prios"]:
+        items = "".join(
+            f'<li style="{_F}font-size:13px;color:#513c06;line-height:1.55;'
+            f'margin:0 0 7px;">{_esc(p)}</li>' for p in m["prios"])
+        parts.append(
+            f'<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'
+            f'padding:10px 14px 4px;"><ol style="margin:0;padding:0 0 0 18px;">{items}</ol></div>')
+    else:
+        parts.append(_p("Nothing urgent — the pipeline is clean.", color=_GREEN))
+
+    parts.append(_h(f"New cases today ({len(m['new_today'])})"))
+    if not m["new_today"]:
+        parts.append(_p("None — the workbook is unchanged from yesterday.", color="#8a919a"))
+    else:
+        cap = 12
+        rows = [[
+            _case((r.get("Case No.") or "").strip()),
+            _esc((r.get("County") or "").strip()),
+            _esc((r.get("Deceased Owner") or "").strip()),
+            _esc((r.get("Property Address") or "(no parcel)").strip()),
+        ] for r in m["new_today"][:cap]]
+        note = (f"...and {len(m['new_today']) - cap} more in the attached report"
+                if len(m["new_today"]) > cap else "")
+        parts.append(_tbl(["Case No.", "County", "Deceased", "Property"], rows, note))
+
+    if m["eyeballs"]:
+        parts.append(_h(f"Check before mailing ({len(m['eyeballs'])})"))
+        parts.append(_p("The matcher made a judgment call on these — worth a look "
+                        "before they get mail.", color="#8a919a", size="12.5px"))
+        rows = [[
+            _case((r.get("Case No.") or "").strip()),
+            _esc((r.get("County") or "").strip()),
+            _esc((r.get("Deceased Owner") or "").strip()),
+            _esc(_why(tags[0])),
+        ] for r, tags in m["eyeballs"][:8]]
+        note = (f"...and {len(m['eyeballs']) - 8} more in the attached report"
+                if len(m["eyeballs"]) > 8 else "")
+        parts.append(_tbl(["Case No.", "County", "Deceased", "Why"], rows, note))
+
+    parts.append(_h("Deep prospecting queue"))
+    if not m["dp_queue"]:
+        done = m["dp_already_done"]
+        parts.append(_p("Empty" + (f" — {done} already researched." if done else "."),
+                        color="#8a919a"))
+    else:
+        parts.append(_p(f'<b>{len(m["dp_queue"])}</b> &ldquo;Heirs of&rdquo; cases still '
+                        f'need a named contact, pulled across {len(m["dp_by_week"])} '
+                        f'week(s). The full case list is in the attached report.'))
+        wk_chips = "".join(
+            _chip(f'Wk {wk} <b>{n}</b><span style="color:#9aa1a9;">&nbsp;'
+                  f'{_esc(_week_pull_dates(wk, yr))}</span>')
+            for yr, wk, n in m["dp_by_week"][:8])
+        more_wks = len(m["dp_by_week"]) - 8
+        if more_wks > 0:
+            wk_chips += (f'<span style="{_F}font-size:12px;color:#9aa1a9;">'
+                         f'+{more_wks} more week(s)</span>')
+        parts.append(f"<div>{wk_chips}</div>")
+
+    kpi = kpi_totals(d)
+    if kpi:
+        wk_t, lw_t, stale = kpi
+
+        def _kpirow(label: str, t: Counter) -> list[str]:
+            ans = f"{t['answered'] / t['dials'] * 100:.0f}%" if t["dials"] else "-"
+            return [_esc(label), str(t["dials"]), f"{t['answered']} ({ans})",
+                    str(t["conversations"]), str(t["correct_numbers"]),
+                    str(t["leads"]), f"{t['talk_seconds'] // 60}m"]
+
+        note = ""
+        if stale and (d - date.fromisoformat(stale)).days > 2:
+            note = f"Numbers only current through {stale} — the KPI refresh hasn't run since."
+        parts.append(_h("Phones this week"))
+        parts.append(_tbl(["", "Dials", "Answered", "Convos", "Correct #s", "Leads", "Talk"],
+                          [_kpirow("Mon-today", wk_t), _kpirow("Last week", lw_t)], note))
+        if wk_t["sms_sent"] or lw_t["sms_sent"]:
+            parts.append(_p(f"Texts sent: {wk_t['sms_sent']} this week, "
+                            f"{lw_t['sms_sent']} last week.", color="#8a919a", size="12.5px"))
+
+    parts.append(_h("This week so far"))
+    phone_bit = (f"; {len(m['with_phone'])} already have a phone the pipeline found itself"
+                 if m["with_phone"] else "")
+    parts.append(_p(f"<b>{len(m['week_rows'])}</b> new estate cases matched to property, "
+                    f"<b>{len(m['ready'])}</b> mail-ready with a named contact{phone_bit}."))
+    if improvements:
+        items = "".join(
+            f'<li style="{_F}font-size:13px;color:#374151;line-height:1.55;'
+            f'margin:0 0 6px;">{_esc(b)}</li>' for b in improvements)
+        parts.append(_p("Pipeline improvements shipped this week:",
+                        color="#6b7280", size="12.5px"))
+        parts.append(f'<ul style="margin:0 0 8px;padding:0 0 0 18px;">{items}</ul>')
+
+    dropped, pc = m["diffs"]["dropped"], m["diffs"]["parcel_changed"]
+    if dropped or pc:
+        bits = []
+        if dropped:
+            bits.append(f"<b>{len(dropped)}</b> row(s) dropped since yesterday "
+                        f"({_esc(_cases_preview(dropped, 'Case No.'))})")
+        if pc:
+            bits.append(f"<b>{len(pc)}</b> case(s) had their parcel re-picked")
+        parts.append(_h("Changes since yesterday"))
+        parts.append(_p("; ".join(bits) + " — detail in the attached report."))
+
+    q_line = pr_push_queue_line()
+    if q_line:
+        parts.append(
+            f'<div style="{_F}background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'
+            f'padding:10px 14px;margin:14px 0 4px;color:#7a5300;font-size:13px;">'
+            f'{_esc(q_line)}</div>')
+
+    total_drops = sum(polish_stats.get(k, 0) for k in (
+        "over_500k", "under_min_value", "heir_occupied", "commercial",
+        "no_parcel", "archive_dupe", "non_pending"))
+    fine = []
+    if runtime_min is not None:
+        fine.append(f"runtime {runtime_min:.0f} min")
+    fine.append(f"{total_drops} rows dropped by filters tonight")
+    fine.append(f"workbook total {workbook_total} cases")
+    ts_line = tracerfy_budget_line()
+    if ts_line:
+        fine.append(ts_line)
+    parts.append(
+        f'<div style="{_F}font-size:11.5px;color:#9aa1a9;margin:18px 0 0;'
+        f'border-top:1px solid #e4e8eb;padding-top:10px;">'
+        + _esc(" / ".join(fine))
+        + "<br>Full detail — match reasons, drop breakdown, DP ledger — is in the "
+          "attached report file.</div>")
+
+    body_html = "\n".join(parts)
 
     return f"""\
 <!doctype html><html><body style="margin:0;padding:0;background:#eef0f2;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;padding:24px 12px;">
 <tr><td align="center">
-<table role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;{_F}">
   <tr><td style="background:{_GREEN};padding:22px 24px;">
     <div style="color:#ffffff;font-size:19px;font-weight:800;letter-spacing:.2px;">NC Probate Pipeline &middot; Week {week_n}</div>
-    <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">{date_str}</div>
+    <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">{date_str} &middot; {day_note}</div>
   </td></tr>
   <tr><td style="padding:14px 18px 4px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{tiles}</tr></table>
   </td></tr>
-  <tr><td style="padding:6px 24px 2px;">
-    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county &mdash; this week</div>
+  <tr><td style="padding:6px 24px 0;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county &mdash; this week vs last</div>
     <div>{chips}</div>
   </td></tr>
-  <tr><td style="padding:8px 12px 4px;">
-    <div style="overflow-x:auto;border:1px solid #eceef1;border-radius:8px;padding:8px 0;background:#fbfbfc;">
-      {body_html}
-    </div>
+  <tr><td style="padding:0 24px 8px;">
+    {body_html}
   </td></tr>
   <tr><td style="padding:12px 24px 22px;color:#9aa1a9;font-size:11px;">
-    {_esc(gen)} &middot; SiftStack
+    Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &middot; SiftStack
   </td></tr>
 </table>
 </td></tr></table>
@@ -1744,14 +2081,6 @@ def send_email(subject: str, body: str, attachments: list[Path] | None = None,
     return _send_email_smtp(subject, body, attachments=attachments, html=html)
 
 
-def _count_new_cases(today_rows: list[dict], yesterday_rows: list[dict]) -> int:
-    """Cases in today's polished CSV that weren't in yesterday's."""
-    def key(r):
-        return ((r.get("County") or "").strip(), (r.get("Case No.") or "").strip().upper())
-    yesterday = {key(r) for r in yesterday_rows}
-    return sum(1 for r in today_rows if key(r) not in yesterday)
-
-
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -1797,6 +2126,7 @@ def main(argv: list[str] | None = None) -> int:
     polish_stats = parse_polish_log(polish_log, since=datetime.now())
     runtime = pipeline_runtime_min(polish_log)
     tonight = parse_tonight(tonight_log_slice(polish_log))
+    model = compute_model(workbook_rows, week_n, today_rows, yesterday_rows, tonight)
 
     monday = date.today() - timedelta(days=date.today().weekday())
     improvements = summarize_week_improvements(monday)
@@ -1813,6 +2143,7 @@ def main(argv: list[str] | None = None) -> int:
         include_heir_transfer=args.include_heir_transfer,
         improvements=improvements,
         tonight=tonight,
+        model=model,
     )
     # Full report → attached .txt (every fine-print section, uncapped lists);
     # condensed report → the email body itself (most important items only).
@@ -1837,19 +2168,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.attach_workbook:
         attachments.append(wb_path)
 
-    new_count = _count_new_cases(today_rows, yesterday_rows)
+    new_count = len(model["new_today"])
     subject = (f"NC Probate Wk {week_n} — {new_count} new today, "
                f"{len(today_rows)} this week")
 
-    # Build the HTML email from the same report text + this-week stats.
-    _eyeball = len(eyeball_cases(today_rows))
-    _ready = sum(1 for r in today_rows
-                 if _has_named_contact(r) and (r.get("Property Address") or "").strip())
-    _counties = Counter((r.get("County") or "").strip() for r in today_rows).most_common()
-    html = render_html_email(
-        email_body, this_week=len(today_rows), new_count=new_count,
-        ready=_ready, eyeball_n=_eyeball, counties=_counties, week_n=week_n,
-    )
+    # Build the HTML email from the same model as the text report. Best-effort:
+    # if the HTML render ever breaks, the email still goes out text-only.
+    try:
+        html = render_html_email(
+            model, tonight=tonight, week_n=week_n, improvements=improvements,
+            runtime_min=runtime, polish_stats=polish_stats,
+            workbook_total=len(workbook_rows),
+        )
+    except Exception as e:
+        print(f"HTML email render failed ({type(e).__name__}: {e}) — "
+              "sending text-only", file=sys.stderr)
+        html = None
 
     ok, msg = send_email(subject, email_body, attachments=attachments, html=html)
     print(f"\nEmail: {msg}")
