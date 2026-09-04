@@ -162,9 +162,24 @@ def touch_field_uuids(h: dict) -> dict[str, str]:
     return out
 
 
+def _req(fn, url: str, **kw) -> requests.Response:
+    """DataSift resets connections partway through long runs (10054 after
+    ~1000 requests, 2026-08-23/09-01); a fresh connection heals it, so retry
+    connection-level failures with backoff instead of dying mid-sweep."""
+    for attempt in range(4):
+        try:
+            return fn(url, **kw)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError):
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
+
+
 def get_cf_values(h: dict, uuid: str) -> dict[str, str]:
-    r = requests.get(f"{API}/api/internal/property/{uuid}/custom-field/",
-                     headers=h, params={"offset": 0, "limit": 1000}, timeout=30)
+    r = _req(requests.get, f"{API}/api/internal/property/{uuid}/custom-field/",
+             headers=h, params={"offset": 0, "limit": 1000}, timeout=30)
     if r.status_code != 200:
         return {}
     out = {}
@@ -180,8 +195,9 @@ def write_touches(h: dict, uuid: str, fields: dict[str, str],
     """PATCH all four, then re-GET to prove it landed (a silent no-op = failure)."""
     body = [{"field_uuid": fields[lab], "value": t}
             for lab, t in zip(TOUCH_LABELS, touches)]
-    r = requests.patch(f"{API}/api/internal/property/{uuid}/custom-field/update-values/",
-                       headers=h, data=json.dumps(body), timeout=30)
+    r = _req(requests.patch,
+             f"{API}/api/internal/property/{uuid}/custom-field/update-values/",
+             headers=h, data=json.dumps(body), timeout=30)
     if r.status_code not in (200, 202):
         logger.warning("  PATCH %s -> %s %s", uuid[:8], r.status_code, r.text[:150])
         return False
@@ -317,7 +333,7 @@ def run_sweep(*, preset: str | list[str] | None = None,
     for i, ru in enumerate(uuids, 1):
         if i % 25 == 0:
             logger.info("  ...read %d/%d records", i, len(uuids))
-        fr = requests.get(f"{API}/api/internal/property/{ru}/", headers=h, timeout=30)
+        fr = _req(requests.get, f"{API}/api/internal/property/{ru}/", headers=h, timeout=30)
         if fr.status_code != 200:
             logger.warning("  record %s -> HTTP %s", ru[:8], fr.status_code)
             continue
