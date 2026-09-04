@@ -114,3 +114,7 @@ state/pipeline.lock
 # smrtPhone browser session (a live credential) + SMS agent local config
 smrtphone_state.json
 config/sms_senders.json
+
+# Facebook group harvest browser profile (contains a live session - never commit)
+.fb_profile/
+output/fb_harvest/
