@@ -1,0 +1,5 @@
+# Reviewed drift pairs that are NOT defects. Format:
+#   <uuid>,<owner name>,<mailing street>   # why it is fine
+# Keyed on all three: rename the record or move the mailing and it alerts again.
+
+ceda56ec-e4f6-4698-b331-36639af638c6,Brad Tinney,3903 Evans Ln   # 26E000963-170 Oren 2026-09-04: 3903 Evans Ln IS the court's address for PR Blanchard Tinney; he chose to keep the display name "Brad". Nothing to fix.

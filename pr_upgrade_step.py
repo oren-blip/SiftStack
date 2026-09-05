@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import csv
 import glob
+import json
 import logging
 import os
 import re
@@ -369,6 +370,159 @@ async def _trace_owner(page, up: dict) -> bool:
     return True
 
 
+# Records renamed here are the single biggest SOURCE of owner/mailing drift:
+# _edit_owner moves the NAME, and the mailing is a documented silent no-op
+# (11 of 14 on 2026-09-04 kept the previous heir's address at HTTP 200). Yet
+# audit_owner_mailing_drift.py could not see any of them -- it watches uuids
+# harvested from push CSVs, and this script wrote none, because it drives the
+# UI and never handles a property uuid. So every rename here had to be
+# re-checked by hand or not at all.
+#
+# This closes that loop: emit the uuids under a filename the auditor already
+# globs (dp_rename_push_*.csv), so tonight's renames are in tomorrow's diff.
+PUSH_MANIFEST = Path("output") / f"dp_rename_push_{datetime.now():%Y%m%d}.csv"
+
+
+def _api_headers(tok: str) -> dict:
+    return {"accept": "application/json", "origin": "https://app.reisift.io",
+            "referer": "https://app.reisift.io/", "user-agent": "Mozilla/5.0",
+            "x-reisift-ui-version": "2022.02.01.7",
+            "authorization": "Bearer " + tok, "content-type": "application/json"}
+
+
+def _owners_at(h: dict, address: str) -> set:
+    """Owner ids of the record(s) whose PROPERTY street is exactly `address`.
+
+    The UI search behind _open_owner_page also matches a record's MAILING
+    address, so searching "215 Hauss Rd" can open 2212 Rock Dam Rd -- a
+    different property that merely receives its mail there. Renaming the owner
+    on that page puts the wrong name on the wrong house, silently.
+
+    This is the expected answer to compare the opened page against. Empty means
+    "could not tell" (API hiccup, or the record is not searchable yet); callers
+    treat that as no-opinion and proceed, because a lookup blip must never stop
+    a whole night's pushes.
+    """
+    import requests
+
+    out = set()
+    try:
+        r = requests.post("https://apiv2.reisift.io/api/internal/property/",
+                          headers={**h, "x-http-method-override": "GET"},
+                          timeout=30,
+                          data=json.dumps({"query": {"must": {"search": address}},
+                                           "limit": 200}))
+        if r.status_code != 200:
+            return out
+        for hit in (r.json().get("results") or r.json().get("data") or []):
+            street = ((hit.get("address") or {}).get("street")
+                      or hit.get("street") or "")
+            if _norm(street) != _norm(address):
+                continue
+            o = hit.get("owner") or {}
+            oid = o.get("uuid") or o.get("id") or ""
+            if oid:
+                out.add(oid)
+    except (requests.RequestException, ValueError):
+        return set()
+    return out
+
+
+def _owner_id_in(url: str) -> str:
+    m = re.search(r"/records/owners/([0-9a-f-]{36})", url or "")
+    return m.group(1) if m else ""
+
+
+async def _write_push_manifest(page, applied: list[dict]) -> None:
+    """Resolve each renamed record's PROPERTY uuid and log it for the auditor.
+
+    Resolution goes through the API, not the UI: _open_owner_page navigates to
+    /records/owners/<owner-uuid>, which is the wrong id, and the UI search is
+    the flakier of the two (26E000865-480 was invisible to it on 2026-09-04
+    while the API found it). Best-effort by design -- a record we cannot
+    resolve is logged and skipped, never a reason to fail a completed push.
+    """
+    import requests
+
+    try:
+        tok = await page.evaluate("() => localStorage.getItem('rs_token')")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("push manifest: could not read token (%s) — skipped", e)
+        return
+    if not tok:
+        logger.warning("push manifest: no token in localStorage — skipped")
+        return
+
+    h = {"accept": "application/json", "origin": "https://app.reisift.io",
+         "referer": "https://app.reisift.io/", "user-agent": "Mozilla/5.0",
+         "x-reisift-ui-version": "2022.02.01.7",
+         "authorization": "Bearer " + tok, "content-type": "application/json",
+         "x-http-method-override": "GET"}
+
+    rows, missed = [], []
+    for u in applied:
+        addr = (u.get("address") or "").strip()
+        uuids = []
+        try:
+            r = requests.post("https://apiv2.reisift.io/api/internal/property/",
+                              headers=h, timeout=30,
+                              data=json.dumps({"query": {"must": {"search": addr}},
+                                               "limit": 200}))
+            if r.status_code == 200:
+                d = r.json()
+                want_owner = ""
+                m = re.search(r"/records/owners/([0-9a-f-]{36})",
+                              u.get("owner_url") or "")
+                if m:
+                    want_owner = m.group(1)
+                for hit in (d.get("results") or d.get("data") or []):
+                    street = ((hit.get("address") or {}).get("street")
+                              or hit.get("street") or "")
+                    uid = hit.get("uuid") or hit.get("id") or ""
+                    if not uid:
+                        continue
+                    hit_owner = ((hit.get("owner") or {}).get("uuid")
+                                 or (hit.get("owner") or {}).get("id") or "")
+                    # Owner id is the authoritative link to the record we edited.
+                    # Street equality is the fallback for older callers that
+                    # never captured an owner_url.
+                    match = (hit_owner == want_owner) if want_owner                         else (_norm(street) == _norm(addr))
+                    if match and uid not in uuids:
+                        uuids.append(uid)
+        except requests.RequestException as e:
+            logger.warning("push manifest: lookup failed for %s (%s)", u["case"], e)
+        if not uuids:
+            missed.append(u["case"])
+            continue
+        # EVERY twin, not just the first. 215 Hauss Rd (26E000554-540) exists
+        # twice -- a Week 36 probate record and a Jan-2026 bulk tax-delinquent
+        # one -- and _open_owner_page picks whichever twin the UI search happens
+        # to rank first. Recording one uuid would leave the edited record
+        # unwatched half the time, which is the exact failure this file fixes.
+        if len(uuids) > 1:
+            logger.warning("push manifest: %s — %d records share %r; watching all",
+                           u["case"], len(uuids), addr)
+        for uid in uuids:
+            rows.append({"Case No.": u["case"], "Was Owner": u.get("old", ""),
+                         "Now Owner": u.get("pr", ""), "Property": addr,
+                         "UUID": uid})
+
+    if not rows:
+        logger.warning("push manifest: resolved no uuids — drift watch NOT armed")
+        return
+    PUSH_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    with PUSH_MANIFEST.open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Case No.", "Was Owner", "Now Owner",
+                                           "Property", "UUID"])
+        w.writeheader()
+        w.writerows(rows)
+    logger.info("push manifest: %d record(s) -> %s (now watched for mailing drift)",
+                len(rows), PUSH_MANIFEST)
+    if missed:
+        logger.warning("push manifest: no uuid for %s — these stay unwatched",
+                       ", ".join(missed))
+
+
 async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
               fix_cases: set[str] | None = None,
               skip_cases: set[str] | None = None) -> int:
@@ -387,6 +541,8 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
         return 2
     rc = 0
     pushed: set[str] = set()
+    applied: list[dict] = []
+    wrong: list[str] = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         ctx = await browser.new_context(viewport={"width": 1280, "height": 800})
@@ -395,6 +551,13 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
             if not await login(page, email, password):
                 logger.error("login failed")
                 return 1
+            try:
+                _tok = await page.evaluate("() => localStorage.getItem('rs_token')")
+            except Exception:  # noqa: BLE001
+                _tok = None
+            api_h = _api_headers(_tok) if _tok else None
+            if not api_h:
+                logger.warning("no API token — the wrong-house check is OFF this run")
             for week in weeks:
                 tag = f"NC Estates Week {week} {datetime.now().year}"
                 logger.info("=== Week %d (%s) ===", week, tag)
@@ -449,12 +612,31 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
                             logger.warning("  %s: record not found by address %r",
                                            u["case"], u["address"])
                             continue
+                        # Confirm the page we opened really belongs to this
+                        # house before typing a new name into it.
+                        if api_h:
+                            expect = _owners_at(api_h, u["address"])
+                            landed = _owner_id_in(page.url)
+                            if expect and landed and landed not in expect:
+                                logger.warning(
+                                    "  %s: WRONG RECORD — searching %r opened owner "
+                                    "%s, who does not own that address. Skipped; "
+                                    "correct this one by hand.",
+                                    u["case"], u["address"], landed)
+                                wrong.append(u["case"])
+                                continue
                         if not await _edit_owner(page, u):
                             continue
                     except Exception as e:  # noqa: BLE001 — one bad record must not kill the run
                         logger.warning("  %s: upgrade failed (%s)", u["case"], e)
                         continue
                     logger.info("  %s: contact updated to %s", u["case"], u["pr"])
+                    # Remember WHICH owner page took the edit. The UI search
+                    # matches on the mailing address too, so "215 Hauss Rd" can
+                    # land on 2212 Rock Dam Rd -- a different property whose
+                    # owner is merely mailed there. Without this the manifest
+                    # would guess by street and could watch the wrong record.
+                    u["owner_url"] = page.url
                     if trace:
                         if await _trace_owner(page, u):
                             logger.info("  %s: Skip Trace Owner fired", u["case"])
@@ -462,6 +644,7 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
                             logger.warning("  %s: Skip Trace Owner button not found",
                                            u["case"])
                     done += 1
+                    applied.append(u)
                     if u["case"] in queued:
                         pushed.add(u["case"])
                 logger.info("Week %d: PR upgrades applied: %d/%d. Re-run "
@@ -469,8 +652,15 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
                             week, done, len(ups), week)
                 if done != len(ups):
                     rc = 1
+            if applied:
+                await _write_push_manifest(page, applied)
         finally:
             await browser.close()
+    if wrong:
+        logger.warning("WRONG-RECORD guard blocked %d push(es): %s — the address "
+                       "search opened a different property. Left in the queue.",
+                       len(wrong), ", ".join(wrong))
+        rc = 1
     if pushed:
         clear_from_queue(pushed)
         logger.info("Cleared %d pushed case(s) from %s: %s",

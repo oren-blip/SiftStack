@@ -97,6 +97,31 @@ def token_or_none() -> str | None:
     return None
 
 
+ACCEPT = REPO / "owner_mailing_drift_accepted.txt"
+
+
+def load_accepted() -> set:
+    """Reviewed-and-accepted drift pairs, one per line ('#' starts a comment):
+
+        <uuid>,<owner name>,<mailing street>   # why it is fine
+
+    Keyed on all three fields, not the uuid alone: an accepted record that is
+    later renamed or repointed is a NEW state nobody has reviewed, so it must
+    alert again.
+    """
+    out = set()
+    if not ACCEPT.exists():
+        return out
+    for ln in ACCEPT.read_text(encoding="utf-8").splitlines():
+        ln = ln.split("#", 1)[0].strip()
+        if not ln:
+            continue
+        parts = [x.strip() for x in ln.split(",")]
+        if len(parts) >= 3:
+            out.add((parts[0], parts[1], ",".join(parts[2:]).strip()))
+    return out
+
+
 def main() -> int:
     if os.environ.get("NC_MAILING_DRIFT") == "0":
         log("skipped — NC_MAILING_DRIFT=0")
@@ -124,6 +149,7 @@ def main() -> int:
          "user-agent": "Mozilla/5.0", "authorization": "Bearer " + tok,
          "content-type": "application/json"}
 
+    accepted = load_accepted()
     drift, checked, gone = [], 0, 0
     for uuid, label in list(recs.items())[:MAX_RECORDS]:
         try:
@@ -145,6 +171,14 @@ def main() -> int:
         was = snap.get(uuid)
         drifted = bool(was) and (was.get("owner") or "") != owner \
             and (was.get("mail") or "") == mail
+        # Reviewed-and-accepted pairs go quiet. The key is (uuid, owner, mail),
+        # so this silences ONLY the exact state a human signed off on: rename
+        # the record again, or move the mailing again, and it alerts again.
+        # Oren 2026-09-04 accepted 26E000963-170 -- he kept the name 'Brad
+        # Tinney' and 3903 Evans Ln IS the court's address, so there is
+        # nothing to fix; without this it nags the NEEDS A HAND list forever.
+        if drifted and (uuid, owner, mail) in accepted:
+            drifted = False
         if drifted:
             tags = [t.get("title") if isinstance(t, dict) else str(t)
                     for t in (d.get("tags") or [])]

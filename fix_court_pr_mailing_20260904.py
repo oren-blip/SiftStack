@@ -53,6 +53,10 @@ from audit_rename_gap_20260822 import API, search, token  # noqa: E402
 from consolidate_weeks import auto_pick_weekly_files  # noqa: E402
 
 APPLY = "--apply" in sys.argv
+# Oren 2026-09-04: he chose to mail the occupied houses anyway on 26E000150-120,
+# so the property-equals-mailing guard needs a deliberate, per-run override.
+# Default stays ON -- this never fires unless --allow-property is typed.
+ALLOW_PROP = "--allow-property" in sys.argv
 ONLY = ""
 if "--only" in sys.argv:
     ONLY = sys.argv[sys.argv.index("--only") + 1]
@@ -114,7 +118,7 @@ def main() -> int:
             print(f"  SKIP: incomplete court address ({street!r} {city!r} {state!r} {zipc!r})")
             skipped += 1
             continue
-        if _canon(street) == _canon(prop):
+        if _canon(street) == _canon(prop) and not ALLOW_PROP:
             print(f"  SKIP: mailing == property ({street}) — that is the pipeline's "
                   f"'mail it to the house' fallback, not a court address")
             skipped += 1
