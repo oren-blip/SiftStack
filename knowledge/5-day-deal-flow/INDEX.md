@@ -2,7 +2,7 @@
 
 Ty Garrett's (DataSift) 5 Day Deal Flow Challenge. The challenge re-runs monthly; this library
 holds the **July 2026 cohort** (complete, 2026-07-13 → 17) and the **August 2026 cohort**
-(in progress, started 2026-08-17). This is where the **FTM (first-to-market) strategy** behind
+(complete, 2026-08-17 → 21). This is where the **FTM (first-to-market) strategy** behind
 the NC probate pipeline comes from. When cohorts disagree, the August run is the current teaching.
 
 ## How to use this
@@ -16,7 +16,7 @@ the NC probate pipeline comes from. When cohorts disagree, the August run is the
 
 ## Status
 
-### August 2026 cohort (in progress)
+### August 2026 cohort (complete)
 
 | Day | Date | Topic | Speakers named? |
 |-----|------|-------|---|
@@ -24,7 +24,7 @@ the NC probate pipeline comes from. When cohorts disagree, the August run is the
 | [2](notes/day-2-2026-08-18-key-teachings.md) | 2026-08-18 (Tue) | **Niche sequential marketing** — tags/presets conveyor, sold suppression ("most important workflow"), Trestle 2,000-number experiment, Number Verifier spam playbook, autonomous two-way SMS agent, not-interested campaigns (20–30% of deals), team ladder. 4h17m, longest session; Tyler co-teaches | ✅ real names |
 | [3](notes/day-3-2026-08-19-key-teachings.md) | 2026-08-19 (Wed) | **Deep prospecting** — skip-trace tiers explained, DataSift+SmartSkip+DirectSkip at $0.25–0.45/record (SmartSkip $0.15/hit returns 41 relatives in one call), "find the top 100 opportunities" account-wide ranking, one-shot account build via plan mode + Fable, handwritten mail to 3–6 heirs per record. 2h37m, lightest day; API-gated throughout | ✅ real names |
 | [4](notes/day-4-2026-08-20-key-teachings.md) | 2026-08-20 (Thu) | **Sales & deal analysis** — lead grading flipped (walk + offer on 1–2 pillars; July's 80%-of-Zestimate rule is gone), STABM auto board+task on New Lead, private lender package w/ term sheet (first time taught), buyer-prospector dispo flow ("top 25 Knox buyers", "replaces InvestorLift"), rehab estimate from walkthrough VIDEOS (3014 Sanland: $240K ask → $92K contract), ~30% of obituary deaths ever get probate + the obit+2yr-tax-delinquent curative stack, Facebook vendor/buyer scraping skills (use Opus, NOT Fable — Fable refuses scrape-shaped work), Enformion partially back as "Enformion Go" for entity skip tracing ($0.15/lookup). ~3h16m | ✅ real names |
-| 5 | 2026-08-21 | *not yet imported* — AI call-scoring, Gemini transcription tip, two-scenario teardown all deferred here from Day 4 | — |
+| [5](notes/day-5-2026-08-21-key-teachings.md) | 2026-08-21 (Fri) | **Scaling & operations** — format break: no company-audit walkthrough, live 30/60/90 coaching instead. One caller's whole first month torn down (19 working days → 28 leads → 3 contracts; 17% contact rate on a 1,457-door list; 13.5 blended dials per correct number). **Leads per deal collapsed 20–30 → 5–15**; texting now supplies ~half of all correct numbers as its own siloed 4-day channel; 250–300 records/caller/week. Hiring machine fully priced (~$70/hire vs an agency's $3–5K; Indeed spend by country) with Claude Cowork scoring applicants 0–10 twice daily. Comp ladder 2.5%/5%/10% on $1,100 caller / $1,500 lead manager / $2,000 closer bases. Day 4's deferred call-coaching engine delivered (tonality from an **ElevenLabs audio model**, not the transcript). New block: model economics + **fly.io + OpenRouter** for unattended automation (~40–50¢/day), and SOPs from Loom video for **2 cents**. 2h46m | ✅ real names |
 
 Each August notes file opens with a **"What changed since the July cohort"** section — read that
 before quoting July numbers. Headline Day 1 deltas: DataSift API shipped (Deal Room beta), Ty
@@ -32,14 +32,14 @@ resumed FTM probate (July's "paused entirely" is stale), Claude model advice now
 AI plan threshold lowered to $3–5K/mo spend.
 
 **Written guides:** the August Challenge Hub links written modules per day (13 on Day 1, 6 on
-Day 2, 2 on Day 3, 9 on Day 4). Local copies live in [guides/day-1/](guides/day-1/), [guides/day-2/](guides/day-2/), [guides/day-3/](guides/day-3/) and [guides/day-4/](guides/day-4/)
+Day 2, 2 on Day 3, 9 on Day 4, 5 on Day 5). Local copies live in [guides/day-1/](guides/day-1/), [guides/day-2/](guides/day-2/), [guides/day-3/](guides/day-3/), [guides/day-4/](guides/day-4/) and [guides/day-5/](guides/day-5/)
 (start at each folder's `README.md` digest — it says which guide holds which table so you don't
 have to open them all). Fetch future days with `python scripts/fetch_challenge_guides.py <day>`
 the week they air — **hub pages are sunset each cohort**, so the local copy is the durable one.
 
-The remaining August days import with
-`python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — the 8/18–8/21
-dates auto-map to Days 2–5.
+All five August days are imported. A future cohort imports the same way —
+`python scripts/import_challenge_transcript.py "<downloaded .transcript.vtt>"` — after adding that
+cohort's dates to `CHALLENGE_DATES` in the script.
 
 Day 3's downloadable assets (skill file, example research pack, tech-stack SOP, and the 83-resource
 hub sheet whose Day 4–5 tabs are already populated) are in
@@ -48,6 +48,11 @@ Day 4's 15 archived assets (buyer-prospector / comping / rehab-estimator / lead-
 skills, the datasift-lead-management plugin, drip SOP PDF, the 5532 Joyce Ann comp + rehab
 workbooks, the Investor Bootz sample inspection report, and three chat-only files incl. the Knox
 top-25-buyers output) are in [guides/day-4/downloads/](guides/day-4/downloads/).
+Day 5's 11 archived assets (3 job descriptions, the 10-tab DataSift REI KPI sheet, a real
+playbook-creator SOP output, the candidate-intake / kpi-engine / playbook-creator skill files, and a
+student's chat-only foreclosure packet) are in [guides/day-5/downloads/](guides/day-5/downloads/) —
+that README also lists the 15 applicant example videos Ty shared **view-only**, which cannot be
+archived.
 
 ### July 2026 cohort (complete)
 
@@ -65,6 +70,9 @@ Recordings are in `videos/` as `day-N-YYYY-MM-DD.mp4` (~3.4 GB total, gitignored
 Zoom chat logs are in `chat/`; the links from them are indexed in [RESOURCES.md](RESOURCES.md).
 
 ### Transcript quality — read before quoting
+
+**All five August 2026 days are Zoom `.transcript.vtt` with real speaker names — trustworthy throughout.**
+The caveats below apply to the **July** cohort only:
 
 - **Days 1, 3, 5** — Zoom `.transcript.vtt` with real names (`Ty Garrett:`, `Tyler Austin:`,
   `Phil Loesch:`). Trustworthy.

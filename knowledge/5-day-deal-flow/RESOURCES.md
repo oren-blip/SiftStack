@@ -95,6 +95,54 @@ $125–150/address on PPL; Eddie Briant scrapes probates in 7 of 21 NJ counties;
 distills the day's list reveal as "obituary + 2 years tax del"; replays sunset when next month's
 challenge replaces them (download the week of).
 
+## August 2026 cohort — Day 5 (2026-08-21)
+
+Links Ty posted in chat:
+
+| Link | What it is |
+|---|---|
+| https://instantly.ai/ | **Instantly** — cold-email sending platform, posted during the email/SMS-module question |
+| https://openrouter.ai/models | **OpenRouter model list** — posted when asked which models he routes through |
+| https://drive.google.com/file/d/17sHGwdaLH2VQJqSnaIbHv-S0C659uS0d/view | The 20-page homeowner foreclosure guide again (already archived as `guides/day-4/downloads/foreclosure-homeowner-guide-knox-example.pdf`) |
+
+**Ty's applicant identity-check message**, pasted verbatim in chat while demoing the hiring flow:
+"Hey I love your application. Can you please send me a loom video just to verify identity and your
+background for your resume?"
+
+Student/community links: https://tactiq.io/r/transcribing (Tactiq again),
+https://www.ninjaassistants.com/discovery-call (posted by Matix of HireTrainVA.com, pitching VAs
+trained on DataSift CRM + the First-to-Market strategy),
+http://www.youtube.com/watch?v=COdaZbkqRdg (Mak — the Alex Hormozi video on when to fire), and
+**Dave Marsh's own foreclosure packet**,
+https://drive.google.com/file/d/1gDC-47XbwbJYDTYEc2Ce4YR_AdHrFmVs/view — a student-built version of
+Ty's Day 4 lead magnet, archived as
+`guides/day-5/downloads/foreclosure-resource-guide-dave-marsh-tampa.pdf`. Dave sends it *after* a
+first call with the owner, never on a door knock — either emailed, or opened on his phone and
+"Send a Copy" as a PDF to theirs.
+
+Notable chat intel — most of Day 5's numbers came from operators in chat, not the slides:
+- **Phil Loesch on team comp:** pays salary, not hourly; works longer Wed/Thu so the team leaves
+  early Friday; "don't treat them like and call them VAs either, they are part of team." Flat-fee
+  commissions, **$500–1,000 per person per deal depending on role**, and everyone gets one because
+  "it is a team effort." No dedicated data manager — "Claude with API does most of it and admin
+  covers the rest" — but budgets **~$1,500/mo** if you hire one.
+- **Hormozi firing model** (via Mak): what are they doing wrong or not doing → were expectations
+  communicated clearly → retrain → re-evaluate; three cycles, then fire.
+- **Paying overseas team:** Wise, Remitly, Gusto, or crypto ("less fees and faster") — chat's
+  additions to the Wise link on the hub sheet.
+- **Forewarn as a skip-trace source** (Dave Marsh, Robin Adair): Chris Aleman in the DataSift FB
+  group sells a Python script that skip traces a list through Forewarn, but Forewarn rate-limits
+  hard — trouble past **200/week**, and Robin was warned for pulling too many. SmartSkip is the
+  contrast: it returns the owner **and** the relatives.
+- **Nick Redmond's foreclosure cadence:** 10–15 texts, 6–7 door knocks, 10–15 calls per record.
+- **Mak on Houston lending:** hard money at 75% ARV but 10% down of the loan amount.
+
+Day 5's hub downloads (3 job descriptions, the KPI tracking template, the real playbook-creator SOP
+output, tech-stack SOP + 83-resource hub sheet, and the candidate-intake / kpi-engine /
+playbook-creator skill files) are archived in [guides/day-5/downloads/](guides/day-5/downloads/) —
+see that folder's `README.md`, including the 15 view-only applicant example videos that Ty disabled
+download on.
+
 ## Challenge material
 
 | Link | What it is |
@@ -120,6 +168,14 @@ County-list-framework deep links use FIPS anchors, e.g. `#47093` = Knox County T
 | https://2captcha.com/ | 2Captcha — CAPTCHA solving (Day 3) |
 | https://github.com/rtk-ai/rtk | RTK (Day 3) |
 | https://github.com/lfiaschi/audiencekit | AudienceKit (Day 4) |
+| https://instantly.ai/ | Instantly — cold-email sending platform (Day 5) |
+| https://openrouter.ai/models | OpenRouter — the model router Ty points at for non-Claude models (Day 5) |
+| https://fireflies.ai/ | Fireflies — AI meeting recorder; the transcript source that feeds the SOP/playbook-creator flow (Day 5) |
+| https://www.loom.com/ | Loom — training videos, SOP capture, and the applicant identity/internet-quality check (Day 5) |
+| https://tallycount.app/login | Tally Count — phone/Chrome tally app for live KPI counting, e.g. acquisition attempts (Day 5) |
+| https://wise.com/ | Wise — paying overseas team in local currency from USD (Day 5; chat adds Remitly, Gusto, crypto) |
+| https://www.ninjaassistants.com/ | Ninja Assistants — REI VA hiring agency (Day 5) |
+| https://www.indeed.com/ | Indeed — the job-posting half of the Day 5 hiring funnel |
 
 Trestle is discussed at length on Day 2 but its signup link wasn't posted in chat — see
 `notes/day-2-key-teachings.md` §9 and the `phone-validator` skill.

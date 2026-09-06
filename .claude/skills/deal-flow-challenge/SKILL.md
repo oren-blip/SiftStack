@@ -7,7 +7,7 @@ description: Answer questions from Ty Garrett's 5 Day Deal Flow Challenge — th
 
 A local, searchable copy of Ty Garrett's (DataSift) 5 Day Deal Flow Challenge. The challenge
 re-runs monthly; this library holds the **July 2026 cohort (complete, 2026-07-13 → 17)** and the
-**August 2026 cohort (in progress, from 2026-08-17)**. It is the source of the FTM strategy behind
+**August 2026 cohort (complete, 2026-08-17 → 21)**. It is the source of the FTM strategy behind
 the NC probate pipeline. When cohorts disagree, the newer cohort reflects current DataSift features
 — cite the newer one but mention what changed.
 
@@ -21,7 +21,7 @@ Everything lives under `knowledge/5-day-deal-flow/`:
   raw transcript. August notes carry a "what changed since July" section
 - `transcripts/day-N-YYYY-MM-DD.md` — full transcripts, ~170–240K characters each
 - `guides/day-N/` — local copies of the Challenge Hub's **written guide modules** (August cohort;
-  13 per day). Each folder's `README.md` digest says which guide holds which table — read it first,
+  13 on Day 1, 6 on Day 2, 2 on Day 3, 9 on Day 4, 5 on Day 5). Each folder's `README.md` digest says which guide holds which table — read it first,
   then open only the guide you need. Guides carry exact bands/thresholds/pricing the live session
   glossed over; the hub pages are sunset each cohort so these are the durable copies
 - `RESOURCES.md` — every link Ty shared in chat (Challenge Hub, county list framework, tool signups)
@@ -36,6 +36,10 @@ Everything lives under `knowledge/5-day-deal-flow/`:
 3. **Check the written guides** (`guides/day-N/README.md` → the specific guide) when the question
    needs exact thresholds, bands, pricing tables, or step-by-step workflows — the guides are the
    polished reference; the live sessions often gloss over the precise numbers.
+   **But when a guide and the live session disagree on a number, the live session wins** — the
+   guides lag a cohort. Day 5 is the clearest case: `guides/day-5/kpi-tracking.md` still prints
+   32:1 dials per correct number, while Ty tore down a real caller's month live at **13.5 blended /
+   ~21 call-only**. The guide READMEs flag these conflicts.
 4. **Grep the transcript** (never read it whole — they're huge) when the user wants Ty's exact
    words, more context around a claim, or something the notes don't cover. Search for a distinctive
    phrase, or jump to a timestamp cited in the notes.
