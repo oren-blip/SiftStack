@@ -11,6 +11,7 @@ doing nothing.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +82,10 @@ def run(live_model: bool = False) -> int:
     config.DB_PATH = Path(os.environ["SMS_AGENT_DB"])
     config.PHASE, config.DRY_RUN = 4, True
     config.SMRTPHONE_NUMBERS_RAW = os.environ["SMRTPHONE_NUMBERS"]
+    # The real .env carries live Slack tokens since 2026-09-06. The selftest
+    # must behave the same on every machine, so it runs as if it had none and
+    # opts the button path in explicitly where it wants to exercise it.
+    config.SLACK_BOT_TOKEN = config.SLACK_APP_TOKEN = config.SLACK_CHANNEL = ""
     store._local.__dict__.pop("conn", None)
     store.init()
 
@@ -609,6 +614,12 @@ def run(live_model: bool = False) -> int:
     r.check("soft no closes the thread", conv.get("state") == "closed", str(conv.get("state")))
     r.check("recorded as a soft no", "soft" in str(conv.get("paused_reason")),
             str(conv.get("paused_reason")))
+    # Scoped by intent: this number already carries an ASKING_WHO answer from
+    # the "who is this" section above, and that one is allowed to exist.
+    pending = list(store._conn().execute(
+        "SELECT status FROM outbox WHERE phone='8650008888' AND intent='NOT_INTERESTED'"))
+    r.check("a soft no is never texted back", not pending,
+            f"REPLY_TO_NO is off, so found {len(pending)} outbox row(s) where 0 belong")
     from . import digest
     data = digest.collect(days=1)
     r.check("digest renders without error", isinstance(digest.render(data), str))
@@ -734,6 +745,78 @@ def run(live_model: bool = False) -> int:
             config.ALLOWED_IPS = []
     except ImportError as exc:
         r.check("fastapi TestClient available", False, str(exc))
+
+    # ---- 13. slack buttons ------------------------------------------------
+    # Every action runs against the real store with no network and no tokens,
+    # because the thing that must never happen is a tap doing something other
+    # than what its label says.
+    print("\nslack buttons")
+    from . import slack_buttons
+
+    r.check("no buttons without a listener", not config.slack_listener_ready(),
+            "unconfigured selftest env must fall back to copy-paste commands")
+
+    # With no tokens a draft posts the typed commands; with all three it posts
+    # buttons. Both rendered through the stub, nothing reaches Slack.
+    captured: list = []
+    real_post = escalate._post
+    escalate._post = lambda text, blocks=None: (captured.append((text, blocks)) or True)
+    escalate.draft_for_approval("8650004242", "who is this", "Hi, it's Pat.", 0.9)
+    r.check("without a listener the draft carries the commands",
+            "cli.py approve 8650004242" in captured[-1][0]
+            and not [b for b in (captured[-1][1] or []) if b.get("type") == "actions"])
+    config.SLACK_BOT_TOKEN, config.SLACK_APP_TOKEN, config.SLACK_CHANNEL = "xoxb-t", "xapp-t", "C1"
+    escalate.draft_for_approval("8650004242", "who is this", "Hi, it's Pat.", 0.9)
+    r.check("with a listener the draft carries buttons",
+            bool([b for b in (captured[-1][1] or []) if b.get("type") == "actions"])
+            and "cli.py approve" not in captured[-1][0])
+    config.SLACK_BOT_TOKEN = config.SLACK_APP_TOKEN = config.SLACK_CHANNEL = ""
+    escalate._post = real_post
+
+    blk = escalate.action_buttons("865-000-4242", "rec-4242")
+    ids = [e["action_id"] for e in blk["elements"]]
+    r.check("all four buttons render", ids == list(escalate.ACTIONS), str(ids))
+    r.check("button value carries the phone",
+            json.loads(blk["elements"][0]["value"])["phone"] == "8650004242")
+    confirmed = [e["action_id"] for e in blk["elements"] if "confirm" in e]
+    r.check("the irreversible buttons confirm first",
+            confirmed == ["sms_approve", "sms_wrong"], str(confirmed))
+
+    r.check("an unknown action_id does nothing",
+            "ignored" in slack_buttons.handle("sms_delete_everything", "8650004242"))
+
+    # "I'll handle it" — pause and drop the draft.
+    store.ensure_conversation("8650004242")
+    store.queue_message("8650004242", "draft one", status="held")
+    slack_buttons.handle("sms_handle", "8650004242", who="oren")
+    conv = store.get_conversation("8650004242") or {}
+    r.check("handle-it pauses the thread", conv.get("state") == "paused", str(conv.get("state")))
+    r.check("handle-it names who took it", "oren" in str(conv.get("paused_reason")),
+            str(conv.get("paused_reason")))
+    r.check("handle-it drops the held draft",
+            not [x for x in store._conn().execute(
+                "SELECT 1 FROM outbox WHERE phone='8650004242' AND status IN ('held','queued')")])
+
+    # Wrong number — suppressed for good.
+    slack_buttons.handle("sms_wrong", "8650004343")
+    r.check("wrong number suppresses the line",
+            store.is_suppressed("8650004343") == "wrong_number",
+            str(store.is_suppressed("8650004343")))
+
+    # Approve on a phone with nothing held must not invent a send.
+    before = len(stub.sent)
+    msg = slack_buttons.handle("sms_approve", "8650004444")
+    r.check("approve with nothing held sends nothing",
+            len(stub.sent) == before and "nothing" in msg, msg)
+
+    # The buttons come off the message once it is answered, so the channel
+    # reads as a queue rather than a log.
+    resolved = slack_buttons.resolved_blocks(
+        [{"type": "section"}, blk], "yours now", "oren", "I'll handle it")
+    r.check("answering a draft removes its buttons",
+            not [b for b in resolved if b.get("type") == "actions"], str(len(resolved)))
+    r.check("answering a draft records who did it",
+            "oren" in json.dumps(resolved))
 
     print()
     return r.report()

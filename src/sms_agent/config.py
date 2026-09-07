@@ -86,6 +86,37 @@ REISIFT_API_KEY = _env("REISIFT_API_KEY", "")
 # ---------------------------------------------------------------- Slack
 SLACK_WEBHOOK_URL = _env("SMS_AGENT_SLACK_WEBHOOK") or _env("SLACK_WEBHOOK_URL", "")
 
+# --- Slack buttons -----------------------------------------------------------
+# An incoming webhook can only ever POST. To put working buttons under a draft,
+# two separate things are needed and they fail independently:
+#
+#   BOT_TOKEN + CHANNEL  -> post the draft WITH buttons (chat.postMessage) and
+#                           rewrite that message afterwards (chat.update), so a
+#                           handled draft visibly stops being actionable.
+#   APP_TOKEN            -> RECEIVE the click, over Socket Mode.
+#
+# Socket Mode is the reason this needs no cloud box: the desktop dials OUT to
+# Slack and holds the connection open, so there is no public URL, no tunnel and
+# no inbound firewall rule. Oren, 2026-09-06 -- the point of the whole exercise
+# is approving from a phone, and a webhook cannot hear a tap.
+#
+# With only the webhook set, everything still works exactly as before: the post
+# carries the copy-paste commands instead of buttons.
+SLACK_BOT_TOKEN = _env("SMS_AGENT_SLACK_BOT_TOKEN", "")
+SLACK_APP_TOKEN = _env("SMS_AGENT_SLACK_APP_TOKEN", "")
+SLACK_CHANNEL = _env("SMS_AGENT_SLACK_CHANNEL", "")
+
+
+def slack_buttons_enabled() -> bool:
+    """Can we post a draft with buttons on it?"""
+    return bool(SLACK_BOT_TOKEN and SLACK_CHANNEL)
+
+
+def slack_listener_ready() -> bool:
+    """Can a tap actually reach this machine? Posting buttons nobody can
+    answer is worse than posting none, so draft_for_approval checks this."""
+    return slack_buttons_enabled() and bool(SLACK_APP_TOKEN)
+
 # ---------------------------------------------------------------- model
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "")
 MODEL = _env("SMS_AGENT_MODEL", "claude-opus-5")
@@ -115,6 +146,15 @@ QUIET_END_HOUR = int(_env("SMS_AGENT_QUIET_END", "21"))
 # It is the most common reply to touch 1, the answer never varies, and the copy
 # is reviewed rather than generated.
 ANSWER_WHO = _env("SMS_AGENT_ANSWER_WHO", "1") not in ("0", "false", "no")
+
+# Text a courtesy goodbye back to someone who just said no. OFF (Oren,
+# 2026-09-06): it buys nothing. It spends a send out of the 25/day/number cap,
+# it lands a day or two late because a soft no is nobody's first approval of
+# the morning, and it hands an already-closed thread one more chance to answer
+# STOP. The disposition is the entire value of a no, and that is taken either
+# way. Ty ships this on; nine such drafts sat unsent for two days before the
+# default flipped.
+REPLY_TO_NO = _env("SMS_AGENT_REPLY_TO_NO", "0") in ("1", "true", "True")
 
 # Daily campaign window, Eastern (Ty, 2026-08-11). The recipient-local quiet
 # hours above still apply on top: this is when WE work, that is when THEY may

@@ -16,3 +16,7 @@ numpy>=1.26.0
 dropbox>=12.0.2
 openpyxl>=3.1.0
 reportlab>=4.0.0
+
+# Slack buttons for SMS draft approval (Socket Mode listener only; posting
+# and chat.update go through plain requests). src/sms_agent/slack_buttons.py
+slack_sdk>=3.44.1

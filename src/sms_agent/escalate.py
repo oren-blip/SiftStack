@@ -37,7 +37,40 @@ def _is_discord(url: str) -> bool:
     return "discord.com" in (url or "")
 
 
+def _post_api(text: str, blocks: Optional[list] = None) -> bool:
+    """Post as the bot rather than through the webhook.
+
+    Required for buttons: a webhook message has no identity we can come back
+    to, and `chat.update` needs the channel + ts that only chat.postMessage
+    hands back. Slack answers HTTP 200 with {"ok": false} on a refusal, so the
+    status code alone is not the check.
+    """
+    try:
+        resp = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            json={
+                "channel": config.SLACK_CHANNEL,
+                "text": text,
+                **({"blocks": blocks} if blocks else {}),
+            },
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            timeout=15,
+        )
+        body = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("slack chat.postMessage failed: %s", exc)
+        return False
+    if not body.get("ok"):
+        # invalid_auth / channel_not_found / not_in_channel are the three that
+        # actually happen, and all three are setup mistakes worth naming.
+        log.warning("slack chat.postMessage refused: %s", body.get("error"))
+        return False
+    return True
+
+
 def _post(text: str, blocks: Optional[list] = None) -> bool:
+    if config.slack_buttons_enabled():
+        return _post_api(text, blocks)
     url = config.SLACK_WEBHOOK_URL
     if not url:
         log.warning("no SMS_AGENT_SLACK_WEBHOOK configured; escalation not delivered")
@@ -266,9 +299,89 @@ def draft_for_approval(
         lines.append(f":warning: blocked by validator: {', '.join(blocked)}")
     if record_uuid:
         lines.append(RECORD_URL.format(uuid=record_uuid))
-    lines.append(f"Approve with: `python src/sms_agent/cli.py approve {store.clean_phone(phone)}`")
+
+    # Buttons when a tap can actually reach this machine, typed commands when
+    # it cannot. Never buttons without a listener: a button that silently does
+    # nothing is worse than no button, because it looks handled.
+    if config.slack_listener_ready():
+        text = "\n".join(lines)
+        return _post(text, [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            action_buttons(phone, record_uuid),
+        ])
+
+    # Both commands, as one copy-paste block. `approve` only moves the draft
+    # into the queue; `work` is the only thing that sends, and it is the step
+    # that got forgotten -- 13 drafts sat approved-but-unsent for four days
+    # (Oren, 2026-09-06) because the post named the first half of the job only.
+    # Two lines rather than one chained line on purpose: this is pasted into
+    # PowerShell, where `&&` is a parser error.
+    lines.append("Approve and send - paste all three lines:")
+    lines.append(
+        "```\ncd {root}\npython src/sms_agent/cli.py approve {ph}\n"
+        "python src/sms_agent/cli.py work\n```".format(
+            root=config.ROOT, ph=store.clean_phone(phone)
+        )
+    )
     text = "\n".join(lines)
     return _post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+
+
+# The four answers a draft can get. Kept here beside the post that renders them
+# so a new button cannot be added without deciding what it does: the listener
+# refuses an action_id it does not recognise.
+ACTIONS = {
+    "sms_approve": "Approve & send",
+    "sms_handle": "I'll handle it",
+    "sms_not_lead": "Not a lead",
+    "sms_wrong": "Wrong number",
+}
+
+
+def action_buttons(phone: str, record_uuid: str = "") -> dict:
+    """The actions block under a draft.
+
+    `value` carries everything the handler needs, because a Slack payload
+    arrives with no memory of what was posted and looking it up again by
+    channel+ts would be a second failure point.
+
+    Approve and Wrong number confirm first. These get tapped on a phone, where
+    a mis-tap is a text to a stranger or a suppressed number, and neither is
+    reversible from the channel.
+    """
+    ph = store.clean_phone(phone)
+    value = json.dumps({"phone": ph, "uuid": record_uuid})[:1900]
+
+    def button(action_id: str, style: str = "", confirm: str = "") -> dict:
+        el = {
+            "type": "button",
+            "action_id": action_id,
+            "text": {"type": "plain_text", "text": ACTIONS[action_id]},
+            "value": value,
+        }
+        if style:
+            el["style"] = style
+        if confirm:
+            el["confirm"] = {
+                "title": {"type": "plain_text", "text": ACTIONS[action_id]},
+                "text": {"type": "mrkdwn", "text": confirm},
+                "confirm": {"type": "plain_text", "text": "Yes"},
+                "deny": {"type": "plain_text", "text": "Cancel"},
+            }
+        return el
+
+    return {
+        "type": "actions",
+        "block_id": f"sms_draft:{ph}",
+        "elements": [
+            button("sms_approve", "primary",
+                   f"Text {_fmt_phone(ph)} the message above, right now?"),
+            button("sms_handle"),
+            button("sms_not_lead"),
+            button("sms_wrong", "danger",
+                   f"Stop texting {_fmt_phone(ph)} for good? This cannot be undone from Slack."),
+        ],
+    }
 
 
 def alert(title: str, detail: str = "", record_uuid: str = "", kind: str = "ops") -> bool:

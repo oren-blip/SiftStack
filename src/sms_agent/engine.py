@@ -224,6 +224,19 @@ def handle_inbound(payload: dict) -> dict:
         outcome["action"] = "handoff"
         return outcome
 
+    if result.intent == "NOT_INTERESTED" and not config.REPLY_TO_NO:
+        # Close it out and stay quiet. See config.REPLY_TO_NO for why.
+        #
+        # This sits ABOVE the phase gate on purpose. The close used to live
+        # inside _do_reply, which meant it only ran at phase 3+ as a side
+        # effect of drafting: below that a soft no was classified and then
+        # forgotten, never closed and never dispositioned. Making the reply
+        # optional makes the close unconditional.
+        outcome["actions"].append(_close_not_interested(phone, record_uuid, result.rationale))
+        outcome["actions"].append("no reply drafted: REPLY_TO_NO is off")
+        outcome["action"] = "closed_not_interested"
+        return outcome
+
     if config.PHASE < 3:
         # Below phase 3 the agent writes nothing back, so a live person who
         # asked us a direct question gets silence unless someone is told.

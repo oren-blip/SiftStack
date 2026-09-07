@@ -7,6 +7,7 @@
     python src/sms_agent/cli.py simulate 8652548712 "how much are you offering"
     python src/sms_agent/cli.py thread 8652548712
     python src/sms_agent/cli.py approve 8652548712
+    python src/sms_agent/cli.py slack-listen           # hold the button socket open
     python src/sms_agent/cli.py status
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ if __package__ in (None, ""):  # allow `python src/sms_agent/cli.py`
     __package__ = "sms_agent"
 
 from . import (backfill, campaign, classify, config, crm, engine, escalate, respond,
-               seed, sender_pool, smrtphone, store, transport, worker)
+               seed, sender_pool, slack_buttons, smrtphone, store, transport, worker)
 
 
 def cmd_doctor(args) -> int:
@@ -65,6 +66,14 @@ def cmd_doctor(args) -> int:
         print("           risk the model inventing a name.")
 
     print(f"slack          {'configured' if config.SLACK_WEBHOOK_URL else 'NOT configured'}")
+    if config.slack_listener_ready():
+        print("slack buttons  ON  (drafts post with Approve / handle / not a lead / wrong number)")
+        print("               the listener must be running: cli.py slack-listen")
+    elif config.slack_buttons_enabled():
+        print("slack buttons  OFF - bot token + channel are set but SMS_AGENT_SLACK_APP_TOKEN")
+        print("               is missing, so nothing could receive a tap. Posting commands.")
+    else:
+        print("slack buttons  OFF - webhook only, drafts post copy-paste commands")
     print(f"playbook       {len(__import__('sms_agent.knowledge', fromlist=['x']).playbook())} chars")
 
     if config.WEBHOOK_SECRET:
@@ -99,6 +108,17 @@ def cmd_work(args) -> int:
         return 0
     print(json.dumps(worker.run_once(), indent=2))
     return 0
+
+
+def cmd_slack_listen(args) -> int:
+    """Hold the Socket Mode connection open so Slack buttons work.
+
+    Long-running and meant to be a scheduled task, not something typed.
+    Without it the buttons still render but a tap does nothing, which is
+    why draft_for_approval refuses to draw them unless the app token is set.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    return slack_buttons.listen()
 
 
 def cmd_map(args) -> int:
@@ -520,6 +540,10 @@ def main() -> int:
     p.add_argument("--loop", action="store_true")
     p.add_argument("--interval", type=int, default=20)
     p.set_defaults(fn=cmd_work)
+
+    sub.add_parser(
+        "slack-listen", help="hold the Slack button socket open (long-running)"
+    ).set_defaults(fn=cmd_slack_listen)
 
     p = sub.add_parser("map", help="backfill phone -> record mappings from a CSV")
     p.add_argument("--csv", required=True)
