@@ -928,60 +928,25 @@ def pr_push_queue_line() -> str:
             f"— run  python pr_upgrade_step.py --queued  ({preview})")
 
 
-def kpi_totals(today: date) -> tuple[Counter, Counter, str] | None:
-    """(this-week totals, last-week totals, latest ledger day) from
-    output/kpi_daily_ledger.csv (maintained by scripts/kpi_refresh.py, which
-    pulls DataSift call activity nightly). None when the ledger is missing
-    or has no dials this week/last week — quiet weeks add no section."""
-    ledger = OUTPUT / "kpi_daily_ledger.csv"
-    if not ledger.exists():
-        return None
+def kpi_model_for(today: date) -> dict | None:
+    """Ty's phone-and-text scorecard (scripts/kpi_model.py) built from the
+    local ledger + SMS agent DB only; None when there is nothing to show."""
     try:
-        with open(ledger, encoding="utf-8", newline="") as fh:
-            rows = {r["day"]: r for r in csv.DictReader(fh)}
-    except Exception:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import kpi_model
+        return kpi_model.build(today)
+    except Exception as e:  # never let the KPI block sink the report
+        print(f"KPI section skipped ({type(e).__name__}: {e})", file=sys.stderr)
         return None
-
-    def _tot(day_from: date, day_to: date) -> Counter:
-        t = Counter()
-        for d, r in rows.items():
-            if day_from.isoformat() <= d <= day_to.isoformat():
-                for f in ("dials", "answered", "conversations", "correct_numbers",
-                          "leads", "not_interested", "talk_seconds", "sms_sent"):
-                    t[f] += int(r.get(f) or 0)
-        return t
-
-    monday = today - timedelta(days=today.weekday())
-    wk = _tot(monday, today)
-    lw = _tot(monday - timedelta(days=7), monday - timedelta(days=1))
-    if not wk["dials"] and not lw["dials"]:
-        return None
-    return wk, lw, (max(rows) if rows else "")
 
 
 def kpi_section(today: date, condensed: bool = False) -> list[str]:
-    """Short phone-KPI text block; [] when kpi_totals has nothing to show."""
-    totals = kpi_totals(today)
-    if not totals:
+    """Phone + text KPI text block in Ty's Day-5 vocabulary; [] when quiet."""
+    k = kpi_model_for(today)
+    if not k:
         return []
-    wk, lw, stale = totals
-
-    def _line(label: str, t: dict) -> str:
-        ans = f"{t['answered'] / t['dials'] * 100:.0f}%" if t["dials"] else "-"
-        mins = t["talk_seconds"] // 60
-        return (f"  {label:13} {t['dials']} dials, {t['answered']} answered ({ans}), "
-                f"{t['conversations']} conversations, {t['correct_numbers']} correct #s, "
-                f"{t['leads']} leads, {mins}m talk")
-
-    out = ["PHONES THIS WEEK"]
-    out.append(_line("Mon-today:", wk))
-    out.append(_line("Last week:", lw))
-    if wk["sms_sent"] or lw["sms_sent"]:
-        out.append(f"  Texts sent:   {wk['sms_sent']} this week, {lw['sms_sent']} last week")
-    if stale and (today - date.fromisoformat(stale)).days > 2:
-        out.append(f"  (numbers only current through {stale} — KPI refresh hasn't run since)")
-    out.append("")
-    return out
+    import kpi_model
+    return kpi_model.render_text(k, condensed=condensed)
 
 
 def summarize_week_improvements(monday: date) -> list[str]:
@@ -1706,6 +1671,52 @@ def _stat_tile(number, label, accent_bg, accent_fg) -> str:
     )
 
 
+def _kpi_html(k: dict) -> list[str]:
+    """Ty's scorecard as email HTML: the period table, you-vs-Ty, the deal
+    math, and any flags (red) with the action they call for."""
+    import kpi_model
+    parts: list[str] = []
+    parts.append(_h("Phones & texts — Ty's scorecard"))
+    rows = []
+    for p in k["periods"]:
+        c = kpi_model.period_cells(p)
+        rows.append([f'<span style="white-space:nowrap;">{_esc(c["label"])}</span>',
+                     c["dials"], c["answer"], c["convos"],
+                     f'<b>{c["correct"]}</b>', c["via_text"], c["dials_per_correct"],
+                     c["wrong_dead"], c["ni"], c["leads"], c["texts"]])
+    note = ("Correct = phones newly marked CORRECT in DataSift (by the caller, or by the SMS "
+            "agent on an owner reply). Via text = owners who replied to a text. "
+            "Convos = calls of 60s+. Dials/corr = dials per correct number (lower is better). "
+            "The 4-week row is per dial day.")
+    if k["stale_note"]:
+        note = k["stale_note"] + " " + note
+    parts.append(_tbl(["", "Dials", "Ans%", "Convos", "Correct", "via text", "Dials/corr",
+                       "Wrong+dead", "NI", "Leads", "Texts out/in"], rows, note))
+
+    vs = [[_esc(m), f"<b>{_esc(you)}</b>", _esc(ty), _esc(read)] for m, you, ty, read in k["vs_ty"]]
+    parts.append(_p("<b>Vs Ty's numbers</b> (your last 30 days against what he showed on Day 5, "
+                    "Aug 21 2026):", color="#374151", size="13px"))
+    parts.append(_tbl(["Metric", "You", "Ty", "Read it as"], vs))
+
+    parts.append(_p("<b>Deal math</b> (last 30 days):", color="#374151", size="13px"))
+    parts.append(f'<ul style="{_F}font-size:13px;color:#374151;line-height:1.55;'
+                 f'margin:0 0 10px;padding-left:20px;">'
+                 + "".join(f'<li style="margin:0 0 5px;">{_esc(x)}</li>' for x in k["deal_math"])
+                 + "</ul>")
+
+    if k["flags"]:
+        items = "".join(f'<li style="margin:0 0 6px;">{_esc(f)}</li>' for f in k["flags"])
+        parts.append(
+            f'<div style="background:#fdf2f2;border:1px solid #f3c2c2;border-radius:8px;'
+            f'padding:10px 14px;margin:6px 0 10px;">'
+            f'<div style="{_F}font-size:11px;font-weight:700;letter-spacing:.6px;'
+            f'text-transform:uppercase;color:#b42318;margin-bottom:6px;">'
+            f"Flags — Ty: a KPI that doesn't fire an action is worthless</div>"
+            f'<ul style="{_F}font-size:13px;color:#7a271a;line-height:1.5;margin:0;'
+            f'padding-left:18px;">{items}</ul></div>')
+    return parts
+
+
 def _tonight_html(t: dict) -> str:
     """Tonight's run as short prose — headline sentence, then money + blips."""
     if not t.get("ok"):
@@ -1877,25 +1888,9 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
                          f'+{more_wks} more week(s)</span>')
         parts.append(f"<div>{wk_chips}</div>")
 
-    kpi = kpi_totals(d)
+    kpi = kpi_model_for(d)
     if kpi:
-        wk_t, lw_t, stale = kpi
-
-        def _kpirow(label: str, t: Counter) -> list[str]:
-            ans = f"{t['answered'] / t['dials'] * 100:.0f}%" if t["dials"] else "-"
-            return [_esc(label), str(t["dials"]), f"{t['answered']} ({ans})",
-                    str(t["conversations"]), str(t["correct_numbers"]),
-                    str(t["leads"]), f"{t['talk_seconds'] // 60}m"]
-
-        note = ""
-        if stale and (d - date.fromisoformat(stale)).days > 2:
-            note = f"Numbers only current through {stale} — the KPI refresh hasn't run since."
-        parts.append(_h("Phones this week"))
-        parts.append(_tbl(["", "Dials", "Answered", "Convos", "Correct #s", "Leads", "Talk"],
-                          [_kpirow("Mon-today", wk_t), _kpirow("Last week", lw_t)], note))
-        if wk_t["sms_sent"] or lw_t["sms_sent"]:
-            parts.append(_p(f"Texts sent: {wk_t['sms_sent']} this week, "
-                            f"{lw_t['sms_sent']} last week.", color="#8a919a", size="12.5px"))
+        parts.extend(_kpi_html(kpi))
 
     parts.append(_h("This week so far"))
     phone_bit = (f"; {len(m['with_phone'])} already have a phone the pipeline found itself"

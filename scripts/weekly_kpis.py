@@ -26,12 +26,15 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_SCRIPTS = ROOT / ".claude" / "skills" / "kpi-engine" / "scripts"
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 LEDGER = ROOT / "output" / "kpi_daily_ledger.csv"
 
 LEDGER_FIELDS = ["day", "dials", "answered", "noanswer", "conversations",
                  "meaningful_conversations", "correct_numbers", "wrong_numbers",
                  "dead_numbers", "dnc_numbers", "leads", "not_interested",
-                 "follow_ups", "appointments", "talk_seconds", "sms_sent"]
+                 "follow_ups", "appointments", "talk_seconds", "sms_sent",
+                 "sms_received", "records_touched"]
 
 
 def _load_pull_kpis(called_only: bool = True):
@@ -83,10 +86,23 @@ def load_ledger() -> dict[str, dict]:
     return rows
 
 
-def upsert_ledger(daily: dict[str, dict]) -> None:
+def upsert_ledger(daily: dict[str, dict], covered_from: str = "", covered_to: str = "") -> None:
+    """Write the pulled days into the ledger. Days inside [covered_from,
+    covered_to] with no activity get a zero row, so the ledger's last day is
+    the last day the refresh actually looked at (a quiet weekend is not a
+    missed refresh)."""
     rows = load_ledger()
+    if covered_from and covered_to:
+        day = datetime.date.fromisoformat(covered_from)
+        end = datetime.date.fromisoformat(covered_to)
+        daily = dict(daily)
+        while day <= end:
+            daily.setdefault(day.isoformat(), {})
+            day += datetime.timedelta(days=1)
     for day, d in daily.items():
-        rows[day] = {"day": day, **{f: int(d.get(f, 0)) for f in LEDGER_FIELDS[1:]}}
+        rows[day] = {"day": day, **{f: int(d.get(f, 0) or 0) for f in LEDGER_FIELDS[1:]}}
+        # pull_kpis keeps the day's touched records as a set; the ledger stores the count
+        rows[day]["records_touched"] = len(d.get("records") or ())
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
     with open(LEDGER, "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=LEDGER_FIELDS)
@@ -117,11 +133,14 @@ def pct(n, d) -> str:
 
 
 def weekly_rollup(daily_rows: dict[str, dict]) -> list[dict]:
-    weeks: dict[tuple[int, int], dict] = defaultdict(lambda: {f: 0 for f in LEDGER_FIELDS[1:]})
+    weeks: dict[tuple[int, int], dict] = defaultdict(
+        lambda: {**{f: 0 for f in LEDGER_FIELDS[1:]}, "dial_days": 0})
     for day, d in daily_rows.items():
         wk = weeks[week_key(day)]
         for f in LEDGER_FIELDS[1:]:
             wk[f] += int(d.get(f, 0) or 0)
+        if int(d.get("dials", 0) or 0) > 0:
+            wk["dial_days"] += 1
     out = []
     for (y, w) in sorted(weeks):
         mon, sun = week_bounds(y, w)
@@ -130,24 +149,66 @@ def weekly_rollup(daily_rows: dict[str, dict]) -> list[dict]:
 
 
 def render_weekly_md(weeks: list[dict], day_from: str, day_to: str) -> str:
+    """By-ISO-week table in Ty's vocabulary (correct numbers are the KPI), then
+    the whole range against his August-2026 benchmarks and the deal math."""
+    from collections import Counter
+    import kpi_model as km
+
+    def text_for(wk: dict) -> dict:
+        return km.text_channel(datetime.date.fromisoformat(wk["from"]),
+                               datetime.date.fromisoformat(wk["to"]))
+
     lines = [f"# Weekly KPIs, {day_from} to {day_to}", "",
-             "| Wk | Mon-Sun | Dials | Ans% | Convos (120s+) | Correct | Wrong/Dead | NI | Leads | Talk | Texts |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
-    tot = {f: 0 for f in LEDGER_FIELDS[1:]}
+             "Correct numbers are the KPI (Ty, Day 5): every ~20 right-party contacts on "
+             "first-to-market data is a deal inside 6 months. Conv% = calls of 60s+ per dial. "
+             "'via text' = numbers the owner confirmed by replying to a text (from the SMS agent, "
+             "Aug 25 2026 on).", "",
+             "| Wk | Mon-Sun | Days | Dials | Ans% | Conv% | Correct | via text | Dials/corr | "
+             "Wrong+dead | NI | Leads | Texts out/in | Talk |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    tot = Counter()
     for wk in weeks:
-        for f in tot:
+        for f in LEDGER_FIELDS[1:]:
             tot[f] += wk[f]
+        tot["dial_days"] += wk["dial_days"]
+        tx = text_for(wk)
+        via = (str(tx["right_party"]) if tx["available"] and (wk["correct_numbers"] or tx["right_party"])
+               else "-")
+        replies = wk["sms_received"] or (tx["replies"] if tx["available"] else 0)
+        dpc = f"{wk['dials'] / wk['correct_numbers']:.1f}" if wk["correct_numbers"] else "-"
         lines.append(
-            f"| W{wk['week']:02d} | {wk['from'][5:]} to {wk['to'][5:]} | {wk['dials']} | "
-            f"{pct(wk['answered'], wk['dials'])} | {wk['conversations']} ({wk['meaningful_conversations']}) | "
-            f"{wk['correct_numbers']} | {wk['wrong_numbers']}/{wk['dead_numbers']} | "
-            f"{wk['not_interested']} | {wk['leads']} | {fmt_hms(wk['talk_seconds'])} | {wk['sms_sent']} |")
+            f"| W{wk['week']:02d} | {wk['from'][5:]} to {wk['to'][5:]} | {wk['dial_days']} | {wk['dials']} | "
+            f"{pct(wk['answered'], wk['dials'])} | {pct(wk['conversations'], wk['dials'])} | "
+            f"**{wk['correct_numbers']}** | {via} | {dpc} | "
+            f"{wk['wrong_numbers'] + wk['dead_numbers']} | {wk['not_interested']} | {wk['leads']} | "
+            f"{wk['sms_sent']}/{replies} | {fmt_hms(wk['talk_seconds'])} |")
+
+    t = tot
+    d_from, d_to = datetime.date.fromisoformat(day_from), datetime.date.fromisoformat(day_to)
+    tx_all = km.text_channel(d_from, d_to)
+    dpc_all = f"{t['dials'] / t['correct_numbers']:.1f}" if t["correct_numbers"] else "-"
+    per_day = f" ({t['dials'] / t['dial_days']:.0f}/day)" if t["dial_days"] else ""
     lines += ["",
-              f"**Totals:** {tot['dials']} dials, {tot['answered']} answered "
-              f"({pct(tot['answered'], tot['dials'])}), {tot['conversations']} conversations "
-              f"({tot['meaningful_conversations']} meaningful), {tot['correct_numbers']} correct numbers, "
-              f"{tot['leads']} leads, {tot['not_interested']} not interested, "
-              f"talk {fmt_hms(tot['talk_seconds'])}, {tot['sms_sent']} texts sent."]
+              f"**Totals:** {t['dials']} dials over {t['dial_days']} dial days{per_day}, "
+              f"{t['answered']} answered ({pct(t['answered'], t['dials'])}), "
+              f"{t['conversations']} conversations ({pct(t['conversations'], t['dials'])} of dials), "
+              f"**{t['correct_numbers']} correct numbers** ({dpc_all} dials each), "
+              f"{t['wrong_numbers'] + t['dead_numbers']} wrong/dead, {t['not_interested']} not interested, "
+              f"{t['leads']} leads, talk {fmt_hms(t['talk_seconds'])}, "
+              f"{t['sms_sent']} texts out / {t['sms_received'] or tx_all.get('replies', 0)} in."]
+
+    lines += ["", "## Vs Ty's August-2026 benchmarks (whole range)", "",
+              "| Metric | You | Ty | Read it as |", "|---|---|---|---|"]
+    for metric, you, ty, read in km.vs_ty_rows(t, tx_all, {}):
+        lines.append(f"| {metric} | **{you}** | {ty} | {read} |")
+
+    lines += ["", "## Deal math (whole range)", ""]
+    for line in km.deal_math(t, tx_all):
+        lines.append(f"- {line}")
+    lines += ["", "Definitions: a correct number is a phone whose final status in the window is "
+              "CORRECT (set by the caller, or by the SMS agent when the owner replies). A lead is a "
+              "record whose final status in the window is a lead status. Statuses are counted by "
+              "final state, so a lead later marked not-interested inside one pull counts once, as NI."]
     return "\n".join(lines)
 
 
@@ -176,7 +237,7 @@ def main() -> int:
         pk = _load_pull_kpis()
         token = pk.get_token()
         res = pk.pull(token, day_from, day_to, tz, pk.load_benchmarks())
-        upsert_ledger(res["daily"])
+        upsert_ledger(res["daily"], day_from, day_to)
         print(f"[ledger] upserted {len(res['daily'])} day(s) into {LEDGER}", file=sys.stderr)
         if args.refresh_days:
             return 0  # nightly mode: ledger update is the whole job

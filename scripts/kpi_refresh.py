@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import sys
 from pathlib import Path
@@ -79,9 +80,40 @@ def main() -> int:
     day_from = (today - datetime.timedelta(days=args.days - 1)).isoformat()
     pk = _load_pull_kpis()
     res = pk.pull(tok, day_from, today.isoformat(), tz, pk.load_benchmarks())
-    upsert_ledger(res["daily"])
+    upsert_ledger(res["daily"], day_from, today.isoformat())
     print(f"[kpi] ledger refreshed for {day_from}..{today}", file=sys.stderr)
+    write_pool(pk, tok, today)
     return 0
+
+
+def write_pool(pk, tok: str, today: datetime.date) -> None:
+    """Ty's contact rate is right-party contacts over the doors on the list
+    being worked (261 / 1,457 = 17%). Our denominator: records with at least
+    one call attempt that were touched in the window. Three count-only
+    searches; best-effort, never fails the refresh."""
+    pool_path = ROOT / "output" / "kpi_pool.json"
+    day_after = (today + datetime.timedelta(days=1)).isoformat()
+
+    def count(must: dict) -> int:
+        body = {"limit": 1, "offset": 0, "ordering": "-updated",
+                "query": {"must": {"property_type": "clean",
+                                   "predictivecall_attempts": [1, None], **must}}}
+        r = pk.req(tok, "/api/internal/property/", method="POST", body=body,
+                   method_override="GET")
+        return int(r.get("count") or 0)
+
+    try:
+        pool = {
+            "as_of": today.isoformat(),
+            "worked_30d": count({"updated": [(today - datetime.timedelta(days=29)).isoformat(),
+                                             day_after]}),
+            "worked_mtd": count({"updated": [today.replace(day=1).isoformat(), day_after]}),
+            "worked_all": count({}),
+        }
+        pool_path.write_text(json.dumps(pool, indent=1), encoding="utf-8")
+        print(f"[kpi] pool: {pool}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[kpi] pool count skipped: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

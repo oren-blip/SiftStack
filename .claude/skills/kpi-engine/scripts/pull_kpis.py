@@ -201,7 +201,9 @@ def blank():
 
 
 def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
-    lead_set = set(bench["lead_statuses"])
+    # The log writes statuses in lowercase ("hot lead"); match case-insensitively
+    # or every lead reads 0 (it did, Aug 2026).
+    lead_set = {s.lower() for s in bench["lead_statuses"]}
     excluded = {e.lower() for e in bench["excluded_callers"]}
     conv_s, mean_s, vm_s = (bench["conversation_min_seconds"],
                             bench["meaningful_conversation_min_seconds"],
@@ -262,6 +264,7 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
                 call = (ev.get("payload") or {}).get("call") or {}
                 if et == "owner.call.made":
                     bump(email, day, "dials")
+                    daily[day]["records"].add(uuid)
                     for scope in (acct, per[email]):
                         scope["records"].add(uuid)
                         scope["days"].add(day)
@@ -287,8 +290,10 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             elif et == "owner.sms.sent":
                 eu = ((ev.get("payload") or {}).get("sms") or {}).get("external_user") or {}
                 bump(eu.get("email") or author_of(ev)[0], day, "sms_sent")
+                daily[day]["records"].add(uuid)
             elif et == "owner.sms.received":
                 acct["sms_received"] += 1
+                daily[day]["sms_received"] += 1
             elif et == "owner.phone.status.updated":
                 phone = ((ev.get("payload") or {}).get("owner") or {}).get("phone")
                 ns = new_status(ev, "phone", p_idx)
@@ -309,6 +314,7 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
 
     for phone, (dt, ns, email) in phone_final.items():
         day = dt.date().isoformat()
+        ns = (ns or "").upper()
         if ns in CORRECT_STATES:
             bump(email, day, "correct_numbers")
         elif ns in WRONG_STATES:
@@ -319,6 +325,7 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             bump(email, day, "dnc_numbers")
     for uuid, (dt, ns, email) in prop_final.items():
         day = dt.date().isoformat()
+        ns = (ns or "").lower()
         if ns in lead_set:
             bump(email, day, "leads")
         elif ns == "not_interested":
@@ -354,7 +361,7 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
             _, ns, email = prop_final[uuid]
             d["status_set_to"] = ns
             d["status_set_by"] = names.get(email, email)
-            d["is_lead"] = ns in lead_set
+            d["is_lead"] = (ns or "").lower() in lead_set
         details.append(d)
     details.sort(key=lambda d: (-d["is_lead"], -d["dials"]))
     return {"from": day_from, "to": day_to, "account_totals": acct,

@@ -1,0 +1,11 @@
+{
+  "_source": "Ty Garrett, 5 Day Deal Flow Challenge, Day 5, 2026-08-21 (August cohort). Mirrors scripts/kpi_model.py TY.",
+  "dials_per_correct_scored": 13.5,
+  "dials_per_correct_blind": 32,
+  "correct_numbers_per_deal": 20,
+  "leads_per_contract": [5, 15],
+  "appointment_take_rate": 0.25,
+  "lead_statuses": ["Cold Lead", "Warm Lead", "Hot Lead", "new_lead", "New Lead",
+                    "No Contact New Lead", "Nurture New Lead"],
+  "excluded_callers": []
+}
