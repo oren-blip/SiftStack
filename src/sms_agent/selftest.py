@@ -143,6 +143,9 @@ def run(live_model: bool = False) -> int:
     print("\ndeterministic classification")
     for text, expect in (
         ("STOP", "OPT_OUT"),
+        ("END", "OPT_OUT"),        # what the SMS footer tells them to reply
+        ("STOPALL", "OPT_OUT"),    # on the registered keyword list
+        ("Opt out", "OPT_OUT"),
         ("please stop texting me", "OPT_OUT"),
         ("take me off your list", "OPT_OUT"),
         ("wrong number, I don't own that", "WRONG_NUMBER"),

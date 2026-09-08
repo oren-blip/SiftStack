@@ -23,7 +23,11 @@ from . import config
 # obviously understand. In a back-and-forth, ignoring "stop texting me" because
 # it was not the literal word STOP is indefensible.
 OPT_OUT = [
-    r"^\s*(stop|quit|end|cancel|unsubscribe|revoke|optout)\s*[.!]*\s*$",
+    # Every keyword on the registered 10DLC campaign's opt-out list (smrtPhone
+    # Trust Center, checked 2026-09-07): OPTOUT CANCEL END QUIT UNSUBSCRIBE
+    # REVOKE STOP STOPALL. The SMS footer tells people to "Reply END", so a
+    # bare keyword is the most likely form an opt-out takes.
+    r"^\s*(stop|stopall|quit|end|cancel|unsubscribe|revoke|opt\s*-?\s*out)\s*[.!]*\s*$",
     r"\bstop\s+(texting|messaging|contacting|calling|sending)\b",
     r"\bunsubscribe\b",
     r"\bopt\s*-?\s*out\b",
