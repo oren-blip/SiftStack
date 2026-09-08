@@ -25,9 +25,10 @@ from __future__ import annotations
 import html
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
-from . import store
+from . import config, store
 
 log = logging.getLogger(__name__)
 
@@ -115,11 +116,32 @@ def run(pages: int = 2, apply: bool = True) -> dict:
     seen_content: set = set()
     results: list[dict] = []
 
+    # Freshness, without a timestamp. The log returns `created_at` as null, so
+    # the only ordering we have is the integer id. A message is fresh when its
+    # id is above the high-water mark of the PREVIOUS pass and that pass was
+    # recent -- meaning it arrived in the last minute or so of a live clock.
+    # After downtime the previous pass is old, so nothing in the backlog is
+    # fresh, whatever its id. Read-only previews never move the mark.
+    watermark = int(store.get_meta("inbound_watermark_id") or 0)
+    last_pass = store.get_meta("inbound_last_pass")
+    recent_pass = False
+    if last_pass:
+        try:
+            age = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(last_pass)
+            ).total_seconds() / 60
+            recent_pass = age <= config.WHO_FRESH_MINUTES
+        except ValueError:
+            recent_pass = False
+    high = watermark
+
     for row in rows:
         direction = (row.get("direction") or "").lower()
         sms_id = str(row.get("id") or "")
         if not sms_id:
             continue
+        if sms_id.isdigit():
+            high = max(high, int(sms_id))
 
         if direction == "outbound":
             outbound_seen += 1
@@ -133,6 +155,9 @@ def run(pages: int = 2, apply: bool = True) -> dict:
             "to": _clean(row.get("toNum")),
             "message": _clean(row.get("content")),
             "source": "reconcile",
+            "fresh": bool(
+                recent_pass and watermark and sms_id.isdigit() and int(sms_id) > watermark
+            ),
         }
         # The id key alone is NOT enough. smrtPhone identifies the same text two
         # different ways: the webhook posts a uuid ("b6df1664-...") and this log
@@ -184,6 +209,10 @@ def run(pages: int = 2, apply: bool = True) -> dict:
             store.finish_event(event_id, "error", str(exc)[:300])
         replayed += 1
         log.info("reconcile replayed missed inbound from %s", payload["from"])
+
+    if apply:
+        store.set_meta("inbound_watermark_id", str(high))
+        store.set_meta("inbound_last_pass", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     return {
         "rows_scanned": len(rows),

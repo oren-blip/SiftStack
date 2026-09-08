@@ -33,6 +33,10 @@ holds this too.
 | **Not a lead** | Closes as a soft no. Nothing is texted back. |
 | **Wrong number** | Suppresses the line locally, for good. Confirms first. |
 
+A **hot-lead handoff** post gets two buttons of its own: **Got it** (records
+who took it) and **Not a lead** (closes it out). Neither sends anything or
+touches the CRM.
+
 Once pressed, the buttons are **removed from the message** and replaced with a
 line saying who pressed what and what happened. A draft either still has
 buttons (needs you) or it does not (done) — no scrolling to work out which.
@@ -120,6 +124,26 @@ up to 99x every minute, one instance only, hidden window via the VBS. This is
   instead of up to ten. `SMS_AGENT_INBOUND_INTERVAL=0` turns it off (re-enable
   the poll task if you do, or nothing reads inbound). Hourly heartbeat line in
   the log so liveness is visible without waiting for a reply.
+
+- *Digest clock* — at 8am local (`SMS_AGENT_DIGEST_HOUR`, -1 off) posts the
+  day's readout: drafts waiting, threads with a person. Once per day, keyed on
+  the date, so a restart inside the hour cannot double-post.
+
+**Two more things the agent now does on its own (2026-09-07):**
+
+- **Nudges you when a handed-off seller texts again.** After a handoff the
+  agent is silent to the seller by design; it used to be silent to you too, for
+  14 days. Now any new text on a thread a person owns posts a short "they
+  texted again" line -- at most once per 30 minutes per thread
+  (`SMS_AGENT_FOLLOWUP_PING_MINUTES`, 0 off). No draft, no CRM write.
+- **Answers "who is this?" without a tap** -- from the reviewed template pool,
+  no model -- but ONLY when the message is provably fresh. The smrtPhone log has
+  no per-message timestamp, so "fresh" means: first seen by an inbound pass that
+  ran within `SMS_AGENT_WHO_FRESH_MINUTES` (5) of the previous pass, with an id
+  above that pass's high-water mark. A backlog absorbed after downtime is never
+  fresh and is drafted for approval instead. That is the 2026-08-24 incident
+  (four stale answers queued to weeks-old questions) made structurally
+  impossible rather than merely switched off.
 
 **The .cmd is the supervisor, not Task Scheduler.** The hidden VBS launcher
 returns instantly, so the scheduler believes the job finished the moment it

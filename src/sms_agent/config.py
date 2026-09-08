@@ -146,6 +146,14 @@ QUIET_END_HOUR = int(_env("SMS_AGENT_QUIET_END", "21"))
 # It is the most common reply to touch 1, the answer never varies, and the copy
 # is reviewed rather than generated.
 ANSWER_WHO = _env("SMS_AGENT_ANSWER_WHO", "1") not in ("0", "false", "no")
+# At phase 3+ the template answer goes out WITHOUT approval, but only for a
+# message that is provably fresh: seen for the first time by a pass that ran
+# within this many minutes of the previous pass. The smrtPhone log carries no
+# per-message timestamp, so "fresh" means "arrived between two recent passes".
+# A backlog absorbed after downtime is never fresh and gets drafted for
+# approval instead -- that is the 2026-08-24 incident (four stale answers
+# queued to weeks-old "who is this?") made structurally impossible.
+WHO_FRESH_MINUTES = int(_env("SMS_AGENT_WHO_FRESH_MINUTES", "5"))
 
 # Text a courtesy goodbye back to someone who just said no. OFF (Oren,
 # 2026-09-06): it buys nothing. It spends a send out of the 25/day/number cap,
@@ -156,6 +164,18 @@ ANSWER_WHO = _env("SMS_AGENT_ANSWER_WHO", "1") not in ("0", "false", "no")
 # default flipped.
 REPLY_TO_NO = _env("SMS_AGENT_REPLY_TO_NO", "0") in ("1", "true", "True")
 
+# When a seller texts a thread a person already owns, say so in Slack -- but
+# at most once per this many minutes per thread, so a five-text burst is one
+# nudge. Oren, 2026-09-07: after a handoff the agent went silent for 14 days
+# AND told nobody about new texts; "Try in about 3 weeks" (8/27) vanished that
+# way. 0 disables the nudge.
+FOLLOWUP_PING_MINUTES = int(_env("SMS_AGENT_FOLLOWUP_PING_MINUTES", "30"))
+
+# Post the daily readout (drafts waiting, threads with a human) to Slack at
+# this local hour, once a day. -1 disables. Oren, 2026-09-07: thirteen drafts
+# sat four days because nothing ever said "these are waiting on you".
+DIGEST_HOUR = int(_env("SMS_AGENT_DIGEST_HOUR", "8"))
+
 # Daily campaign window, Eastern (Ty, 2026-08-11). The recipient-local quiet
 # hours above still apply on top: this is when WE work, that is when THEY may
 # be texted, and a send needs both.
@@ -164,6 +184,19 @@ CAMPAIGN_START_HOUR = int(_env("SMS_AGENT_CAMPAIGN_START", "9"))
 CAMPAIGN_END_HOUR = int(_env("SMS_AGENT_CAMPAIGN_END", "18"))
 CAMPAIGN_ENABLED = _env("SMS_AGENT_CAMPAIGN", "0") not in ("0", "false", "no")
 CAMPAIGN_DAILY_CAP = int(_env("SMS_AGENT_CAMPAIGN_DAILY_CAP", "0"))  # 0 = pool capacity
+# The presets that make up the daily texting cohort, in priority order (the
+# daily cap cuts the tail). Ty's account used "Hottest - 02 Ready to Call" and
+# an "<name> - Actively Prospecting" book; this account's call stages are the
+# four NSM presets below (2026-09-07 preview: Ty's titles matched nothing).
+# Matching is exact-then-substring on the preset title, case-insensitive.
+CAMPAIGN_PRESETS = [
+    x.strip()
+    for x in _env(
+        "SMS_AGENT_CAMPAIGN_PRESETS",
+        "02. Ready to Call,03. Follow-Up 1,04. Follow-Up 2,05. Follow-Up 3",
+    ).split(",")
+    if x.strip()
+]
 CAMPAIGN_DAYS = _env("SMS_AGENT_CAMPAIGN_DAYS", "0,1,2,3,4")  # Mon-Fri
 
 # Whole days between one owner's touches. A follow-up goes out EVERY day to

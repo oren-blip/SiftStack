@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -96,6 +97,32 @@ def _inbound_once() -> dict:
     return result
 
 
+def _digest_clock(stop: threading.Event) -> None:
+    """Post the day's readout once, at config.DIGEST_HOUR local time.
+
+    The digest existed from day one and was never posted anywhere, which is
+    how thirteen drafts waited four days unseen. One post a day, keyed on the
+    date in the store so a restart inside the hour cannot post it twice.
+    """
+    from zoneinfo import ZoneInfo
+    from . import digest
+
+    tz = ZoneInfo(config.CAMPAIGN_TZ)
+    while not stop.wait(60):
+        try:
+            now = datetime.now(tz)
+            if config.DIGEST_HOUR < 0 or now.hour != config.DIGEST_HOUR:
+                continue
+            key = f"digest_posted:{now:%Y-%m-%d}"
+            if store.get_meta(key):
+                continue
+            store.set_meta(key, store.now())
+            digest.run(days=1, post=True)
+            log.info("posted the %s:00 digest", config.DIGEST_HOUR)
+        except Exception:
+            log.exception("digest clock failed")
+
+
 def _inbound_clock(stop: threading.Event) -> None:
     cycles = 0
     while not stop.wait(INBOUND_INTERVAL_SECONDS):
@@ -167,6 +194,16 @@ def _not_lead(phone: str, uuid: str) -> str:
     return f"closed as a soft no, {n} draft(s) dropped"
 
 
+def _got_it(phone: str, uuid: str, who: str) -> str:
+    """Acknowledge a hot lead from the phone. The engine already paused the
+    thread at handoff; this records WHO took it so the digest and the next
+    follow-up nudge can say so. Nothing is sent, nothing reaches the CRM."""
+    store.ensure_conversation(phone)
+    store.pause_conversation(phone, f"{who or config.HANDOFF_NAME} has it (Slack)")
+    n = store.cancel_queued(phone, "taken from Slack")
+    return f"noted - {who or 'you'} has it" + (f", {n} draft(s) dropped" if n else "")
+
+
 def _wrong(phone: str, uuid: str) -> str:
     """Wrong number. Suppressed locally so nothing texts it again, ever.
 
@@ -199,6 +236,8 @@ def handle(action_id: str, phone: str, uuid: str = "", who: str = "") -> str:
         return _approve(phone, uuid)
     if action_id == "sms_handle":
         return _handle(phone, uuid, who)
+    if action_id == "sms_got_it":
+        return _got_it(phone, uuid, who)
     if action_id == "sms_not_lead":
         return _not_lead(phone, uuid)
     return _wrong(phone, uuid)
@@ -322,6 +361,10 @@ def listen() -> int:
     if INBOUND_INTERVAL_SECONDS > 0:
         threading.Thread(
             target=_inbound_clock, args=(stop,), daemon=True, name="inbound-clock"
+        ).start()
+    if config.DIGEST_HOUR >= 0:
+        threading.Thread(
+            target=_digest_clock, args=(stop,), daemon=True, name="digest-clock"
         ).start()
 
     client.connect()

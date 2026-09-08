@@ -48,19 +48,14 @@ log = logging.getLogger(__name__)
 # still owed the rest of its text sequence, and the text is what warms the next
 # dial. Where they are in the CALL cadence decides nothing about which text they
 # get; that comes from their own text history in next_touch().
-FAMILIES = ["Hottest"]
-STAGES = [
-    "02 Ready to Call",
-    "03 Call Attempt 1",
-    "04 Call Attempt 2",
-    "05 Call Attempt 3",
-]
-PROSPECTING_PRESETS = [f"{config.HANDOFF_NAME} - Actively Prospecting"]
-
-STAGE_TOUCHES = (
-    [(f"{fam} - {stage}", 0) for fam in FAMILIES for stage in STAGES]
-    + [(p, 0) for p in PROSPECTING_PRESETS]
-)
+#
+# The titles live in config.CAMPAIGN_PRESETS (env SMS_AGENT_CAMPAIGN_PRESETS)
+# because they are account-specific: Ty's were "Hottest - 02 Ready to Call"
+# plus an "<name> - Actively Prospecting" book; on this account the four NSM
+# call stages are "02. Ready to Call" .. "05. Follow-Up 3" and there is no
+# separate prospecting preset. Hardcoding Ty's meant every stage resolved to
+# "preset not found" and the cohort was silently empty (2026-09-07).
+STAGE_TOUCHES = [(title, 0) for title in config.CAMPAIGN_PRESETS]
 
 
 def _fingerprints() -> dict[int, list[str]]:

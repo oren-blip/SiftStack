@@ -12,6 +12,7 @@ a working handoff with zero AI-authored text going out.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from . import classify, config, crm, escalate, respond, sender_pool, smrtphone, store
@@ -214,6 +215,10 @@ def handle_inbound(payload: dict) -> dict:
     if conv.get("state") != "active":
         outcome["action"] = "conversation_" + str(conv.get("state"))
         outcome["actions"].append(f"no reply: conversation is {conv.get('state')}")
+        if conv.get("state") == "paused":
+            outcome["actions"].append(
+                _do_followup_ping(phone, record_uuid, body, conv, outcome["actions"])
+            )
         return outcome
 
     if result.intent == "INTERESTED":
@@ -235,6 +240,23 @@ def handle_inbound(payload: dict) -> dict:
         outcome["actions"].append(_close_not_interested(phone, record_uuid, result.rationale))
         outcome["actions"].append("no reply drafted: REPLY_TO_NO is off")
         outcome["action"] = "closed_not_interested"
+        return outcome
+
+    if (
+        config.PHASE >= 3
+        and result.intent == "ASKING_WHO"
+        and config.ANSWER_WHO
+        and result.confidence >= 0.5
+        and payload.get("fresh") is True
+    ):
+        # "Who is this?" is the most common reply to a first text and the
+        # answer never varies: a reviewed template, no model, nothing to leak.
+        # Answering it without a tap is the one autonomy step Oren took on
+        # 2026-09-07, gated on freshness (see config.WHO_FRESH_MINUTES) so a
+        # replayed backlog can never fire it. Anything not provably fresh
+        # falls through to a held draft exactly as before.
+        outcome["actions"] += _do_answer_who(phone, record_uuid, context)
+        outcome["action"] = "answered_who"
         return outcome
 
     if config.PHASE < 3:
@@ -447,6 +469,51 @@ def _do_answer_who(phone: str, record_uuid: str, context: dict) -> list[str]:
             f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}"
         )
     return acts
+
+
+def _do_followup_ping(phone: str, record_uuid: str, body: str, conv: dict,
+                      actions_so_far: list) -> str:
+    """A seller texted a thread a person already owns. Say so, briefly.
+
+    The agent is right to stay silent here: the thread was handed off, and two
+    of us texting one seller is the worst failure available. But silent to the
+    SELLER must not mean silent to the PERSON. Once handed off, nothing re-paged
+    for 14 days, so "you still interested?" three days after a handoff was seen
+    only by whoever happened to open the smrtPhone inbox. This is a nudge, not a
+    handoff: no draft, no CRM write, no claim about what they meant.
+    """
+    if config.PHASE < 2:
+        return "follow-up on a paused thread (phase 1: no notification)"
+    if config.FOLLOWUP_PING_MINUTES <= 0:
+        return "follow-up nudge disabled"
+    # A fresh hot-lead post is already on its way for this very text (the
+    # INTERESTED branch above queued it); a nudge on top would be a duplicate.
+    if any(isinstance(a, str) and ("handoff queued" in a or "burst still arriving" in a)
+           for a in actions_so_far):
+        return "follow-up: handoff post already coming"
+
+    key = f"followup_ping:{phone}"
+    last = store.get_meta(key)
+    if last:
+        try:
+            age_min = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(last)
+            ).total_seconds() / 60
+        except ValueError:
+            age_min = 1e9
+        if age_min < config.FOLLOWUP_PING_MINUTES:
+            return f"follow-up: nudged {age_min:.0f} min ago, holding"
+
+    ok = escalate.alert(
+        f"{config.HANDOFF_NAME}: they texted again - {escalate._fmt_phone(phone)}",
+        f"> {body[:300]}\n_{conv.get('paused_reason') or 'thread is with a person'}_\n"
+        f"_The thread is yours; the agent stays silent on it._",
+        record_uuid,
+        kind="followup",
+    )
+    if ok:
+        store.set_meta(key, store.now())
+    return "posted: follow-up on a handed-off thread" if ok else "follow-up notify FAILED"
 
 
 def _do_needs_answer(phone: str, record_uuid: str, body: str, result) -> list[str]:

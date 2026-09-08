@@ -775,7 +775,12 @@ def run(live_model: bool = False) -> int:
 
     blk = escalate.action_buttons("865-000-4242", "rec-4242")
     ids = [e["action_id"] for e in blk["elements"]]
-    r.check("all four buttons render", ids == list(escalate.ACTIONS), str(ids))
+    r.check("all four draft buttons render", ids == list(escalate.DRAFT_ACTIONS), str(ids))
+    lead = escalate.hot_lead_buttons("865-000-4242", "rec-4242")
+    r.check("hot-lead post gets Got it / Not a lead",
+            [e["action_id"] for e in lead["elements"]] == list(escalate.LEAD_ACTIONS))
+    r.check("every button id has a handler label",
+            all(a in escalate.ACTIONS for a in escalate.DRAFT_ACTIONS + escalate.LEAD_ACTIONS))
     r.check("button value carries the phone",
             json.loads(blk["elements"][0]["value"])["phone"] == "8650004242")
     confirmed = [e["action_id"] for e in blk["elements"] if "confirm" in e]
@@ -808,6 +813,68 @@ def run(live_model: bool = False) -> int:
     msg = slack_buttons.handle("sms_approve", "8650004444")
     r.check("approve with nothing held sends nothing",
             len(stub.sent) == before and "nothing" in msg, msg)
+
+    # "Got it" on a hot-lead post records who took it. Local only.
+    slack_buttons.handle("sms_got_it", "8650004545", who="oren")
+    conv = store.get_conversation("8650004545") or {}
+    r.check("got-it records who has the lead",
+            conv.get("state") == "paused" and "oren has it" in str(conv.get("paused_reason")),
+            str(conv.get("paused_reason")))
+
+    # ---- 13b. a handed-off thread never goes silent on the PERSON ---------
+    # After a handoff the agent stays silent to the seller (right) and used to
+    # stay silent to the human too (wrong): nothing re-paged for 14 days.
+    print("\nfollow-up nudge")
+    store.map_phone("8650004646", record_uuid="rec-4646", context=ctx)
+    store.ensure_conversation("8650004646", from_number="+18650000001")
+    store.pause_conversation("8650004646", "handed to Oren")
+    _fp = config.FOLLOWUP_PING_MINUTES
+    config.FOLLOWUP_PING_MINUTES = 30
+    before = len(stub.slack)
+    out = inbound("8650004646", "who is this?", sms_id="fu-1")
+    r.check("a text on a handed-off thread nudges the person",
+            len(stub.slack) == before + 1 and "texted again" in stub.slack[-1],
+            f"{len(stub.slack) - before} posts; action={out.get('action')}")
+    r.check("the agent still does not reply on that thread",
+            not [x for x in store._conn().execute(
+                "SELECT 1 FROM outbox WHERE phone='8650004646'")])
+    out = inbound("8650004646", "hello??", sms_id="fu-2")
+    r.check("a second text inside the window does not nudge again",
+            len(stub.slack) == before + 1, f"{len(stub.slack) - before} posts")
+    config.FOLLOWUP_PING_MINUTES = 0
+    store.map_phone("8650004747", record_uuid="rec-4747", context=ctx)
+    store.ensure_conversation("8650004747", from_number="+18650000001")
+    store.pause_conversation("8650004747", "handed to Oren")
+    before = len(stub.slack)
+    inbound("8650004747", "who is this?", sms_id="fu-3")
+    r.check("nudge can be switched off", len(stub.slack) == before)
+    config.FOLLOWUP_PING_MINUTES = _fp
+
+    # ---- 13c. "who is this?" answers itself only when provably fresh ------
+    print("\nfresh who-answer")
+    _answer = config.ANSWER_WHO
+    config.ANSWER_WHO = True
+    store.map_phone("8650004848", record_uuid="rec-4848", context=ctx)
+    out = engine.process("smrtphone", {
+        "event": "smsIncoming", "smsId": "fresh-1", "from": "8650004848",
+        "to": "+18650000001", "message": "who is this?", "fresh": True,
+    })
+    r.check("a fresh question is answered without approval",
+            out.get("action") == "answered_who", str(out.get("action")))
+    store.map_phone("8650004949", record_uuid="rec-4949", context=ctx)
+    out = engine.process("smrtphone", {
+        "event": "smsIncoming", "smsId": "stale-1", "from": "8650004949",
+        "to": "+18650000001", "message": "who is this?",
+    })
+    r.check("a question of unknown age is drafted, not answered",
+            out.get("action") != "answered_who", str(out.get("action")))
+    out = engine.process("smrtphone", {
+        "event": "smsIncoming", "smsId": "stale-2", "from": "8650004949",
+        "to": "+18650000001", "message": "who is this?", "fresh": False,
+    })
+    r.check("a replayed backlog question is never auto-answered",
+            out.get("action") != "answered_who", str(out.get("action")))
+    config.ANSWER_WHO = _answer
 
     # The buttons come off the message once it is answered, so the channel
     # reads as a queue rather than a log.

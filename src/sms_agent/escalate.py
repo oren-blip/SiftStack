@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # The only alert kinds allowed to reach the channel. A live seller, and the
 # daily campaign summary that was explicitly asked for. Everything else is
 # bookkeeping and belongs in the digest.
-ALWAYS_POST = {"handoff", "campaign", "needs_reply"}
+ALWAYS_POST = {"handoff", "campaign", "needs_reply", "followup"}
 
 RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
@@ -275,6 +275,11 @@ def hot_lead(
         blocks.append(
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
         )
+    # Clear it from the phone: "Got it" records who took it, "Not a lead"
+    # closes it out. Both local-only; the CRM is untouched either way (Oren,
+    # 2026-09-07). Same rule as drafts -- no buttons without a listener.
+    if config.slack_listener_ready():
+        blocks.append(hot_lead_buttons(phone, record_uuid))
     return _post(text, blocks)
 
 
@@ -335,51 +340,71 @@ ACTIONS = {
     "sms_handle": "I'll handle it",
     "sms_not_lead": "Not a lead",
     "sms_wrong": "Wrong number",
+    "sms_got_it": "Got it",
 }
+DRAFT_ACTIONS = ("sms_approve", "sms_handle", "sms_not_lead", "sms_wrong")
+LEAD_ACTIONS = ("sms_got_it", "sms_not_lead")
+
+
+def _button(action_id: str, value: str, style: str = "", confirm: str = "") -> dict:
+    el = {
+        "type": "button",
+        "action_id": action_id,
+        "text": {"type": "plain_text", "text": ACTIONS[action_id]},
+        "value": value,
+    }
+    if style:
+        el["style"] = style
+    if confirm:
+        el["confirm"] = {
+            "title": {"type": "plain_text", "text": ACTIONS[action_id]},
+            "text": {"type": "mrkdwn", "text": confirm},
+            "confirm": {"type": "plain_text", "text": "Yes"},
+            "deny": {"type": "plain_text", "text": "Cancel"},
+        }
+    return el
+
+
+def _value(phone: str, record_uuid: str) -> str:
+    # `value` carries everything the handler needs, because a Slack payload
+    # arrives with no memory of what was posted and looking it up again by
+    # channel+ts would be a second failure point.
+    return json.dumps({"phone": store.clean_phone(phone), "uuid": record_uuid})[:1900]
 
 
 def action_buttons(phone: str, record_uuid: str = "") -> dict:
     """The actions block under a draft.
-
-    `value` carries everything the handler needs, because a Slack payload
-    arrives with no memory of what was posted and looking it up again by
-    channel+ts would be a second failure point.
 
     Approve and Wrong number confirm first. These get tapped on a phone, where
     a mis-tap is a text to a stranger or a suppressed number, and neither is
     reversible from the channel.
     """
     ph = store.clean_phone(phone)
-    value = json.dumps({"phone": ph, "uuid": record_uuid})[:1900]
-
-    def button(action_id: str, style: str = "", confirm: str = "") -> dict:
-        el = {
-            "type": "button",
-            "action_id": action_id,
-            "text": {"type": "plain_text", "text": ACTIONS[action_id]},
-            "value": value,
-        }
-        if style:
-            el["style"] = style
-        if confirm:
-            el["confirm"] = {
-                "title": {"type": "plain_text", "text": ACTIONS[action_id]},
-                "text": {"type": "mrkdwn", "text": confirm},
-                "confirm": {"type": "plain_text", "text": "Yes"},
-                "deny": {"type": "plain_text", "text": "Cancel"},
-            }
-        return el
-
+    value = _value(ph, record_uuid)
     return {
         "type": "actions",
         "block_id": f"sms_draft:{ph}",
         "elements": [
-            button("sms_approve", "primary",
-                   f"Text {_fmt_phone(ph)} the message above, right now?"),
-            button("sms_handle"),
-            button("sms_not_lead"),
-            button("sms_wrong", "danger",
-                   f"Stop texting {_fmt_phone(ph)} for good? This cannot be undone from Slack."),
+            _button("sms_approve", value, "primary",
+                    f"Text {_fmt_phone(ph)} the message above, right now?"),
+            _button("sms_handle", value),
+            _button("sms_not_lead", value),
+            _button("sms_wrong", value, "danger",
+                    f"Stop texting {_fmt_phone(ph)} for good? This cannot be undone from Slack."),
+        ],
+    }
+
+
+def hot_lead_buttons(phone: str, record_uuid: str = "") -> dict:
+    """The actions block under a hot-lead handoff. Two answers, no sending."""
+    ph = store.clean_phone(phone)
+    value = _value(ph, record_uuid)
+    return {
+        "type": "actions",
+        "block_id": f"sms_lead:{ph}",
+        "elements": [
+            _button("sms_got_it", value, "primary"),
+            _button("sms_not_lead", value),
         ],
     }
 
