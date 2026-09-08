@@ -50,6 +50,20 @@ _send_lock = threading.Lock()
 DRAIN_INTERVAL_SECONDS = 60
 
 
+# How often the listener reads the smrtPhone SMS log for new replies. The
+# 10-minute Task Scheduler poll did this before; Oren asked for 60s on 9/7 so a
+# "yes" reaches Slack in about a minute rather than up to ten. Reading needs
+# only the browser session cookies, no API token. 0 disables it (and then the
+# poll task has to be re-enabled, or nothing reads inbound at all).
+INBOUND_INTERVAL_SECONDS = int(config._env("SMS_AGENT_INBOUND_INTERVAL", "60"))
+
+# Roughly hourly proof-of-life in the log, so "is it still running?" has an
+# answer without waiting for a reply to arrive.
+HEARTBEAT_EVERY_CYCLES = 60
+
+_inbound_lock = threading.Lock()
+
+
 def _drain() -> dict:
     with _send_lock:
         return worker.drain_outbox(limit=25)
@@ -63,6 +77,43 @@ def _clock(stop: threading.Event) -> None:
                 log.info("clock drain: %s", json.dumps(result))
         except Exception:
             log.exception("clock drain failed")
+
+
+def _inbound_once() -> dict:
+    """One reconcile pass, identical to `cli.py reconcile --pages 1`.
+
+    reconcile.run classifies anything new and QUEUES hot-lead handoffs;
+    flush_escalations is what posts them (only after their debounce window,
+    which a 60s clock finally makes meaningful -- the 10-minute poll always
+    arrived after it had long expired). Deliberately not worker.run_once(),
+    which also starts the campaign scheduler.
+    """
+    from . import reconcile
+    with _inbound_lock:
+        result = reconcile.run(pages=1, apply=True)
+        if config.PHASE >= 2:
+            result["handoffs_posted"] = worker.flush_escalations()
+    return result
+
+
+def _inbound_clock(stop: threading.Event) -> None:
+    cycles = 0
+    while not stop.wait(INBOUND_INTERVAL_SECONDS):
+        cycles += 1
+        try:
+            result = _inbound_once()
+            if result.get("replayed") or result.get("handoffs_posted"):
+                log.info(
+                    "inbound: %s",
+                    json.dumps({k: v for k, v in result.items() if k != "results"}),
+                )
+            elif cycles % HEARTBEAT_EVERY_CYCLES == 0:
+                log.info(
+                    "inbound heartbeat: %s rows scanned, nothing new",
+                    result.get("rows_scanned", "?"),
+                )
+        except Exception:
+            log.exception("inbound clock failed")
 
 
 # --------------------------------------------------------------- the actions
@@ -268,11 +319,16 @@ def listen() -> int:
 
     stop = threading.Event()
     threading.Thread(target=_clock, args=(stop,), daemon=True, name="outbox-clock").start()
+    if INBOUND_INTERVAL_SECONDS > 0:
+        threading.Thread(
+            target=_inbound_clock, args=(stop,), daemon=True, name="inbound-clock"
+        ).start()
 
     client.connect()
     log.info(
-        "slack button listener up; channel=%s; outbox clock every %ss",
+        "slack button listener up; channel=%s; outbox clock every %ss; inbound every %s",
         config.SLACK_CHANNEL, DRAIN_INTERVAL_SECONDS,
+        f"{INBOUND_INTERVAL_SECONDS}s" if INBOUND_INTERVAL_SECONDS > 0 else "OFF",
     )
     stop.wait()  # never set; killed from outside
     return 0

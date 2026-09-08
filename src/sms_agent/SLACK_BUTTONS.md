@@ -104,14 +104,36 @@ It survives a reboot as Task Scheduler job **"SiftStack SMS Slack Buttons"**
 (registered 2026-09-06): At Log On, no execution time limit (`PT0S`), restart
 up to 99x every minute, one instance only, hidden window via the VBS. This is
 **long-running**, not a repeating interval like the poll. Log:
-`logs\sms_slack_buttons.log`. Restart it by hand with
-`Start-ScheduledTask "SiftStack SMS Slack Buttons"`.
+`logs\sms_slack_buttons.log`.
 
-**The listener also owns the send clock.** Every 60 seconds it drains any
-`queued` row whose window has opened. Found on the very first live tap
-(11:33pm): Approve correctly parked the draft for 8am, and nothing in the
-system would have looked at the outbox again until the next tap. Only `queued`
-rows are ever due — a held draft still needs a human.
+**The listener owns both clocks.**
+
+- *Send clock, every 60s* — drains any `queued` row whose window has opened.
+  Found on the very first live tap (11:33pm): Approve correctly parked the
+  draft for 8am, and nothing in the system would have looked at the outbox
+  again until the next tap. Only `queued` rows are ever due — a held draft
+  still needs a human.
+- *Inbound clock, every 60s* (Oren, 9/7) — reads the smrtPhone SMS log for new
+  replies, classifies them, and posts hot-lead handoffs. This replaced the
+  10-minute Task Scheduler job **"SiftStack SMS Agent Poll"**, which is left
+  registered but **Disabled**. A "yes" now reaches Slack in about a minute
+  instead of up to ten. `SMS_AGENT_INBOUND_INTERVAL=0` turns it off (re-enable
+  the poll task if you do, or nothing reads inbound). Hourly heartbeat line in
+  the log so liveness is visible without waiting for a reply.
+
+**The .cmd is the supervisor, not Task Scheduler.** The hidden VBS launcher
+returns instantly, so the scheduler believes the job finished the moment it
+began and its restart-on-failure never fires. `sms_slack_buttons.cmd` loops:
+if python dies it comes back after 15s (exit code 2 = misconfigured, no loop).
+
+**To stop it on purpose**, kill both the loop and the listener, or the loop
+brings it straight back:
+
+    Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*slack-listen*') -or ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like '*sms_slack_buttons*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+Start it again with `Start-ScheduledTask "SiftStack SMS Slack Buttons"`. Do
+the stop/start after any edit to `slack_buttons.py` — a running process does
+not pick up code changes.
 
 ## Things worth knowing
 
@@ -139,9 +161,9 @@ rows are ever due — a held draft still needs a human.
 
 | File | Role |
 |---|---|
-| `slack_buttons.py` | Handlers, the Socket Mode listener, and the 60s outbox clock |
+| `slack_buttons.py` | Handlers, the Socket Mode listener, the 60s send clock and the 60s inbound clock |
 | `escalate.py` | `action_buttons()`, `_post_api()` (chat.postMessage) |
 | `config.py` | The three tokens, `slack_buttons_enabled()`, `slack_listener_ready()` |
 | `cli.py` | `slack-listen`, and the `doctor` readout |
-| `scripts/sms_slack_buttons.cmd` | Launcher for Task Scheduler |
+| `scripts/sms_slack_buttons.cmd` | Launcher AND supervisor loop (restarts python if it dies) |
 | `selftest.py` | 12 offline checks — every action, no network, no tokens |
