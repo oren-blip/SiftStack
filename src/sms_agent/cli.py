@@ -356,8 +356,16 @@ def cmd_campaign(args) -> int:
     """Touch-aware run across the whole Hottest cadence."""
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     store.init()
-    plan = campaign.build(sender_fallback=args.sender or "", log_pages=args.log_pages)
+    # --limit mirrors what the automatic scheduler does with the daily cap:
+    # sources are in priority order, so stopping early keeps the best leads.
+    # Without it a supervised first run would stage the whole cohort (72 on
+    # 2026-09-07) when the agreed first batch was 25.
+    limit = args.limit or 0
+    plan = campaign.build(sender_fallback=args.sender or "", log_pages=args.log_pages,
+                          limit=limit)
     print(campaign.summary(plan))
+    if limit and plan.hit_cap:
+        print(f"\n(stopped at --limit {limit}; the cohort is larger)")
     if args.show:
         print()
         print("samples:")
@@ -604,6 +612,8 @@ def main() -> int:
     p.add_argument("--sender", help="fallback caller first name")
     p.add_argument("--show", type=int, default=6)
     p.add_argument("--log-pages", type=int, default=6, help="pages of SMS history to read")
+    p.add_argument("--limit", type=int, default=0,
+                   help="stop after this many candidates, best leads first (0 = all)")
     p.add_argument("--queue", action="store_true", help="stage as HELD outbox rows")
     p.set_defaults(fn=cmd_campaign)
 
