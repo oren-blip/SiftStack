@@ -301,8 +301,12 @@ there first. Sources 2 and 3 are the only metered decision.
 | Trestle | scores every resulting number | $0.015/phone | API |
 
 **Where it's worth it:** first-to-market county data — yes. Deep prospecting — a
-must-have. Bulk Priority 1 / SiftMap — **no**, DataSift + Trestle already reaches
-~90% of what's reachable and 3x tracing bulk burns money fast.
+must-have. Bulk Priority 1 / SiftMap — **no**, 3x tracing bulk burns money fast
+(Ty, Day 4: hottest bulk gets "DataSift skip trace only"). Note the ~90% figure
+often quoted here is **SmartSkip + DataSift + Trestle**, not DataSift alone —
+verbatim: "SmartSkip and datasets with Trestle... you're gonna reach, like,
+probably 90% of what you could feasibly reach." Three sources is the number for
+FTM + deep prospecting specifically, NOT a global default.
 
 ### SmartSkip round-trip (`src/smartskip_io.py`)
 
@@ -440,9 +444,19 @@ past that the client goes inert for the run and logs once. Cache hits and misses
 never count. `NC_ENFORMION_MAX_SPEND=0` disables the cap. Spend is reported in the
 nightly log line from `nc_deep_prospect.py`.
 
-Note: Ty stopped naming Enformion in his taught stack on Day 3, but **his own v5
-skill still ships it as the primary heir-resolution path**, and SmartSkip cannot
-run unattended inside the nightly build. Keep it until the bake-off says otherwise.
+Note (corrected 2026-09-09, verified against the transcripts + the installed skill):
+the old justification here — "his own v5 skill still ships it as the primary
+heir-resolution path" — was **FALSE**. deep-prospecting-v5 explicitly RETIRES
+Enformion person search ("Enformion returned zero relatives on 6 of 12 owners
+tested. SmartSkip returned relatives on 12 of 12"; ~4.9x the cost). That claim came
+from reading the **stale v4 skill** still sitting at `.claude/skills/deep-prospecting/`,
+which is shadowed by v5 at user level — delete or refresh it before trusting it again.
+
+**KEPT anyway (Oren's call, 2026-09-09)**, on the narrower and still-valid grounds:
+v5 retired Enformion for *discovering relatives*, whereas we use it only to find a
+phone for ONE already-court-named PR at their own mailing address, after Tracerfy
+misses. SmartSkip cannot run unattended inside the nightly build. Spend stays capped
+by `NC_ENFORMION_MAX_SPEND`. Revisit if the monthly total climbs.
 
 ## DataSift.ai (REISift) Integration
 

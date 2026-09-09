@@ -213,6 +213,30 @@ def is_heirs_row(row: dict) -> bool:
     return (row.get("Personal Representative") or "").strip().lower().startswith("heirs of")
 
 
+# Tiers Trestle hands back that are actually worth a dial. Anything below this
+# (Dial Fourth, Drop) is a number we will never call, so a row holding only
+# those is functionally unreachable even though it "has a phone".
+DIALABLE_TIERS = ("dial first", "dial second", "dial third")
+
+
+def _has_dialable(row: dict) -> bool:
+    """True if any scored phone on the row is Dial First/Second/Third.
+
+    Reads the *Tier* columns, not the phone columns. A row can carry a phone
+    and still be unreachable: Poplin 26E001170-350 held one Tracerfy landline
+    that Trestle scored Dial Fourth and later marked DEAD. Every trace gate we
+    had asked "is there a phone?", so that row was never re-traced, and every
+    call preset asked "is there a good phone?", so it was never called either.
+    It fell between the two and sat invisible.
+    """
+    for k, v in row.items():
+        if not k or "tier" not in k.lower():
+            continue
+        if any(t in (v or "").strip().lower() for t in DIALABLE_TIERS):
+            return True
+    return False
+
+
 FILTERS = {
     # The flagship DP entry point: owner is dead and we never named a signer.
     "heirs": lambda r: is_heirs_row(r),
@@ -220,6 +244,11 @@ FILTERS = {
     # DataSift side, that means a lot of other people have skip-traced these
     # individual records and also not reached them."
     "no-phone": lambda r: not _has_phone(r),
+    # The Poplin class: a phone came back, but nothing on the row is dialable.
+    # Same unreachability as no-phone, invisible to the no-phone gate.
+    "no-dialable": lambda r: _has_phone(r) and not _has_dialable(r),
+    # Both unreachable shapes at once — the honest "who can we not call?" set.
+    "unreachable": lambda r: not _has_dialable(r),
     "all": lambda r: True,
 }
 
@@ -238,6 +267,51 @@ def cases_with_a_real_pr(rows: list[dict]) -> set[str]:
         pr = (r.get("Personal Representative") or "").strip()
         if cn and pr and not pr.lower().startswith("heirs of"):
             out.add(cn)
+    return out
+
+
+def keys_already_sent(glob_pat: str = "smartskip_*keymap*.csv",
+                     out_dir: Path | None = None) -> set[str]:
+    """SiftKeys we have already paid SmartSkip for, read from prior keymaps.
+
+    SmartSkip bills per row on upload, so re-sending a subject we traced in an
+    earlier batch is money burned for a result already on disk. The Aug 24/26
+    batches covered 43 of the 63 'Heirs of' subjects still sitting in the
+    weekly files; without this guard a naive re-export pays for all 63.
+    """
+    base = out_dir or _OUT_DIR
+    seen: set[str] = set()
+    for km in sorted(base.glob(glob_pat)):
+        try:
+            with km.open(newline="", encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    k = (r.get(KEY_COLUMN) or "").strip()
+                    if k:
+                        seen.add(k)
+        except OSError as exc:
+            logger.warning("keymap %s unreadable: %s", km.name, exc)
+    return seen
+
+
+def select_rows_multi(rows: list[dict], which: str) -> list[dict]:
+    """select_rows over a comma-separated list of filters, OR'd together.
+
+    Each named filter keeps its OWN guard semantics (notably: the court-PR
+    guard fires only for 'heirs'), then the results are unioned by identity so
+    a row matching two filters is still uploaded, and paid for, once.
+    """
+    names = [w.strip() for w in which.split(",") if w.strip()]
+    bad = [n for n in names if n not in FILTERS]
+    if bad:
+        raise SystemExit(f"unknown filter(s): {bad}; choose from {sorted(FILTERS)}")
+    if len(names) == 1:
+        return select_rows(rows, names[0])
+    out, seen = [], set()
+    for n in names:
+        for r in select_rows(rows, n):
+            if id(r) not in seen:
+                seen.add(id(r))
+                out.append(r)
     return out
 
 
@@ -866,10 +940,28 @@ def cmd_export(args) -> int:
     for src in paths:
         with src.open(newline="", encoding="utf-8-sig") as f:
             rows.extend(csv.DictReader(f))
-    targets = select_rows(rows, args.filter)
+    targets = select_rows_multi(rows, args.filter)
     label = paths[0].name if len(paths) == 1 else f"{len(paths)} file(s)"
     logger.info("%s: %d row(s), %d match filter %r",
                 label, len(rows), len(targets), args.filter)
+
+    # Never pay twice for the same subject. ON by default: the failure mode is
+    # silent double-billing, which no one notices until the invoice.
+    if not args.include_sent:
+        sent = keys_already_sent(args.exclude_glob)
+        if sent:
+            kept = []
+            dropped = 0
+            for r in targets:
+                up = build_upload_row(r, args.subject)
+                if up is not None and up[KEY_COLUMN] in sent:
+                    dropped += 1
+                    continue
+                kept.append(r)
+            logger.info("already-sent guard (%s): %d known key(s), "
+                        "%d row(s) dropped, %d remain",
+                        args.exclude_glob, len(sent), dropped, len(kept))
+            targets = kept
 
     if args.dry_run:
         # Count what would actually be uploaded, post-dedup, without writing.
@@ -959,11 +1051,19 @@ def main(argv=None) -> int:
     e.add_argument("input", nargs="+",
                    help="FTM / datasift CSV(s) to pull targets from; multiple "
                         "files are merged and deduped on the rejoin key")
-    e.add_argument("--filter", choices=sorted(FILTERS), default="heirs")
+    e.add_argument("--filter", default="heirs",
+                   help="one filter, or several comma-separated and OR'd: "
+                        + ", ".join(sorted(FILTERS)))
     e.add_argument("--subject", choices=("deceased", "pr"), default="deceased",
                    help="who to trace (default: the deceased owner at the "
                         "property address - the cluster-returning shape)")
     e.add_argument("--out")
+    e.add_argument("--include-sent", action="store_true",
+                   help="re-export subjects already sent in a prior batch "
+                        "(default: skip them so SmartSkip is not paid twice)")
+    e.add_argument("--exclude-glob", default="smartskip_*keymap*.csv",
+                   help="which prior keymaps count as already-sent "
+                        "(glob, relative to output/)")
     e.add_argument("--dry-run", action="store_true",
                    help="count + cost only, writes nothing")
     e.set_defaults(func=cmd_export)
