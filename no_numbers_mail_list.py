@@ -20,6 +20,19 @@ Ty's reasoning for why the empties are worth more, not less (Day 3 2026-08-19):
 
 Until now nothing in this repo consumed that set. This script is what consumes it.
 
+CORRECTION 2026-09-09, read this before repeating the original claim
+    The first version of this file said the qualifying records reached no mail
+    preset and were going unmailed. That was WRONG. It came from replaying
+    preset queries through the API search, which does not reproduce what a
+    saved filter does in the app. Oren checked in the UI and had just sent 200+
+    pieces from "07. Mail Monthly"; reading the 43 records one at a time
+    confirms 40 of 43 were mailed in August 2026, 1 in March, and only 2 never.
+
+    So mail was never the gap. The gap is the PHONE side: these people cannot
+    be called and nothing re-traces them. The tag exists to make that set
+    findable for re-tracing. Never quote a preset-replay count as fact -- ask
+    for a UI count, or reason per record from fields a GET actually returns.
+
 WHY IT READS THE CRM AND NOT THE WORKBOOK
     The weekly CSVs are a snapshot from the night a week was polished; phones
     land in DataSift afterwards and the CSV never learns. A batch selected from
