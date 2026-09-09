@@ -291,9 +291,19 @@ def enriched_output_path(src: Path) -> Path:
     Strips the trailing source-stage token (`_datasift` / `_ecourts_backfilled`)
     and appends `_dm_enriched`, preserving the `_YYYY-MM-DD_` date and `_weekN`
     tokens that consolidate_weeks.py greps for.
+
+    `_dm_enriched` is stripped too, so re-enriching a week UPDATES that week's
+    file instead of growing a chain. The source is very often already enriched:
+    consolidate's auto-pick prefers the most-enriched file, so any night with no
+    fresh scrape for a week hands us our own previous output. Before the
+    2026-09-09 catch-up window that was rare enough to go unnoticed; with four
+    weeks re-read nightly it would have produced
+    `..._week36_dm_enriched_dm_enriched_dm_enriched.csv` and so on, one link per
+    night. Those names DO still match consolidate's glob, so nothing was lost --
+    it was clutter and an ever-lengthening filename, not data loss.
     """
     stem = src.stem  # filename without .csv
-    for token in ("_ecourts_backfilled", "_datasift"):
+    for token in ("_ecourts_backfilled", "_datasift", "_dm_enriched"):
         if stem.endswith(token):
             stem = stem[: -len(token)]
             break
