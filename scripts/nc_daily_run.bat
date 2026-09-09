@@ -165,6 +165,22 @@ if "%NC_MAILING_DRIFT%"=="0" (
     "D:\SiftStack\.venv\Scripts\python.exe" audit_owner_mailing_drift.py >> "logs\nc_daily_run.log" 2>&1
 )
 
+REM The "Needs DP" marker is the deep-prospecting to-do list -- stamped at
+REM upload on any row whose contact is still the "Heirs of" placeholder. It
+REM gates NO marketing preset; its only job is showing which estates have no
+REM identified human. Nothing used to take it off, so court-PR renames and DP
+REM pushes left finished records tagged with an overdue reminder (11 of 39 on
+REM 2026-09-09, one with 10 dialable numbers). This clears the ones that now
+REM have a real contact and closes their task; records still owned by
+REM "Heirs X" keep the tag on purpose. Read-modify over the API, ~1 min.
+REM Off-switch:  set NC_NEEDS_DP_SWEEP=0
+echo [6.92/7] Needs DP marker sweep (retire finished research flags)...
+if "%NC_NEEDS_DP_SWEEP%"=="0" (
+    echo   skipped -- NC_NEEDS_DP_SWEEP=0 >> "logs\nc_daily_run.log"
+) else (
+    "D:\SiftStack\.venv\Scripts\python.exe" needs_dp_sweep.py --apply >> "logs\nc_daily_run.log" 2>&1
+)
+
 REM Sold suppression. Oren asked (2026-08-23) for Ty's Day-2 "recently sold
 REM auto-add" so the monthly sweep goes away and sold houses drop out daily.
 REM That SiftMap toggle needs SiftMap Pro ($297/mo, not subscribed), so this

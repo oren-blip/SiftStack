@@ -428,6 +428,60 @@ def _owners_at(h: dict, address: str) -> set:
     return out
 
 
+def _clear_needs_dp(h: dict, applied: list[dict]) -> None:
+    """Take the "Needs DP" marker off the records we just renamed.
+
+    The marker means "contact is still the 'Heirs of' placeholder", so a
+    successful rename retires it. Resolving the record: the address search also
+    matches MAILING addresses, so a hit only counts when its property street
+    matches exactly -- and when that leaves more than one record, this backs off
+    rather than guess (the same wrong-house risk _owners_at exists to catch).
+    The owner uuid the edit actually landed on breaks that tie when present.
+
+    needs_dp_clear.clear() re-reads each record and refuses to clear one whose
+    owner still reads "Heirs", so a rename that silently did not stick cannot
+    lose its flag here.
+    """
+    import requests
+
+    try:
+        from needs_dp_clear import clear as _clear
+    except ImportError as e:  # noqa: BLE001
+        logger.warning("Needs DP cleanup unavailable (%s)", e)
+        return
+    cleared = 0
+    for u in applied:
+        address = u.get("address") or ""
+        try:
+            r = requests.post("https://apiv2.reisift.io/api/internal/property/",
+                              headers={**h, "x-http-method-override": "GET"},
+                              timeout=30,
+                              data=json.dumps({"query": {"must": {"search": address}},
+                                               "limit": 200}))
+            if r.status_code != 200:
+                continue
+            hits = [hit for hit in (r.json().get("results") or [])
+                    if _norm(((hit.get("address") or {}).get("street") or "")) == _norm(address)]
+            want_owner = _owner_id_in(u.get("owner_url") or "")
+            if len(hits) > 1 and want_owner:
+                hits = [hit for hit in hits
+                        if ((hit.get("owner") or {}).get("uuid")
+                            or (hit.get("owner") or {}).get("id")) == want_owner] or hits
+            if len(hits) != 1:
+                logger.warning("  %s: %d record(s) match %r — 'Needs DP' marker "
+                               "left on; the nightly sweep will retry.",
+                               u.get("case"), len(hits), address)
+                continue
+            changed, why = _clear(h, hits[0]["uuid"])
+            if changed:
+                cleared += 1
+                logger.info("  %s: %s", u.get("case"), why)
+        except Exception as e:  # noqa: BLE001 — cleanup never fails a push
+            logger.warning("  %s: Needs DP cleanup failed (%s)", u.get("case"), e)
+    if cleared:
+        logger.info("Needs DP markers retired after rename: %d", cleared)
+
+
 def _owner_id_in(url: str) -> str:
     m = re.search(r"/records/owners/([0-9a-f-]{36})", url or "")
     return m.group(1) if m else ""
@@ -654,6 +708,15 @@ async def run(weeks: list[int], *, dry_run: bool, trace: bool, headless: bool,
                     rc = 1
             if applied:
                 await _write_push_manifest(page, applied)
+                # A renamed record is no longer waiting on deep prospecting, so
+                # retire its "Needs DP" marker and close the reminder. Until
+                # 2026-09-09 nothing did this and finished records sat in the
+                # research queue with overdue tasks. The nightly needs_dp_sweep
+                # is the catch-all; doing it here too means the queue is right
+                # the moment the rename lands. Never fatal -- cleanup must not
+                # cost a push that already succeeded.
+                if api_h:
+                    _clear_needs_dp(api_h, applied)
         finally:
             await browser.close()
     if wrong:
