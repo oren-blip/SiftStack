@@ -109,7 +109,18 @@ REM Deep prospecting -- ON by default. --all-cases: Tracerfy + Trestle EVERY
 REM row's contact (PR or discovered heir) so the whole sheet has phones +
 REM dial-priority before DataSift upload; heir research still runs on no-contact
 REM rows. NC_DP_MAX_ROWS caps the research subset (tracing itself is uncapped).
+REM
+REM Since 2026-09-09 this revisits the last NC_DP_WEEKS_BACK weeks (default 4),
+REM not just the newest one. It used to see a single week, which capped every
+REM case at ~4-5 research passes -- all in the days right after filing, before
+REM any obituary is published. Seven cases were found sitting with a full
+REM obituary (named survivors) in the cache and nobody left to read it. The
+REM catch-up weeks are research-ONLY, capped by NC_DP_BACKFILL_MAX_ROWS (20),
+REM and pay for a skip trace only when research actually finds a person, so
+REM re-reading them nightly does not re-bill Tracerfy/Trestle for the same
+REM still-nameless estates. Obituary cache hits are free.
 REM To turn OFF for a run:  set NC_DEEP_PROSPECT=0
+REM To go back to one week:  set NC_DP_WEEKS_BACK=1
 echo [5.5/6] Deep prospecting + all-cases skip trace/score...
 if "%NC_DEEP_PROSPECT%"=="0" (
     echo   skipped -- NC_DEEP_PROSPECT=0 >> "logs\nc_daily_run.log"

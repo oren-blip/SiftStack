@@ -90,6 +90,20 @@ ENFORMION_PER_MATCH = 0.35        # enformion_client — billed per MATCH, misse
 
 DEFAULT_MAX_ROWS = int(os.getenv("NC_DP_MAX_ROWS", "50"))
 
+# How many weeks back a run revisits (1 = latest week only, the pre-2026-09-09
+# behaviour). An obituary is rarely published, let alone indexed, in the days
+# after the estate is filed -- which was the entire window a case used to get.
+DEFAULT_WEEKS_BACK = int(os.getenv("NC_DP_WEEKS_BACK", "4"))
+# Per-file cap for the CATCH-UP weeks (the newest week keeps DEFAULT_MAX_ROWS).
+# Deliberately small: those weeks are re-read every night, so the work is spread
+# out rather than done in one burst, and most rows answer free from the obituary
+# disk cache until their 4-day miss entry expires.
+DEFAULT_BACKFILL_MAX_ROWS = int(os.getenv("NC_DP_BACKFILL_MAX_ROWS", "20"))
+# Share of researched no-contact rows that actually yield a person, used only
+# to keep the catch-up weeks' DRY-RUN estimate honest (they pay for a trace
+# only when research finds someone). ~1 in 4 across the 2026-07/08 nightlies.
+_RESOLVE_RATE = float(os.getenv("NC_DP_RESOLVE_RATE", "0.25"))
+
 
 def is_target_row(row: dict) -> bool:
     """True when a row has no living contact yet and is worth researching.
@@ -298,11 +312,27 @@ def _upload_output_path(src: Path) -> Path | None:
     return src.with_name(f"{src.stem}_upload.csv")
 
 
-def select_target_files(all_weeks: bool, explicit_csv: str | None) -> list[Path]:
+def select_target_files(all_weeks: bool, explicit_csv: str | None,
+                        weeks_back: int = DEFAULT_WEEKS_BACK) -> list[Path]:
     """Pick the per-week file(s) consolidate would use, newest week first.
 
     Mirrors consolidate's auto-pick so we enrich the exact file that ends up
-    in the workbook. Default: only the latest (in-progress) week.
+    in the workbook.
+
+    `weeks_back` is how many weeks of CATCH-UP the run covers (1 = the old
+    behaviour, latest week only). Deep prospecting used to see exactly one
+    week, which quietly capped every case at ~4-5 nightly research passes, all
+    of them in the first days after filing -- before any obituary is published.
+    Traced 2026-09-09: Week 36 got passes 8/31-9/4, then the run moved to Week
+    37 and never looked back, leaving seven cases whose obituary (with named
+    survivors) had since landed in the cache with nobody left to read it.
+
+    Archived weeks are INCLUDED here on purpose. Archiving is only a marker
+    directory (output/archive_week<N>_done) -- the weekly CSVs never move, stay
+    writable, and a `*_dm_enriched.csv` written for an archived week is still
+    the highest-priority pick for that week's workbook tab. What "frozen" means
+    is that the polish pipeline stops re-walking them, not that they are
+    read-only.
     """
     if explicit_csv:
         p = Path(explicit_csv)
@@ -315,7 +345,7 @@ def select_target_files(all_weeks: bool, explicit_csv: str | None) -> list[Path]
     sys.path.insert(0, str(Path(__file__).parent))
     from consolidate_weeks import auto_pick_weekly_files
 
-    by_week = auto_pick_weekly_files()  # {(year, week): Path}
+    by_week = auto_pick_weekly_files(include_archived=weeks_back > 1)
     if not by_week:
         logger.warning("No per-week consolidate-input files found in output/.")
         return []
@@ -323,7 +353,7 @@ def select_target_files(all_weeks: bool, explicit_csv: str | None) -> list[Path]
     ordered = [by_week[k] for k in sorted(by_week, reverse=True)]
     if all_weeks:
         return ordered
-    return ordered[:1]
+    return ordered[:max(1, weeks_back)]
 
 
 def _load_rows(path: Path) -> list[dict]:
@@ -343,6 +373,7 @@ def process_file(
     skip_skip_trace: bool,
     skip_phone_score: bool,
     skip_enformion: bool = False,
+    trace_only_found: bool = False,
 ) -> dict:
     """Enrich one per-week file. Returns a stats dict.
 
@@ -351,6 +382,12 @@ def process_file(
     named rows, the discovered heir for the rest) so the whole sheet has phones
     + dial-priority before the DataSift upload. No double-charge: in all-cases
     mode Phase 1 does research only and Phase 2 does the single trace per row.
+
+    trace_only_found: pay to trace ONLY the rows where research just produced a
+    person. Set for the catch-up weeks, which are re-read every night: without
+    it each pass would re-bill Tracerfy for the same still-nameless estates,
+    and tracing a row with no decision maker traces the decedent, which is
+    money spent on a dead end.
     """
     rows = _load_rows(src)
     research_targets = [r for r in rows if is_target_row(r)]
@@ -406,15 +443,23 @@ def process_file(
                             src.name, gate, enf_eligible,
                             enf_eligible * ENFORMION_PER_MATCH)
         else:
+            # Under trace_only_found the trace + score are paid ONLY for rows
+            # where research turns up a person, so charging every target for
+            # them (as the plain estimate does) overstates a catch-up week
+            # several-fold. Bill the research to everyone and the trace to the
+            # share that historically resolves.
+            trace_share = _RESOLVE_RATE if trace_only_found else 1.0
             est = len(research_targets) * (
                 EST_COST_RESEARCH_PER_ROW
-                + (0.0 if skip_skip_trace else EST_COST_SKIPTRACE_PER_ROW)
-                + (0.0 if (skip_phone_score or skip_skip_trace) else EST_COST_PHONESCORE_PER_ROW)
+                + trace_share * (0.0 if skip_skip_trace else EST_COST_SKIPTRACE_PER_ROW)
+                + trace_share * (0.0 if (skip_phone_score or skip_skip_trace)
+                                 else EST_COST_PHONESCORE_PER_ROW)
             )
-            logger.info("%s: %d rows, %d no-contact targets%s -> est ~$%.2f (DRY RUN, no calls)",
+            logger.info("%s: %d rows, %d no-contact targets%s -> est ~$%.2f (DRY RUN, no calls%s)",
                         src.name, len(rows), len(research_targets),
                         f" (+{stats['capped_out']} deferred by cap)" if stats["capped_out"] else "",
-                        est)
+                        est,
+                        "; ceiling — obituary cache hits are free" if trace_only_found else "")
         stats["est_cost"] = est
         return stats
 
@@ -443,11 +488,20 @@ def process_file(
             # In default mode, trace + score the freshly-found DMs here.
             phase1_scores: dict = {}
             if not all_cases and not skip_skip_trace and config.TRACERFY_API_KEY:
-                logger.info("%s: Tracerfy skip trace (up to 5 heir traces/row)...", src.name)
-                batch_skip_trace(notices, max_signing_traces=5, lookup_heir_addresses=True,
-                                 address_lookup_api_key=config.ANTHROPIC_API_KEY)
-                if not skip_phone_score and config.TRESTLE_API_KEY:
-                    phase1_scores = score_record_phones(notices, config.TRESTLE_API_KEY)
+                to_trace = ([n for n in notices if (n.decision_maker_name or "").strip()]
+                            if trace_only_found else notices)
+                if not to_trace:
+                    logger.info("%s: no new decision maker found — nothing to trace.",
+                                src.name)
+                else:
+                    logger.info("%s: Tracerfy skip trace on %d row(s)%s "
+                                "(up to 5 heir traces/row)...", src.name, len(to_trace),
+                                " with a freshly-found DM" if trace_only_found else "")
+                    batch_skip_trace(to_trace, max_signing_traces=5,
+                                     lookup_heir_addresses=True,
+                                     address_lookup_api_key=config.ANTHROPIC_API_KEY)
+                    if not skip_phone_score and config.TRESTLE_API_KEY:
+                        phase1_scores = score_record_phones(to_trace, config.TRESTLE_API_KEY)
 
             for n in notices:
                 row = notice_to_row[id(n)]
@@ -557,34 +611,54 @@ def main() -> None:
                     help="Skip Tracerfy phone stage (no phone cost).")
     ap.add_argument("--skip-phone-score", action="store_true",
                     help="Skip Trestle dial-priority scoring of the DM phone.")
+    ap.add_argument("--weeks-back", type=int, default=DEFAULT_WEEKS_BACK,
+                    help=f"How many weeks back to revisit (default {DEFAULT_WEEKS_BACK}; "
+                         "env NC_DP_WEEKS_BACK). 1 = latest week only. Obituaries "
+                         "are usually published AFTER the estate is filed, so a "
+                         "one-week window misses most of them.")
+    ap.add_argument("--backfill-max-rows", type=int, default=DEFAULT_BACKFILL_MAX_ROWS,
+                    help=f"Per-file research cap for the catch-up weeks (default "
+                         f"{DEFAULT_BACKFILL_MAX_ROWS}; env NC_DP_BACKFILL_MAX_ROWS). "
+                         "The newest week uses --max-rows.")
     ap.add_argument("--skip-enformion", action="store_true",
                     help="Skip the Enformion PersonSearch fallback for phone-less "
                          "named PRs (~$0.35/match; also: env NC_ENFORMION=0; "
                          "inert anyway unless ENFORMION_AP_NAME/PASSWORD are set).")
     args = ap.parse_args()
 
-    files = select_target_files(args.all_weeks, args.csv)
+    files = select_target_files(args.all_weeks, args.csv, args.weeks_back)
     if not files:
         logger.info("No files to process.")
         return
 
     logger.info("%s deep prospecting over %d file(s):%s",
-                "DRY RUN" if args.dry_run else "Running",
-                len(files), " (latest week)" if not args.all_weeks and not args.csv else "")
+                "DRY RUN" if args.dry_run else "Running", len(files),
+                " (latest week)" if len(files) == 1 and not args.csv else
+                f" (latest week + {len(files) - 1} catch-up week(s))"
+                if not args.all_weeks and not args.csv else "")
 
     all_stats = []
-    for fp in files:
+    for i, fp in enumerate(files):
+        # Only the newest week gets the full all-cases treatment. The catch-up
+        # weeks are re-read every night, so they research and trace ONLY what
+        # is still nameless -- re-running all-cases over them would re-bill
+        # Tracerfy/Enformion/Trestle for rows that already have their phones.
+        catch_up = i > 0 and not args.csv and not args.all_weeks
+        if catch_up:
+            logger.info("--- catch-up week: %s (research only, cap %d)",
+                        fp.name, args.backfill_max_rows)
         all_stats.append(process_file(
             fp,
             dry_run=args.dry_run,
-            all_cases=args.all_cases,
-            max_rows=args.max_rows,
+            all_cases=args.all_cases and not catch_up,
+            max_rows=args.backfill_max_rows if catch_up else args.max_rows,
             max_heir_depth=args.max_heir_depth,
             skip_heir_verification=args.skip_heir_verification,
             skip_dm_address=args.skip_dm_address,
             skip_skip_trace=args.skip_skip_trace,
             skip_phone_score=args.skip_phone_score,
             skip_enformion=args.skip_enformion,
+            trace_only_found=catch_up,
         ))
 
     # ── Summary ───────────────────────────────────────────────────────────
