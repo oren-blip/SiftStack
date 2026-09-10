@@ -1605,6 +1605,44 @@ def render_report(
 # ledger"). Email-safe: inline styles only, table layout, system fonts.
 
 _GREEN = "#1b5e20"
+
+# Phone stylesheet. Desktop is untouched; below 600px the wide data tables
+# restack into one card per row so nothing forces the message wider than the
+# screen. A client that ignores <style> just gets today's desktop layout.
+_CSS = """
+    body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}
+    table{mso-table-lspace:0;mso-table-rspace:0;}
+    @media only screen and (max-width:600px){
+      .wrap{padding:0!important;}
+      .card{border-radius:0!important;border-left:0!important;border-right:0!important;}
+      .pad{padding-left:14px!important;padding-right:14px!important;}
+      .hd{padding:18px 14px!important;}
+      .tl{display:inline-block!important;width:50%!important;
+          box-sizing:border-box!important;padding:5px!important;}
+      .b{font-size:14px!important;line-height:1.55!important;}
+      .s{font-size:12.5px!important;line-height:1.5!important;}
+      .rt{border:0!important;border-radius:0!important;}
+      .rt tr.h{display:none!important;}
+      .rt tr.r{display:block!important;background:#ffffff!important;
+               border:1px solid #e7eaee!important;border-radius:8px!important;
+               padding:3px 0 6px!important;margin:0 0 7px!important;}
+      .rt td.rc{display:block!important;width:auto!important;
+                background:#ffffff!important;padding:2px 12px!important;
+                font-size:14px!important;line-height:1.4!important;
+                word-break:break-word!important;overflow:hidden!important;}
+      .rt td.t{display:inline-block!important;font-weight:700!important;
+               font-size:15px!important;color:#111827!important;
+               padding:5px 4px 3px 12px!important;overflow:visible!important;}
+      .rt td.t2{display:inline-block!important;font-weight:600!important;
+                font-size:14px!important;color:#6b7280!important;
+                padding:5px 12px 3px 0!important;}
+      .lb2{display:inline!important;color:#c3c8ce!important;padding-right:5px;}
+      .lb{display:block!important;float:left!important;width:98px;
+          color:#6b7280!important;font-size:11px!important;font-weight:700!important;
+          letter-spacing:.4px;text-transform:uppercase;padding-top:2px;}
+      .vl{display:block!important;margin-left:104px;}
+    }
+"""
 _F = ("font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
       "Helvetica,Arial,sans-serif;")
 _MONO = ("font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"
@@ -1617,7 +1655,11 @@ def _esc(s) -> str:
 
 def _p(inner: str, *, color: str = "#374151", size: str = "13.5px") -> str:
     """A paragraph. `inner` is already-escaped/marked-up HTML."""
-    return (f'<p style="{_F}font-size:{size};line-height:1.6;color:{color};'
+    try:  # "b" = body copy the phone stylesheet scales up; "s" = fine print.
+        cls = "b" if float(size.rstrip("px")) >= 13 else "s"
+    except ValueError:
+        cls = "b"
+    return (f'<p class="{cls}" style="{_F}font-size:{size};line-height:1.6;color:{color};'
             f'margin:0 0 8px;">{inner}</p>')
 
 
@@ -1638,8 +1680,17 @@ def _chip(inner: str) -> str:
             f'{_F}font-size:12px;">{inner}</span>')
 
 
-def _tbl(headers: list[str], rows: list[list[str]], note: str = "") -> str:
-    """A small data table. Cell values are already-escaped/marked-up HTML."""
+def _tbl(headers: list[str], rows: list[list[str]], note: str = "",
+         *, title_cols: int = 1) -> str:
+    """A small data table. Cell values are already-escaped/marked-up HTML.
+
+    On a phone this same markup restacks into one card per row (see _CSS):
+    the header row is hidden, every cell becomes its own line, column 0 is
+    the card title (`title_cols` of them, joined) and the rest are labelled
+    from `headers`. Without that,
+    an 11-column table forces the email ~840px wide and every mail app
+    shrink-to-fits the whole message down to ~6px type.
+    """
     th = "".join(
         f'<th align="left" style="{_F}font-size:10.5px;font-weight:700;color:#6b7280;'
         f'text-transform:uppercase;letter-spacing:.4px;padding:6px 10px;'
@@ -1648,21 +1699,33 @@ def _tbl(headers: list[str], rows: list[list[str]], note: str = "") -> str:
     body = []
     for i, cells in enumerate(rows):
         bg = "background:#fbfcfd;" if i % 2 else "background:#ffffff;"
-        tds = "".join(
-            f'<td valign="top" style="{_F}font-size:13px;color:#374151;line-height:1.45;'
-            f'padding:6px 10px;{bg}">{c}</td>' for c in cells)
-        body.append(f"<tr>{tds}</tr>")
-    note_html = (f'<div style="{_F}font-size:11.5px;color:#8a919a;margin:4px 2px 0;">'
+        tds = []
+        for j, c in enumerate(cells):
+            head = headers[j] if j < len(headers) else ""
+            # The title cells name the phone card, so they need no label.
+            if j >= title_cols and head:
+                lab = f'<span class="lb" style="display:none;">{_esc(head)}</span>'
+                c = f'<span class="vl">{c}</span>'
+            elif 0 < j < title_cols:
+                lab = '<span class="lb2" style="display:none;">&middot;</span>'
+            else:
+                lab = ""
+            cls = "rc t" if j == 0 else ("rc t2" if j < title_cols else "rc")
+            tds.append(
+                f'<td class="{cls}" valign="top" style="{_F}font-size:13px;color:#374151;'
+                f'line-height:1.45;padding:6px 10px;{bg}">{lab}{c}</td>')
+        body.append(f'<tr class="r">{"".join(tds)}</tr>')
+    note_html = (f'<div class="s" style="{_F}font-size:11.5px;color:#8a919a;margin:4px 2px 0;">'
                  f'{_esc(note)}</div>') if note else ""
-    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+    return (f'<table class="rt" role="presentation" width="100%" cellpadding="0" cellspacing="0" '
             f'style="border:1px solid #e7eaee;border-radius:8px;border-collapse:separate;'
             f'border-spacing:0;overflow:hidden;">'
-            f"<tr>{th}</tr>" + "".join(body) + "</table>" + note_html)
+            f'<tr class="h">{th}</tr>' + "".join(body) + "</table>" + note_html)
 
 
 def _stat_tile(number, label, accent_bg, accent_fg) -> str:
     return (
-        f'<td style="width:25%;padding:6px;" valign="top">'
+        f'<td class="tl" style="width:25%;padding:6px;" valign="top">'
         f'<div style="background:{accent_bg};border-radius:8px;padding:14px 12px;text-align:center;">'
         f'<div style="font-size:30px;font-weight:800;color:{accent_fg};line-height:1;">{number}</div>'
         f'<div style="font-size:10.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;'
@@ -1701,11 +1764,11 @@ def _kpi_html(k: dict) -> list[str]:
     parts.append(_p("<b>Deal math</b> (last 30 days):", color="#374151", size="13px"))
     parts.append(f'<ul style="{_F}font-size:13px;color:#374151;line-height:1.55;'
                  f'margin:0 0 10px;padding-left:20px;">'
-                 + "".join(f'<li style="margin:0 0 5px;">{_esc(x)}</li>' for x in k["deal_math"])
+                 + "".join(f'<li class="b" style="margin:0 0 5px;">{_esc(x)}</li>' for x in k["deal_math"])
                  + "</ul>")
 
     if k["flags"]:
-        items = "".join(f'<li style="margin:0 0 6px;">{_esc(f)}</li>' for f in k["flags"])
+        items = "".join(f'<li class="b" style="margin:0 0 6px;">{_esc(f)}</li>' for f in k["flags"])
         parts.append(
             f'<div style="background:#fdf2f2;border:1px solid #f3c2c2;border-radius:8px;'
             f'padding:10px 14px;margin:6px 0 10px;">'
@@ -1820,7 +1883,7 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
     if outage.get("counties"):
         parts.append(
             f'<div style="{_F}background:#fef2f2;border:1px solid #fecaca;border-radius:8px;'
-            f'padding:10px 14px;margin:14px 0 4px;color:#b91c1c;font-size:13px;font-weight:600;">'
+            f'padding:10px 14px;margin:14px 0 4px;color:#b91c1c;font-size:13px;font-weight:600;" class="b">'
             f'County GIS outage this run: {_esc(", ".join(outage["counties"]))} — rows for '
             f'these counties are incomplete and will be recovered on the next clean run.</div>')
 
@@ -1832,7 +1895,7 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
     parts.append(_h("What to work on next"))
     if m["prios"]:
         items = "".join(
-            f'<li style="{_F}font-size:13px;color:#513c06;line-height:1.55;'
+            f'<li class="b" style="{_F}font-size:13px;color:#513c06;line-height:1.55;'
             f'margin:0 0 7px;">{_esc(p)}</li>' for p in m["prios"])
         parts.append(
             f'<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'
@@ -1853,7 +1916,8 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
         ] for r in m["new_today"][:cap]]
         note = (f"...and {len(m['new_today']) - cap} more in the attached report"
                 if len(m["new_today"]) > cap else "")
-        parts.append(_tbl(["Case No.", "County", "Deceased", "Property"], rows, note))
+        parts.append(_tbl(["Case No.", "County", "Deceased", "Property"], rows, note,
+                          title_cols=2))
 
     if m["eyeballs"]:
         parts.append(_h(f"Check before mailing ({len(m['eyeballs'])})"))
@@ -1867,7 +1931,8 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
         ] for r, tags in m["eyeballs"][:8]]
         note = (f"...and {len(m['eyeballs']) - 8} more in the attached report"
                 if len(m["eyeballs"]) > 8 else "")
-        parts.append(_tbl(["Case No.", "County", "Deceased", "Why"], rows, note))
+        parts.append(_tbl(["Case No.", "County", "Deceased", "Why"], rows, note,
+                          title_cols=2))
 
     parts.append(_h("Deep prospecting queue"))
     if not m["dp_queue"]:
@@ -1899,7 +1964,7 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
                     f"<b>{len(m['ready'])}</b> mail-ready with a named contact{phone_bit}."))
     if improvements:
         items = "".join(
-            f'<li style="{_F}font-size:13px;color:#374151;line-height:1.55;'
+            f'<li class="b" style="{_F}font-size:13px;color:#374151;line-height:1.55;'
             f'margin:0 0 6px;">{_esc(b)}</li>' for b in improvements)
         parts.append(_p("Pipeline improvements shipped this week:",
                         color="#6b7280", size="12.5px"))
@@ -1920,7 +1985,7 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
     if q_line:
         parts.append(
             f'<div style="{_F}background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'
-            f'padding:10px 14px;margin:14px 0 4px;color:#7a5300;font-size:13px;">'
+            f'padding:10px 14px;margin:14px 0 4px;color:#7a5300;font-size:13px;" class="b">'
             f'{_esc(q_line)}</div>')
 
     total_drops = sum(polish_stats.get(k, 0) for k in (
@@ -1935,7 +2000,7 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
     if ts_line:
         fine.append(ts_line)
     parts.append(
-        f'<div style="{_F}font-size:11.5px;color:#9aa1a9;margin:18px 0 0;'
+        f'<div class="s" style="{_F}font-size:11.5px;color:#9aa1a9;margin:18px 0 0;'
         f'border-top:1px solid #e4e8eb;padding-top:10px;">'
         + _esc(" / ".join(fine))
         + "<br>Full detail — match reasons, drop breakdown, DP ledger — is in the "
@@ -1944,25 +2009,31 @@ def render_html_email(m: dict, *, tonight: dict, week_n: int,
     body_html = "\n".join(parts)
 
     return f"""\
-<!doctype html><html><body style="margin:0;padding:0;background:#eef0f2;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;padding:24px 12px;">
-<tr><td align="center">
-<table role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;{_F}">
-  <tr><td style="background:{_GREEN};padding:22px 24px;">
+<!doctype html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light only">
+<style>{_CSS}</style>
+</head><body style="margin:0;padding:0;background:#eef0f2;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;">
+<tr><td class="wrap" align="center" style="padding:24px 12px;">
+<table class="card" role="presentation" width="700" cellpadding="0" cellspacing="0" style="max-width:700px;width:100%;background:#ffffff;border:1px solid #e2e5e9;border-radius:12px;overflow:hidden;{_F}">
+  <tr><td class="hd" style="background:{_GREEN};padding:22px 24px;">
     <div style="color:#ffffff;font-size:19px;font-weight:800;letter-spacing:.2px;">NC Probate Pipeline &middot; Week {week_n}</div>
     <div style="color:#bfe3c5;font-size:13px;margin-top:3px;">{date_str} &middot; {day_note}</div>
   </td></tr>
-  <tr><td style="padding:14px 18px 4px;">
+  <tr><td class="pad" style="padding:14px 18px 4px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{tiles}</tr></table>
   </td></tr>
-  <tr><td style="padding:6px 24px 0;">
+  <tr><td class="pad" style="padding:6px 24px 0;">
     <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin-bottom:8px;">By county &mdash; this week vs last</div>
     <div>{chips}</div>
   </td></tr>
-  <tr><td style="padding:0 24px 8px;">
+  <tr><td class="pad" style="padding:0 24px 8px;">
     {body_html}
   </td></tr>
-  <tr><td style="padding:12px 24px 22px;color:#9aa1a9;font-size:11px;">
+  <tr><td class="pad" style="padding:12px 24px 22px;color:#9aa1a9;font-size:11px;">
     Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &middot; SiftStack
   </td></tr>
 </table>
