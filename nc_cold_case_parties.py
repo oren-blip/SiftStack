@@ -56,11 +56,31 @@ from consolidate_weeks import auto_pick_weekly_files  # noqa: E402
 from ecourts_case_api import CaseDetail, CaseDetailClient  # noqa: E402
 from iso_week_archive import get_archived_weeks  # noqa: E402
 from nightly_guard import refuse_if_nightly  # noqa: E402
+from parties_cache import cache_get, cache_put  # noqa: E402
 
 
 def _stuck(r: dict) -> bool:
+    """Rows the court should still be asked about.
+
+    Blank / "Heirs of" obviously qualify. So does a PR the PIPELINE INVENTED --
+    a deed co-owner or obituary relative promoted by `dm-promoted-pr`. That name
+    is a placeholder standing in until the court names someone, but it is not
+    blank, so it silently disqualified the row from this sweep and the case was
+    marketed to a guess forever. Houser 26E001025-170 (Catawba, filed 9/2/2026):
+    the filing-day scrape got no parties, polish promoted a guessed sister
+    "Kathryn Kate", and the court listed two co-executors the next morning --
+    but no job ever looked again, and the CRM was still mailing the guess when
+    Oren found it by hand on 9/10. Same rule as the nightly's
+    backfill_pr_from_parties._blank_pr; rows already confirmed from Parties
+    (`pr-backfill-parties` / `cold-case-parties`) are left alone.
+    """
     pr = (r.get("Personal Representative") or "").strip().lower()
-    return (not pr) or pr.startswith("heirs of")
+    if (not pr) or pr.startswith("heirs of"):
+        return True
+    reason = r.get("Match Reason") or ""
+    return ("dm-promoted-pr" in reason
+            and "pr-backfill-parties" not in reason
+            and "cold-case-parties" not in reason)
 
 
 def _age_days(r: dict) -> int:
@@ -163,7 +183,7 @@ def main() -> int:
     targets.sort(key=lambda t: (t[2] if t[2] >= 0 else 10**6))
 
     print(f"Archived weeks scanned          : {len(files)}")
-    print(f"Stuck rows (blank/'Heirs of' PR): {len(targets) + no_hex}")
+    print(f"Stuck rows (no PR / guessed PR) : {len(targets) + no_hex}")
     print(f"  askable now (have the hex)    : {len(targets)}")
     print(f"  BLOCKED (no hex)              : {no_hex}"
           f"   <- run backfill_case_hex_20260903.py first")
@@ -199,12 +219,19 @@ def main() -> int:
     for i, (path, r, age) in enumerate(todo, 1):
         case = (r.get("Case No.") or "").strip()
         print(f"  [{i}/{len(todo)}] {case:18} filed {age}d ago")
-        try:
-            parties = client.fetch_parties((r.get("Case ID (hex)") or "").strip(), retries=3)
-        except Exception as e:  # noqa: BLE001
-            print(f"      call failed ({type(e).__name__}: {e})")
-            failed += 1
-            continue
+        case_hex = (r.get("Case ID (hex)") or "").strip()
+        parties = cache_get(case_hex)          # free if the top-up already asked
+        if parties:
+            print("      (from parties cache)")
+        else:
+            try:
+                parties = client.fetch_parties(case_hex, retries=3)
+            except Exception as e:  # noqa: BLE001
+                print(f"      call failed ({type(e).__name__}: {e})")
+                failed += 1
+                continue
+            if parties:
+                cache_put(case_hex, parties)
         if not parties:
             silent += 1
             print("      court still names nobody")

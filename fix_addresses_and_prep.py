@@ -3619,6 +3619,41 @@ def backfill_from_manual_archive(rows: list[dict]) -> tuple[int, int]:
     return backfilled, no_match
 
 
+def _flag_co_executors(row: dict, fill: dict) -> None:
+    """Mark a case the court gave more than one appointee.
+
+    Co-executors both sign, so a caller has to know before spending on the
+    lead — the same warning Step 4.96 raises for multi-heir estates, but from
+    the court's appointment list rather than the beneficiary list (charitable
+    beneficiaries produce no heirs, so 4.96 never fires on a case like Houser
+    26E001025-170).
+    """
+    if fill.get("DM 2 Relationship") != "co-executor":
+        return
+    names = [fill.get("Personal Representative", "")]
+    names += [fill.get(f"{s} Name", "") for s in ("DM 2", "DM 3")]
+    names = [n for n in names if n]
+    if "Multi-Signer" in (row.get("Tags") or ""):
+        return
+    tags = (row.get("Tags") or "").strip()
+    row["Tags"] = (tags + ", " if tags else "") + f"Multi-Signer ({len(names)})"
+    tag_reason(row, "co-executors")
+    _add_note(row, f"[CO-EXECUTORS: the court appointed {' and '.join(names)} — "
+                   f"every one of them signs the deed. Confirm the full signer "
+                   f"set before spending on this lead.]")
+
+
+def _neg_date(iso: str) -> str:
+    """Sort key that puts the NEWEST ISO date first in an ascending sort.
+
+    Complement each digit ('2026-09-02' -> '7973-90-97') so plain string
+    ordering runs backwards; blank dates sort last.
+    """
+    if not iso:
+        return "~"          # after every digit-complement result
+    return "".join(str(9 - int(c)) if c.isdigit() else c for c in iso)
+
+
 def backfill_pr_from_parties(rows: list[dict]) -> int:
     """Fill blank / 'Heirs of' Personal Representative from the eCourts Parties API.
 
@@ -3678,21 +3713,53 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
     # from ~18 to 40 targets, and a throttled Parties call costs ~55s (see
     # project_parties_api_throttle_heirs_of), so an uncapped run could add
     # ~35 min to the nightly. Missing-PR rows go first (a nameless lead is
-    # worse than a lead with no heir list); the rest drain over the following
-    # nights, since anything filled drops out of the target set for good.
+    # worse than a lead with no heir list).
     def _pr_missing(r: dict) -> bool:
         pr = (r.get("Personal Representative") or "").strip().lower()
         return (not pr) or pr.startswith("heirs of")
 
-    targets.sort(key=lambda r: (not _pr_missing(r), (r.get("Case No.") or "")))
+    # THE CAP ONLY EXISTS TO RATION COURT CALLS, so it must only count rows
+    # that will actually make one. A row whose answer is already in the disk
+    # cache (warmed by the midday nc_parties_topup job) costs no call, no
+    # throttle slot and no time — but until 2026-09-10 the cap was applied to
+    # the raw target list, so those free rows ate the ration. Week 36, night of
+    # 9/9: 131 targets, cap 25, and ~24 of the 25 were cache hits — the nightly
+    # spent its entire court window re-learning names it already had while 107
+    # rows were never asked at all. Houser 26E001025-170 (two co-executors on
+    # file at the court since 9/2) sat at queue position 85 and was still
+    # marketing to a guessed sister 8 days later.
+    from parties_cache import cache_get as _cache_get
+    warm = [r for r in targets if _cache_get((r.get("Case ID (hex)") or "").strip())]
+    warm_ids = {id(r) for r in warm}
+    cold = [r for r in targets if id(r) not in warm_ids]
+
+    # Newest filing first among the rows that cost a call. The court indexes
+    # parties within a day or two of filing, so a fresh case is both the most
+    # likely to answer and the most valuable to fix (it is still first-to-market
+    # and hasn't been mailed under a guessed name yet). Ascending Case No. — the
+    # old order — is oldest-first, and cold-case yield is ~10% and flat with age
+    # (project_cold_case_court_yield); those are nc_cold_case_parties.py's job,
+    # not the nightly's.
+    def _filed_key(r: dict) -> str:
+        from nc_gis_lookup import _iso_date
+        return _iso_date(r.get("File Date")) or ""
+
+    warm.sort(key=lambda r: (not _pr_missing(r), (r.get("Case No.") or "")))
+    cold.sort(key=lambda r: (not _pr_missing(r), _neg_date(_filed_key(r)),
+                             (r.get("Case No.") or "")))
     try:
         cap = int(os.environ.get("NC_PARTIES_MAX", "25"))
     except ValueError:
         cap = 25
-    if cap > 0 and len(targets) > cap:
-        print(f"  (parties backfill: {len(targets)} rows need the court; "
-              f"doing {cap} this run, rest next night — NC_PARTIES_MAX to change)")
-        targets = targets[:cap]
+    if cap > 0 and len(cold) > cap:
+        print(f"  (parties backfill: {len(targets)} rows need the court "
+              f"({len(warm)} answered from cache, free); calling the court for "
+              f"{cap} of {len(cold)}, rest next night — NC_PARTIES_MAX to change)")
+        cold = cold[:cap]
+    elif targets:
+        print(f"  (parties backfill: {len(targets)} rows need the court "
+              f"({len(warm)} from cache, {len(cold)} court calls))")
+    targets = warm + cold
     if not targets:
         return 0
 
@@ -3717,7 +3784,11 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
     throttled_rows: list[dict] = []
     for r in targets:
         case_hex = (r.get("Case ID (hex)") or "").strip()
-        if not parties_budget_available():
+        # Warm rows are answered from disk — no call, no throttle slot — so the
+        # spent-budget check must not stop them (they are ordered first). Before
+        # this, an exhausted budget broke out of the loop before the cache was
+        # ever consulted, and answers we had already paid for went unapplied.
+        if id(r) not in warm_ids and not parties_budget_available():
             print("  PR backfill: Parties budget spent — remaining rows resume next run")
             break
         detail = None
@@ -3749,6 +3820,7 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
             had_benef = bool((r.get("Beneficiaries") or "").strip())
             prev_pr = (r.get("Personal Representative") or "").strip()
             apply_fill_to_row(r, fill)
+            _flag_co_executors(r, fill)
             if fill.get("Personal Representative"):
                 tag_reason(r, "pr-backfill-parties")
                 filled += 1
@@ -3801,6 +3873,7 @@ def backfill_pr_from_parties(rows: list[dict]) -> int:
                 had_benef = bool((r.get("Beneficiaries") or "").strip())
                 prev_pr = (r.get("Personal Representative") or "").strip()
                 apply_fill_to_row(r, fill)
+                _flag_co_executors(r, fill)
                 if fill.get("Personal Representative"):
                     tag_reason(r, "pr-backfill-parties")
                     filled += 1

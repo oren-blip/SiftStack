@@ -12,9 +12,17 @@ Never touches any CSV. Safe to kill at any moment (each answer is
 persisted as it lands). Skips same-day filings (court hasn't indexed
 their parties yet) exactly like the nightly does.
 
-Targets, in priority order (capped by NC_TOPUP_MAX_CALLS, default 40):
-  1. Latest polished weekly CSV: rows with a blank / "Heirs of" PR
-     (nameless leads — worst gap, same rule as backfill_pr_from_parties)
+Targets, in priority order (capped by NC_TOPUP_MAX_CALLS, default 40),
+newest filing first inside each group — the court indexes parties within a
+day or two of filing, so a fresh case is both the likeliest to answer and
+the most valuable to fix while it is still first-to-market:
+  1. Latest polished weekly CSV: rows the court should be re-asked about —
+     blank / "Heirs of" PR, or a PR the PIPELINE INVENTED (`dm-promoted-pr`,
+     a promoted deed co-owner standing in until the court names someone).
+     Same rule as backfill_pr_from_parties._blank_pr; before 2026-09-10 this
+     job only looked for blank/"Heirs of" and so never warmed a case whose
+     guess had already filled the column — Houser 26E001025-170 was mailing
+     a guessed sister for 8 days while two co-executors sat on the docket.
   2. Latest polished weekly CSV: rows with a named PR but blank
      Beneficiaries (never actually asked — the Week 31 lesson)
   3. Latest merged weekly CSV: rows with no Parcel ID (Step 0.64's
@@ -81,6 +89,30 @@ def _read(path: Path) -> list[dict]:
         return list(DictReader(f))
 
 
+def _filed_key(row: dict) -> str:
+    """ISO file date for sorting; blank sorts oldest."""
+    s = (row.get("File Date") or "").strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s[:10] if fmt == "%Y-%m-%d" else s,
+                                     fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def _needs_court_pr(row: dict) -> bool:
+    """Mirror of backfill_pr_from_parties._blank_pr: rows whose PR the court
+    should still be asked about. A `dm-promoted-pr` name is the pipeline's own
+    guess (a promoted deed co-owner), not an answer — the court must be able to
+    overwrite it. Rows already confirmed from Parties are left alone."""
+    pr = (row.get("Personal Representative") or "").strip().lower()
+    if (not pr) or pr.startswith("heirs of"):
+        return True
+    reason = row.get("Match Reason") or ""
+    return "dm-promoted-pr" in reason and "pr-backfill-parties" not in reason
+
+
 def collect_targets() -> list[tuple[str, str, str]]:
     """[(case_no, hex, why)] deduped by hex, priority order preserved."""
     merged = _latest("nc_estates_ftm_*_week*_merged.csv")
@@ -98,27 +130,26 @@ def collect_targets() -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    def add(row: dict, why: str) -> None:
-        hx = (row.get("Case ID (hex)") or "").strip()
-        if not hx or hx in seen or _too_young(row):
-            return
-        if cache_get(hx) is not None:
-            return  # already warm
-        seen.add(hx)
-        out.append(((row.get("Case No.") or "?").strip(), hx, why))
+    def add(rows: list[dict], why: str) -> None:
+        """Queue every matching row, newest filing first."""
+        batch: list[tuple[str, str, str]] = []
+        for row in sorted(rows, key=_filed_key, reverse=True):
+            hx = (row.get("Case ID (hex)") or "").strip()
+            if not hx or hx in seen or _too_young(row):
+                continue
+            if cache_get(hx) is not None:
+                continue  # already warm
+            seen.add(hx)
+            batch.append(((row.get("Case No.") or "?").strip(), hx, why))
+        out.extend(batch)
 
     if polished is not None:
         rows = _read(polished)
-        for r in rows:
-            pr = (r.get("Personal Representative") or "").strip().lower()
-            if (not pr) or pr.startswith("heirs of"):
-                add(r, "no PR")
-        for r in rows:
-            if not (r.get("Beneficiaries") or "").strip():
-                add(r, "no beneficiaries")
-    for r in _read(merged):
-        if not (r.get("Parcel ID") or "").strip():
-            add(r, "no parcel")
+        add([r for r in rows if _needs_court_pr(r)], "no PR")
+        add([r for r in rows if not (r.get("Beneficiaries") or "").strip()],
+            "no beneficiaries")
+    add([r for r in _read(merged) if not (r.get("Parcel ID") or "").strip()],
+        "no parcel")
     return out
 
 

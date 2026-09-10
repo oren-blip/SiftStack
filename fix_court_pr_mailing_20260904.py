@@ -33,6 +33,17 @@ Guards:
     python fix_court_pr_mailing_20260904.py            # dry run
     python fix_court_pr_mailing_20260904.py --apply
     python fix_court_pr_mailing_20260904.py --apply --only 26E000150-120
+
+2026-09-10: promoted from one-off to the standing repair pass. `--queued` (or
+`--from-file <snapshot>`) takes its case list from the PR-push queue instead of
+the hardcoded CASES below, so the scheduled court catch-up
+(scripts/nc_court_pr_catchup.bat) can run pr_upgrade_step for the NAME and this
+for the ADDRESS in the same job. Without the second half every automated push
+produces the right-name/wrong-address state described above -- which is worse
+than not pushing at all, so the two must never be scheduled apart.
+
+    python fix_court_pr_mailing_20260904.py --apply --queued
+    python fix_court_pr_mailing_20260904.py --apply --from-file output/.pr_push_inflight.txt
 """
 from __future__ import annotations
 
@@ -61,10 +72,28 @@ ONLY = ""
 if "--only" in sys.argv:
     ONLY = sys.argv[sys.argv.index("--only") + 1]
 
-CASES = ["26E000150-120", "26E000667-350", "26E000329-540", "26E001915-590",
-         "26E001824-590", "26E001820-590", "26E000496-480", "26E000542-790",
-         "26E000328-540", "26E001102-350", "26E001141-350", "26E000899-120",
-         "26E000868-480", "26E000508-540"]
+# The 2026-09-04 batch this script was written for. Still the default so the
+# original invocation in the docstring keeps reproducing that run exactly.
+_ORIGINAL_CASES = ["26E000150-120", "26E000667-350", "26E000329-540", "26E001915-590",
+                   "26E001824-590", "26E001820-590", "26E000496-480", "26E000542-790",
+                   "26E000328-540", "26E001102-350", "26E001141-350", "26E000899-120",
+                   "26E000868-480", "26E000508-540"]
+
+
+def _cases_from_file(path: Path) -> list[str]:
+    """Case numbers, one per line — the PR-push queue's own format."""
+    if not path.exists():
+        return []
+    return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.startswith("#")]
+
+
+if "--from-file" in sys.argv:
+    CASES = _cases_from_file(Path(sys.argv[sys.argv.index("--from-file") + 1]))
+elif "--queued" in sys.argv:
+    CASES = _cases_from_file(REPO / "output" / "pr_push_queue.txt")
+else:
+    CASES = list(_ORIGINAL_CASES)
 
 
 def _canon(s: str) -> str:

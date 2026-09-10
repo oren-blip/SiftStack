@@ -283,6 +283,16 @@ def detail_to_fill_dict(detail: CaseDetail) -> dict | None:
             fill["Mailing State"] = addr.state
             fill["Mailing Zip"] = addr.zip
 
+    # Co-appointees beyond the one we mail: they all have to sign, so they are
+    # contacts, not trivia. Slot them into the DM 2 / DM 3 backup columns the
+    # workbook and DataSift already carry (Step 4.96 fills the same slots from
+    # beneficiaries and never overwrites what is already there).
+    for slot, co in zip(("DM 2", "DM 3"), [p for p in detail.executors if p is not ex]):
+        name = " ".join(filter(None, [co.first_name, co.last_name])).strip() or co.full_name
+        if name:
+            fill[f"{slot} Name"] = name
+            fill[f"{slot} Relationship"] = "co-executor"
+
     if detail.beneficiaries:
         lines: list[str] = []
         for b in detail.beneficiaries:

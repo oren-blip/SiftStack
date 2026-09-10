@@ -15,6 +15,8 @@ with no matching "done"/"aborted"/"skipped" after it means still running.
 """
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, time
 from pathlib import Path
 
@@ -41,6 +43,24 @@ def _in_start_blackout() -> str:
     return ""
 
 
+_STALE_AFTER_HOURS = float(os.environ.get("NC_NIGHTLY_STALE_HOURS", "14") or 14)
+
+_MARKER_TS = re.compile(r"(\d{2}/\d{2}/\d{4})\s+([\d:.]+)")
+
+
+def _marker_time(line: str) -> datetime | None:
+    """Parse the `MM/DD/YYYY HH:MM:SS.ss` stamp cmd.exe writes into a marker."""
+    m = _MARKER_TS.search(line or "")
+    if not m:
+        return None
+    for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M"):
+        try:
+            return datetime.strptime(f"{m.group(1)} {m.group(2)}", fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def nightly_running() -> str:
     """Return a human-readable reason string if the nightly is up, else ''."""
     blackout = _in_start_blackout()
@@ -58,9 +78,25 @@ def nightly_running() -> str:
     if last_start < 0:
         return ""
     tail = text[last_start:]
-    for marker in ("=== Daily run done", "Daily run aborted", "Daily run skipped"):
+    # "Back-half resume done" is a real ending: when the 4.5h budget killer
+    # chops the back half, nc_backhalf_resume.bat finishes the run and writes
+    # ITS OWN marker -- nc_daily_run.bat never reaches its "Daily run done".
+    # Without this the guard read the 9/9 run as still running all through 9/10
+    # and every guarded job (cold-case parties, hex backfill) refused silently
+    # on exactly the mornings after a run that overran, which are the mornings
+    # with the most left undone.
+    for marker in ("=== Daily run done", "Daily run aborted", "Daily run skipped",
+                   "=== Back-half resume done"):
         if marker in tail:
             return ""
+    # A run that was killed outright (machine slept, power cut) writes no marker
+    # at all, and "still running" would then be permanent. The nightly starts at
+    # 17:00 and the budget killer caps it at 4.5h, so anything still unmarked the
+    # next morning is over. The start blackout above and the pipeline lock remain
+    # the real mutex.
+    started = _marker_time(tail.split(chr(10), 1)[0])
+    if started and (datetime.now() - started).total_seconds() > _STALE_AFTER_HOURS * 3600:
+        return ""
     return f"nightly build still running -- {tail.split(chr(10), 1)[0].strip()}"
 
 

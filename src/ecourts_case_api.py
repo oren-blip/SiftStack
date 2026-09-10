@@ -250,6 +250,20 @@ class CaseDetail:
         return None
 
     @property
+    def executors(self) -> list[CaseParty]:
+        """EVERY formal appointee on the case, in docket order.
+
+        A co-appointment means every one of them signs the deed. `executor`
+        returns only the first, which is who we mail — the rest were dropped on
+        the floor. Houser 26E001025-170 (Catawba): Co-Executors David D Houser
+        (Jacksonville FL) and Terry Ritchie (Claremont NC). Mailing only David
+        loses both the second required signature AND the co-executor who lives
+        20 minutes from the property.
+        """
+        return [p for p in self.parties
+                if self._normalize_role(p.connection_type) in self._EXECUTOR_TYPES]
+
+    @property
     def beneficiaries(self) -> list[CaseParty]:
         return [p for p in self.parties if self._normalize_role(p.connection_type) in self._BENEFIT_TYPES]
 
