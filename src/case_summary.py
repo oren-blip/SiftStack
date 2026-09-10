@@ -345,6 +345,8 @@ def build_situation_prose(notice: NoticeData, api_key: str | None = None) -> str
             system=_SITUATION_SYSTEM,
             max_tokens=300,
             api_key=key,
+            # Cosmetic prose with a template fallback below — cheap model.
+            model=getattr(config, "SUMMARY_LLM_MODEL", "google/gemini-2.5-flash"),
         )
         if result and isinstance(result, dict):
             prose = (result.get("situation") or "").strip()

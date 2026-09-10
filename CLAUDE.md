@@ -475,6 +475,70 @@ phone for ONE already-court-named PR at their own mailing address, after Tracerf
 misses. SmartSkip cannot run unattended inside the nightly build. Spend stays capped
 by `NC_ENFORMION_MAX_SPEND`. Revisit if the monthly total climbs.
 
+## LLM routing and cost (build 1.0.38+, 2026-09-09)
+
+**Routing is PER JOB, decided by the model id** — not by a global switch.
+`llm_client._route()` reads the id: a namespaced `vendor/model`
+(`google/gemini-2.5-flash`) goes to **OpenRouter**, a bare id
+(`claude-sonnet-4-6`) goes to **Anthropic**. So each call site's own
+`model=` argument is authoritative, and the cheap high-volume reads can move
+without dragging the accuracy-critical ones with them.
+
+`LLM_BACKEND` still exists as a **global override** and should stay
+`anthropic`. It is the only way to reach ollama, and setting it to
+`openrouter` forces EVERYTHING there — including silently disabling
+`vision_json()`, which is the only thing that can read the **handwritten**
+NC court forms (Tesseract reads nothing off them). That override used to be
+the *only* control, and it dropped every per-call `model=`, which is exactly
+why flipping it looked cheap and was not.
+
+**Measured baseline** (21 nightly builds through 2026-09-09, from the
+`LLM USAGE this process` line the pipeline prints at exit):
+
+| | calls/night | tok in/out | $/night |
+|---|---|---|---|
+| Haiku 4.5 | 417 | 1.09M / 133k | $1.75 |
+| Sonnet 4-6 | 78 | 141k / 27k | $0.83 |
+| | | **total** | **$2.58** (~$54/mo) |
+
+**On OpenRouter (cheap):**
+- `HEIR_VERIFY_LLM_MODEL` — "is this survivor alive?", a yes/no + DOD read.
+  The single biggest line item: most of that 1.09M Haiku input was whole
+  obituary pages (6,000 chars each, up to 2 pages + 1 snippet per heir, 159
+  heirs on 9/9). **A/B'd against Haiku on real obituary pages 2026-09-09:
+  identical alive/dead and DOD on all 3 cases including a joint obituary with
+  two decedents.** Survivor names differed slightly and Gemini was arguably
+  better — Haiku returned role words (`daughter`, `nephews`) where Gemini
+  returned real names.
+- `ZILLOW_LLM_MODEL` — page status/home-type classify; `unknown` is a safe answer.
+- `SUMMARY_LLM_MODEL` — the 2-3 sentence lead blurb; has a template fallback.
+
+**Staying on Anthropic — do not move these:**
+- `OBITUARY_LLM_MODEL` (Sonnet) — heir/survivor extraction was moved UP to
+  Sonnet to fix a real hallucination bug (commit `83cfb97`). Moving it back
+  down re-buys that bug.
+- `LLM_MODEL` (Haiku) — court PDF / will / Application extraction. A wrong PR
+  name is expensive; the case file is supposed to win over every other source.
+- `LLM_VISION_MODEL` — handwriting. **No OpenRouter vision path is wired**, and
+  `vision_json()` returns None (loudly, since 1.0.38) on any other backend.
+- **The SMS agent** (`src/sms_agent/`, Opus 5, 8000 max tokens) calls the
+  Anthropic SDK directly and bypasses `llm_client` entirely — so it is NOT in
+  the nightly accounting above, and it must stay on Opus: it texts sellers.
+
+Expected saving ~$1.10/night (~$23/mo, ~40% of the API bill). The bigger wins
+are that the high-volume job no longer counts against the Anthropic monthly cap
+(which heir-verify blew through on 8/10 and 8/20), and that OpenRouter is the
+prerequisite for running unattended on fly.io instead of a desktop that has to
+be awake.
+
+Needs `openai>=1.0` (in requirements.txt) — the OpenAI-compatible client, used
+only to reach OpenRouter/Ollama. Before this build it was missing, which is why
+the OpenRouter backend had never actually executed.
+
+The nightly `LLM USAGE` log line now splits the estimate by provider, so the
+saving is visible per run:
+`LLM USAGE this process: N calls, est $X [Anthropic n = $a | OpenRouter m = $b]`
+
 ## DataSift.ai (REISift) Integration
 
 DataSift.ai (formerly REISift) is the CRM where scraped records land for niche sequential marketing campaigns. There is **no REST API** — upload is via Playwright browser automation of the web UI.

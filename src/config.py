@@ -60,6 +60,17 @@ DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 
 # ── LLM Backend ──────────────────────────────────────────────────────
+#
+# Routing is PER JOB, decided by the model id (see llm_client._route):
+# a namespaced id ("google/gemini-2.5-flash") goes to OpenRouter, a bare id
+# ("claude-sonnet-4-6") goes to Anthropic. So the cheap high-volume reads sit
+# on a cheap model while the accuracy-critical ones stay on Claude, and there
+# is no single switch that can move them all by accident.
+#
+# LLM_BACKEND is a global OVERRIDE, normally left at "anthropic": it is the
+# only way to reach ollama, and setting it to "openrouter" forces EVERYTHING
+# there — which also kills the handwriting/vision path. Don't use it to save
+# money; change the per-job models below instead.
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
 LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001")  # Anthropic model name (default for all LLM calls)
 # High-stakes obituary identity + heir/survivor extraction uses a stronger model.
@@ -70,15 +81,28 @@ OBITUARY_LLM_MODEL = os.getenv("OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
 # high-stakes extraction above — it runs hundreds of times per night, so it
 # gets the cheap model. 2026-08-03: unbounded verification on Sonnet made
 # 3,513 API calls in one nightly run and drained the Anthropic balance.
-HEIR_VERIFY_LLM_MODEL = os.getenv("HEIR_VERIFY_LLM_MODEL", "claude-haiku-4-5-20251001")
+# 2026-09-09: moved off Haiku to a cheap OpenRouter model. Measured over the
+# 21 nightly builds to 9/9 this was the single biggest line item — ~417 Haiku
+# calls a night, 1.09M input tokens, ~$1.75 of a $2.58 nightly bill, most of it
+# reading whole obituary pages to answer "alive or dead". Set this back to
+# "claude-haiku-4-5-20251001" to revert; the grounding guard and the
+# HEIR_VERIFY_LLM_BUDGET cap below are unchanged either way.
+HEIR_VERIFY_LLM_MODEL = os.getenv("HEIR_VERIFY_LLM_MODEL", "google/gemini-2.5-flash")
 HEIR_VERIFY_MAX_PAGES = int(os.getenv("HEIR_VERIFY_MAX_PAGES", "2"))      # search-result pages LLM-parsed per heir
 HEIR_VERIFY_MAX_HEIRS = int(os.getenv("HEIR_VERIFY_MAX_HEIRS", "8"))      # survivors verified per decedent
 HEIR_VERIFY_MAX_SUBHEIRS = int(os.getenv("HEIR_VERIFY_MAX_SUBHEIRS", "3"))  # sub-heirs verified per deceased heir
 HEIR_VERIFY_LLM_BUDGET = int(os.getenv("HEIR_VERIFY_LLM_BUDGET", "600"))  # hard cap on verify LLM calls per run
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")        # Local Ollama model
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1/")
+# Zillow listing-status read: classify a scraped page as active/sold/off-market
+# plus home type. Low stakes — a wrong read costs one mis-tagged row, and the
+# caller already treats "unknown" as a safe answer.
+ZILLOW_LLM_MODEL = os.getenv("ZILLOW_LLM_MODEL", "google/gemini-2.5-flash")
+# The 2-3 sentence "situation" blurb on a lead summary. Cosmetic prose with a
+# template fallback already wired underneath it.
+SUMMARY_LLM_MODEL = os.getenv("SUMMARY_LLM_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")       # OpenRouter API key
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # ── Site URLs ──────────────────────────────────────────────────────────

@@ -2436,9 +2436,12 @@ def _parse_obituary_with_llm(
     """
     if not obituary_text.strip():
         return None
-    # For Ollama backend, api_key not required
-    import config as _cfg
-    if getattr(_cfg, "LLM_BACKEND", "anthropic") == "anthropic" and not api_key:
+    # An Anthropic key is only required when THIS call actually goes to
+    # Anthropic. Heir verification routes to a cheap OpenRouter model, so
+    # gating it on the Anthropic key would silently kill every verification
+    # if that key were ever absent.
+    import llm_client as _lc
+    if _lc._route(model or _obituary_model()) == "anthropic" and not api_key:
         return None
 
     prompt = OBITUARY_PROMPT.format(

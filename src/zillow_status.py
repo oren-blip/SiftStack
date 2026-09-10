@@ -38,6 +38,12 @@ import requests
 import config as cfg
 from llm_client import chat_json
 
+
+def _status_model() -> str:
+    """Cheap model: this is a page classification, not an extraction."""
+    import config as _cfg  # local import keeps module import order intact
+    return getattr(_cfg, "ZILLOW_LLM_MODEL", "google/gemini-2.5-flash")
+
 logger = logging.getLogger(__name__)
 
 _DISABLED = os.environ.get("ZILLOW_DISABLE", "") == "1"
@@ -207,7 +213,8 @@ def _extract_status(markdown: str, addr: str) -> ZillowStatus:
         f"PAGE:\n{markdown[:12000]}"
     )
     try:
-        data = chat_json(prompt, system=_EXTRACT_SYSTEM, max_tokens=300)
+        data = chat_json(prompt, system=_EXTRACT_SYSTEM, max_tokens=300,
+                         model=_status_model())
     except Exception as e:  # noqa: BLE001
         logger.debug("zillow_status: LLM extract failed: %s", e)
         return _UNKNOWN

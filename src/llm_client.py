@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 #
 # Prices are per MTok (input, output) — update when Anthropic reprices.
 _PRICES = {
+    # OpenRouter ids are "vendor/model"; Anthropic ids are bare. Prefix match.
+    # OpenRouter reprices often — these drive the nightly log's ESTIMATE only;
+    # the authoritative number is the OpenRouter dashboard.
+    "google/gemini-2.5-flash-lite": (0.10, 0.40),
+    "google/gemini-2.5-flash": (0.30, 2.50),
+    "google/gemini-2.0-flash": (0.10, 0.40),
+    "deepseek/": (0.25, 1.00),
+    "qwen/": (0.12, 0.39),
+    "meta-llama/": (0.12, 0.30),
+    "openai/gpt-4.1-mini": (0.40, 1.60),
     "claude-haiku-4-5": (1.00, 5.00),
     "claude-haiku": (1.00, 5.00),
     "claude-sonnet": (3.00, 15.00),   # sonnet 4-6 / sonnet-5
@@ -37,14 +47,20 @@ _USAGE: dict[str, dict] = {}  # model -> {calls, in_tok, out_tok}
 
 
 def _record_usage(model: str, response) -> None:
-    """Accumulate token usage from an Anthropic response (best-effort)."""
+    """Accumulate token usage from an LLM response (best-effort).
+
+    Handles both SDK shapes: Anthropic (input_tokens/output_tokens) and the
+    OpenAI-compatible one OpenRouter speaks (prompt_tokens/completion_tokens).
+    """
     try:
         u = getattr(response, "usage", None)
         stats = _USAGE.setdefault(model, {"calls": 0, "in_tok": 0, "out_tok": 0})
         stats["calls"] += 1
         if u is not None:
-            stats["in_tok"] += getattr(u, "input_tokens", 0) or 0
-            stats["out_tok"] += getattr(u, "output_tokens", 0) or 0
+            stats["in_tok"] += (getattr(u, "input_tokens", None)
+                                or getattr(u, "prompt_tokens", None) or 0)
+            stats["out_tok"] += (getattr(u, "output_tokens", None)
+                                 or getattr(u, "completion_tokens", None) or 0)
     except Exception:  # noqa: BLE001 — accounting must never break a call
         pass
 
@@ -53,6 +69,8 @@ def _est_cost(model: str, in_tok: int, out_tok: int) -> float:
     for prefix, (pin, pout) in _PRICES.items():
         if model.startswith(prefix):
             return (in_tok * pin + out_tok * pout) / 1_000_000
+    if "/" in model:  # unknown OpenRouter model → cheap-class guess
+        return (in_tok * 0.30 + out_tok * 1.50) / 1_000_000
     return (in_tok * 3.00 + out_tok * 15.00) / 1_000_000  # unknown → sonnet rate
 
 
@@ -65,13 +83,45 @@ def _report_usage() -> None:
     parts = ", ".join(
         f"{m}: {s['calls']} calls {s['in_tok']}/{s['out_tok']} tok"
         for m, s in sorted(_USAGE.items()))
-    line = (f"LLM USAGE this process: {total_calls} Anthropic calls, "
-            f"est ${total_cost:.2f} ({parts})")
+    anth_calls = sum(v["calls"] for m, v in _USAGE.items() if "/" not in m)
+    anth_cost = sum(_est_cost(m, v["in_tok"], v["out_tok"])
+                    for m, v in _USAGE.items() if "/" not in m)
+    line = (f"LLM USAGE this process: {total_calls} calls, est ${total_cost:.2f} "
+            f"[Anthropic {anth_calls} = ${anth_cost:.2f} | "
+            f"OpenRouter {total_calls - anth_calls} = "
+            f"${total_cost - anth_cost:.2f}] ({parts})")
     print(line, flush=True)
     logger.info(line)
 
 
 # ── Backend dispatch ──────────────────────────────────────────────────
+#
+# Routing is decided by the MODEL ID, not by a global switch. An OpenRouter id
+# is "vendor/model" (deepseek/deepseek-chat); an Anthropic id is bare
+# (claude-haiku-4-5-20251001). That matters because the jobs in this pipeline
+# have very different stakes: heir alive/dead checks are a yes/no read that runs
+# hundreds of times a night and belongs on a cheap model, while obituary
+# survivor extraction was deliberately moved UP to Sonnet (commit 83cfb97, "Fix
+# obituary heir hallucination") and must stay there. A single LLM_BACKEND flag
+# cannot express that — flipping it to "openrouter" used to silently drop every
+# per-call model= override and send the hallucination-prone job to a 72B open
+# model. Per-model routing makes each call site's choice authoritative.
+#
+# LLM_BACKEND is still honoured as a global OVERRIDE (it is the only way to
+# reach ollama, and it lets you force everything one way in an emergency).
+
+
+def _is_openrouter_model(model: str | None) -> bool:
+    """OpenRouter model ids are namespaced 'vendor/model'; Anthropic's are not."""
+    return bool(model) and "/" in model
+
+
+def _route(model: str | None) -> str:
+    """Pick the backend for this call: explicit global override, else model id."""
+    backend = getattr(cfg, "LLM_BACKEND", "anthropic")
+    if backend in ("ollama", "openrouter"):
+        return backend  # explicit global override wins
+    return "openrouter" if _is_openrouter_model(model) else "anthropic"
 
 
 def chat_json(
@@ -85,15 +135,15 @@ def chat_json(
 
     Returns parsed dict on success, None on failure.
 
-    model: optional per-call Anthropic model override (e.g. a higher-quality
-    model for accuracy-critical extraction). Defaults to config.LLM_MODEL.
-    Ignored by the ollama / openrouter backends (they have their own model config).
+    model: per-call model override. A namespaced id ("deepseek/deepseek-chat")
+    routes to OpenRouter; a bare id ("claude-sonnet-4-6") routes to Anthropic.
+    Defaults to config.LLM_MODEL. Ignored by the ollama backend.
     """
-    backend = getattr(cfg, "LLM_BACKEND", "anthropic")
+    backend = _route(model)
     if backend == "ollama":
         return _chat_ollama(prompt, system, max_tokens)
     elif backend == "openrouter":
-        return _chat_openrouter(prompt, system, max_tokens)
+        return _chat_openrouter(prompt, system, max_tokens, model)
     else:
         return _chat_anthropic(prompt, system, max_tokens, api_key, model)
 
@@ -106,12 +156,11 @@ def chat_json_async(
     model: str | None = None,
 ):
     """Async version — returns a coroutine. For llm_parser.py compatibility."""
-    import asyncio
-    backend = getattr(cfg, "LLM_BACKEND", "anthropic")
+    backend = _route(model)
     if backend == "ollama":
         return _chat_ollama_async(prompt, system, max_tokens)
     elif backend == "openrouter":
-        return _chat_openrouter_async(prompt, system, max_tokens)
+        return _chat_openrouter_async(prompt, system, max_tokens, model)
     else:
         return _chat_anthropic_async(prompt, system, max_tokens, api_key, model)
 
@@ -145,7 +194,12 @@ def vision_json(
 
     backend = getattr(cfg, "LLM_BACKEND", "anthropic")
     if backend != "anthropic":
-        logger.info("vision_json: backend %r has no vision path — skipping", backend)
+        # Load-bearing: NC estate forms are filled in BY HAND and Tesseract reads
+        # nothing off them. If this path is off, phones/heirs silently vanish —
+        # so warn, never info.
+        logger.warning(
+            "vision_json: LLM_BACKEND=%r has no vision path — handwriting on "
+            "court forms will NOT be read. Set LLM_BACKEND=anthropic.", backend)
         return None
     key = api_key or cfg.ANTHROPIC_API_KEY
     if not key:
@@ -347,7 +401,7 @@ async def _chat_ollama_async(
 
 
 def _chat_openrouter(
-    prompt: str, system: str, max_tokens: int,
+    prompt: str, system: str, max_tokens: int, model: str | None = None,
 ) -> dict | None:
     """Call OpenRouter model via OpenAI-compatible API (sync)."""
     from openai import OpenAI
@@ -358,7 +412,7 @@ def _chat_openrouter(
         return None
 
     base_url = getattr(cfg, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = getattr(cfg, "OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+    model = model or getattr(cfg, "OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
     messages = []
     if system:
@@ -373,6 +427,7 @@ def _chat_openrouter(
             max_tokens=max_tokens,
             temperature=0.1,
         )
+        _record_usage(model, response)
         result_text = response.choices[0].message.content.strip()
         parsed = _parse_json(result_text)
         if parsed is None:
@@ -387,16 +442,17 @@ def _chat_openrouter(
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
+            _record_usage(model, response)
             result_text = response.choices[0].message.content.strip()
             parsed = _parse_json(result_text)
         return parsed
     except Exception as e:
-        logger.warning("OpenRouter LLM call failed: %s", e)
+        logger.warning("OpenRouter LLM call failed (model=%s): %s", model, e)
         return None
 
 
 async def _chat_openrouter_async(
-    prompt: str, system: str, max_tokens: int,
+    prompt: str, system: str, max_tokens: int, model: str | None = None,
 ) -> dict | None:
     """Call OpenRouter model via OpenAI-compatible API (async)."""
     from openai import AsyncOpenAI
@@ -407,7 +463,7 @@ async def _chat_openrouter_async(
         return None
 
     base_url = getattr(cfg, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = getattr(cfg, "OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+    model = model or getattr(cfg, "OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
     messages = []
     if system:
@@ -422,6 +478,7 @@ async def _chat_openrouter_async(
             max_tokens=max_tokens,
             temperature=0.1,
         )
+        _record_usage(model, response)
         result_text = response.choices[0].message.content.strip()
         parsed = _parse_json(result_text)
         if parsed is None:
@@ -436,11 +493,12 @@ async def _chat_openrouter_async(
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
+            _record_usage(model, response)
             result_text = response.choices[0].message.content.strip()
             parsed = _parse_json(result_text)
         return parsed
     except Exception as e:
-        logger.warning("OpenRouter async LLM call failed: %s", e)
+        logger.warning("OpenRouter async LLM call failed (model=%s): %s", model, e)
         return None
 
 
