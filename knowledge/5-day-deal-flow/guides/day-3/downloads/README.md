@@ -10,7 +10,7 @@ Fetched 2026-08-24 from https://learn.datasift.ai/challenge-day-3 (hub pages sun
 | `5day-resource-hub-83-resources.xlsx` | https://docs.google.com/spreadsheets/d/1bQBHLsxVwXbsbz9SBcfpatPaFgAIsICo/ (tabs: Day 1-5 + AI Resources) |
 
 `claude-deep-prospecting.skill` is byte-identical to the installed
-`.claude/skills/deep-prospecting/` — no re-install needed.
+`~/.claude/skills/deep-prospecting-v5/` — no re-install needed. (The old project-local v4 copy was deleted 2026-09-09.)
 
 ## Listed on the Day 3 sheet but NOT publicly linked
 - `5 Day Deal Flow Challenge_Workbook_Day 03-V2.pdf` — bare filename, no URL anywhere on the hub. Email/Zoom-chat attachment.

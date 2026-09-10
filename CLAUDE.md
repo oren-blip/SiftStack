@@ -310,8 +310,24 @@ FTM + deep prospecting specifically, NOT a global default.
 
 ### SmartSkip round-trip (`src/smartskip_io.py`)
 
-SmartSkip has **no API and never will** — their own "API vs manual" post argues
-against them. So this is a CSV round-trip with a human in the middle:
+SmartSkip has no *published* API and their own "API vs manual" post argues
+against offering one — but the SPA runs on a normal REST backend at
+`api.smartskip.io`, reverse-engineered and verified in Ty's deep-prospecting-v5
+skill and **re-verified live on Oren's account 2026-09-09**. `src/smartskip_api.py`
+implements it, so the round trip no longer needs a human in the middle:
+
+```bash
+python src/smartskip_io.py submit <export.csv>                  # FREE: upload+map+calculate, reports $, pays nothing
+python src/smartskip_io.py submit <export.csv> --pay --max-spend 25 --wait
+python src/smartskip_io.py fetch <bulkSkipId> --wait             # downloads the campaign format
+```
+**Only `--pay` costs money**, and it refuses if the calculated cost exceeds
+`--max-spend`. Steps 1-4 are free and idempotent; an unpaid upload is harmless and
+invisible in the account list, which is also why the bulkSkipId is remembered locally
+in `output/.smartskip_orders.json`. A 3-D Secure challenge can only be cleared in the
+browser — the client says so and stops rather than hanging.
+
+The manual path still works if you prefer it:
 
 ```bash
 # 1. build the upload file (dedupes across weeks; writes a sidecar keymap)
@@ -449,8 +465,9 @@ the old justification here — "his own v5 skill still ships it as the primary
 heir-resolution path" — was **FALSE**. deep-prospecting-v5 explicitly RETIRES
 Enformion person search ("Enformion returned zero relatives on 6 of 12 owners
 tested. SmartSkip returned relatives on 12 of 12"; ~4.9x the cost). That claim came
-from reading the **stale v4 skill** still sitting at `.claude/skills/deep-prospecting/`,
-which is shadowed by v5 at user level — delete or refresh it before trusting it again.
+from reading the **stale v4 skill** that used to sit at `.claude/skills/deep-prospecting/`.
+**DELETED 2026-09-09** — the live skill is `deep-prospecting-v5` at user level. If a v4
+copy ever reappears in the project, it shadows nothing useful; remove it again.
 
 **KEPT anyway (Oren's call, 2026-09-09)**, on the narrower and still-valid grounds:
 v5 retired Enformion for *discovering relatives*, whereas we use it only to find a

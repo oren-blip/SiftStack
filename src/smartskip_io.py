@@ -1041,6 +1041,79 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+
+# ── SmartSkip API round-trip ──────────────────────────────────────────────
+
+def cmd_submit(args) -> int:
+    """Upload + map + calculate. Free. Pays only on an explicit --pay."""
+    from smartskip_api import SmartSkip, SmartSkipError, remember
+
+    src = Path(args.csv)
+    if not src.exists():
+        logger.error("no such file: %s", src)
+        return 1
+    rows = sum(1 for _ in src.open(encoding="utf-8-sig")) - 1
+    logger.info("%s: %d row(s) to submit", src.name, rows)
+
+    try:
+        ss = SmartSkip()
+        order = ss.upload(src)
+        ss.map_fields(order)
+        ss.calculate(order)
+        remember(order, {"paid": False})
+
+        logger.info("=" * 62)
+        logger.info("order %s: %d billable row(s) -> $%.2f",
+                    order.bulk_skip_id, order.entities, order.cost)
+        if not args.pay:
+            logger.info("NOT PAID. Nothing has been charged. To buy it:")
+            logger.info("  python src/smartskip_io.py submit %s --pay --max-spend %.2f",
+                        src, max(args.max_spend, order.cost))
+            return 0
+
+        ss.pay(order, args.max_spend)
+        remember(order, {"paid": True})
+        logger.info("PAID $%.2f. Fetch it with:", order.cost)
+        logger.info("  python src/smartskip_io.py fetch %s --wait", order.bulk_skip_id)
+        if args.wait:
+            st = ss.wait(order.bulk_skip_id)
+            logger.info("final status: %s", st)
+    except SmartSkipError as exc:
+        logger.error("%s", exc)
+        return 1
+    return 0
+
+
+def cmd_fetch(args) -> int:
+    """Download a paid order in the format `ingest` reads."""
+    from smartskip_api import SmartSkip, SmartSkipError, orders
+
+    bid = args.bulk_skip_id
+    if not bid:
+        known = orders()
+        paid = [k for k, v in known.items() if v.get("paid")]
+        if not paid:
+            logger.error("no remembered paid order; pass the bulkSkipId")
+            return 1
+        bid = paid[-1]
+        logger.info("using the most recent paid order: %s", bid)
+
+    try:
+        ss = SmartSkip()
+        if args.wait:
+            st = ss.wait(bid)
+            if st.lower() not in ("completed", "complete"):
+                logger.error("order is %s, not downloading", st)
+                return 1
+        out = Path(args.out) if args.out else _OUT_DIR / f"smartskip_download_{_stamp()}.csv"
+        ss.download(bid, out, args.format)
+        logger.info("NEXT: python src/smartskip_io.py ingest %s --keymap <the keymap>", out)
+    except SmartSkipError as exc:
+        logger.error("%s", exc)
+        return 1
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="SmartSkip CSV round-trip for deep prospecting.")
@@ -1067,6 +1140,27 @@ def main(argv=None) -> int:
     e.add_argument("--dry-run", action="store_true",
                    help="count + cost only, writes nothing")
     e.set_defaults(func=cmd_export)
+
+    sb = sub.add_parser("submit", help="upload an export file to SmartSkip over "
+                                       "their API (free unless --pay)")
+    sb.add_argument("csv", help="a file built by `export`")
+    sb.add_argument("--pay", action="store_true",
+                    help="BILL THE CARD after the free calculate step")
+    sb.add_argument("--max-spend", type=float, default=25.00,
+                    help="refuse to pay more than this (default $25)")
+    sb.add_argument("--wait", action="store_true",
+                    help="after paying, poll until the order completes")
+    sb.set_defaults(func=cmd_submit)
+
+    fe = sub.add_parser("fetch", help="download a finished SmartSkip order")
+    fe.add_argument("bulk_skip_id", nargs="?",
+                    help="omit to use the most recent remembered order")
+    fe.add_argument("--out")
+    fe.add_argument("--format", default="vertical",
+                    choices=("vertical", "horizontal"),
+                    help="vertical = Campaign Format, the one ingest reads")
+    fe.add_argument("--wait", action="store_true")
+    fe.set_defaults(func=cmd_fetch)
 
     i = sub.add_parser("ingest", help="parse a SmartSkip campaign-format download")
     i.add_argument("input", help="the CSV downloaded from SmartSkip")
