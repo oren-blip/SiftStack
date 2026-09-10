@@ -1392,6 +1392,13 @@ def _outage_note_failure(url: str, why: str) -> None:
             "treated as 'no parcels found'.", key, _outage_fails[key], why)
 
 
+# Counties whose primary GIS went down but whose fallback layer answered. They
+# must NOT report as down: is_county_down() gates "these rows are INCOMPLETE",
+# which is what defers the weekly archive. A fallback-served county has its
+# parcels and should archive normally.
+_fallback_served: set[str] = set()
+
+
 def _outage_note_success(url: str) -> None:
     """A server that answers at all is up — even with zero features."""
     _outage_fails.pop(_endpoint_key(url), None)
@@ -1404,11 +1411,15 @@ def is_endpoint_down(url: str) -> bool:
 def downed_counties() -> set[str]:
     """County keys (as used in _ARCGIS_CONFIG) whose GIS went down this run."""
     return {county for county, cfg in _ARCGIS_CONFIG.items()
-            if cfg.get("url") and _endpoint_key(cfg["url"]) in _outage_down}
+            if cfg.get("url") and _endpoint_key(cfg["url"]) in _outage_down
+            and county not in _fallback_served}
 
 
 def is_county_down(county: str) -> bool:
-    cfg = _ARCGIS_CONFIG.get((county or "").strip().lower())
+    key = (county or "").strip().lower()
+    if key in _fallback_served:
+        return False
+    cfg = _ARCGIS_CONFIG.get(key)
     return bool(cfg and cfg.get("url") and is_endpoint_down(cfg["url"]))
 
 
@@ -1461,6 +1472,29 @@ _ARCGIS_CONFIG: dict[str, dict] = {
         "parcel_field": "PIN14",  # 14-digit human-friendly form (matches tax bills/deeds)
         "use_field": "CODE",  # HB=Home Built, CO=Country/vacant, etc.
         "use_desc_field": None,
+        # Evening-outage escape hatch (wired 2026-09-09). Cabarrus stops the
+        # Parcels MapServer service - HTTP 200 carrying {"code":500,"message":
+        # "Service Parcels/MapServer not started "} - on 9/4, 9/8 and 9/9. It
+        # is up in the late afternoon and dead by ~19:00, but 9/4 shows it can
+        # also stay down for days. This OpenData layer stayed up through all
+        # three and keys on the SAME PIN14 (verified: BARBEE RAY B ->
+        # 55293496350000 from both layers). Owner/mailing/value map unchanged;
+        # only situs and the use-code differ, hence the overrides.
+        "fallback_url": ("https://location.cabarruscounty.us/arcgisservices/rest"
+                         "/services/OpenData/Tax_Parcels/MapServer/1"),
+        "fallback_overrides": {
+            # No PropAddr on this layer, and DataExplorerSearch (the city/zip
+            # second-hop) is 500 in the same window - so there is NO situs
+            # source at all while the fallback is serving. Rows come back with
+            # owner + PIN + value + mailing and an empty property address.
+            "situs_fields": [],
+            # Do NOT backfill the blank situs from the owner's mailing address
+            # (see the situs_from_mailing gate in _arcgis_to_candidate).
+            "situs_from_mailing": False,
+            # CODE is absent here; VacantOrImproved carries V/I, which the
+            # cabarrus branch of the structure-type mapper already parses.
+            "use_field": "VacantOrImproved",
+        },
     },
     "gaston": {
         # Switched 2026-06-13 from services6.arcgis.com/.../Gaston_County_Parcels
@@ -1576,6 +1610,7 @@ def _arcgis_query(
     *,
     record_limit: int = 5000,
     page_size: int = 1000,
+    ignore_outage: bool = False,
 ) -> list[dict]:
     """Run an ArcGIS REST query and return all matching attribute dicts.
 
@@ -1589,7 +1624,11 @@ def _arcgis_query(
     # Server already declared down this run — don't spend another ~97s proving
     # it. Returns empty like any other failure; is_county_down() is how callers
     # tell this apart from a genuine "owns nothing".
-    if is_endpoint_down(url):
+    # ignore_outage: a county fallback layer lives on the SAME HOST as the
+    # primary (Cabarrus), and _endpoint_key groups outage state by host - so
+    # without this the fallback is fast-failed by the primary's own outage and
+    # never gets a chance to answer.
+    if is_endpoint_down(url) and not ignore_outage:
         return []
     where = f"UPPER({owner_field}) LIKE '{name_token.upper()}%'"
     all_rows: list[dict] = []
@@ -1721,6 +1760,36 @@ def _catawba_parcel_report(pid: str) -> dict | None:
     return None
 
 
+# Consecutive failures of the DataExplorerSearch second-hop. It is queried
+# once PER PARCEL ROW (a common surname returns ~150), has timeout=20 and no
+# retry, and never fed the host outage counter - so when it is down it cost up
+# to 20s x every row with nothing to show. It shares a host with the Parcels
+# layer but is a SEPARATE service that fails independently, so it gets its own
+# breaker rather than _outage_note_failure (which would also disable the
+# primary parcel search).
+_SITUS_HOP_FAILS = 0
+_SITUS_HOP_MAX_FAILS = 3
+
+
+def _situs_hop_disabled() -> bool:
+    return _SITUS_HOP_FAILS >= _SITUS_HOP_MAX_FAILS
+
+
+def _situs_hop_note(ok: bool) -> None:
+    """Success resets the breaker; failures trip it after _SITUS_HOP_MAX_FAILS."""
+    global _SITUS_HOP_FAILS
+    if ok:
+        _SITUS_HOP_FAILS = 0
+        return
+    _SITUS_HOP_FAILS += 1
+    if _SITUS_HOP_FAILS == _SITUS_HOP_MAX_FAILS:
+        logger.warning(
+            "Cabarrus situs lookup (DataExplorerSearch) failed %d times in a "
+            "row - disabling it for the rest of this run. Parcels keep their "
+            "owner/value/mailing; property addresses will be blank until it "
+            "recovers.", _SITUS_HOP_FAILS)
+
+
 def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
     """Look up real situs address for a Cabarrus parcel by PIN.
 
@@ -1729,7 +1798,7 @@ def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
     (e.g. "16627 HOPEWELL CHURCH RD") + City + Zip.
     Returns (street, city, zip) — empties when no match.
     """
-    if not pin:
+    if not pin or _situs_hop_disabled():
         return ("", "", "")
     # Normalize PIN — Cabarrus stores both 10-digit dotted (5552060223.00000000)
     # and 14-char (55520602230000). Try the longer form first, then strip dots.
@@ -1749,13 +1818,23 @@ def _cabarrus_lookup_situs(pin: str) -> tuple[str, str, str]:
         r = requests.get(_CABARRUS_ADDR_URL + "/query", params=params,
                          headers=_ARCGIS_HEADERS, timeout=20)
     except requests.RequestException:
+        _situs_hop_note(False)
         return ("", "", "")
     if r.status_code != 200:
+        _situs_hop_note(False)
         return ("", "", "")
     try:
         data = r.json()
     except ValueError:
+        _situs_hop_note(False)
         return ("", "", "")
+    # HTTP 200 carrying an ArcGIS error body - how a stopped service answers.
+    if isinstance(data, dict) and "error" in data:
+        _situs_hop_note(False)
+        return ("", "", "")
+    # The service answered. A parcel with no NG911 address point is a real
+    # empty result, not a failure - reset the breaker.
+    _situs_hop_note(True)
     feats = data.get("features") or []
     if not feats:
         return ("", "", "")
@@ -1885,7 +1964,8 @@ def _arcgis_to_candidate(
     # accurate; the secondary lookup just adds city/zip metadata.
     situs_city_override = ""
     situs_zip_override = ""
-    if county.lower() == "cabarrus" and pid:
+    if (county.lower() == "cabarrus" and pid
+            and not is_endpoint_down(_CABARRUS_ADDR_URL)):
         c_street, c_city, c_zip = _cabarrus_lookup_situs(pid)
         if c_street:
             # Prefer the address-points street if available (more standardized)
@@ -1915,7 +1995,15 @@ def _arcgis_to_candidate(
     # owner's MailAddr — matches Oren's manual convention of using the
     # owner's mailing address as the property reference when the parcel
     # itself has no street number assigned.
-    if not situs:
+    # situs_from_mailing=False opts a config OUT of this. A layer that has no
+    # situs field at all (the Cabarrus outage fallback) would otherwise stamp
+    # the owner's mailing street onto EVERY row as its property address - which
+    # is a wrong address for any parcel the owner doesn't live in, and makes
+    # every row read as heir-occupied (mailing == property) to the Step 1.9
+    # drop and the Step 4.97 occupied-hold. Blank is honest: the row keeps its
+    # parcel + value + mailing, and the real address lands on the next run
+    # after the primary layer recovers.
+    if not situs and cfg.get("situs_from_mailing", True):
         # mailing_fields convention: [street, street2, city, state, zip]
         mf = cfg.get("mailing_fields") or []
         mail_street = str(rec.get(mf[0]) or "").strip() if mf and mf[0] else ""
@@ -1939,9 +2027,21 @@ def _arcgis_to_candidate(
     is_residential = False
     is_commercial = False
     if county.lower() == "cabarrus":
-        situs_check = (situs or "").strip().upper()
-        if situs_check and not (situs_check.startswith("0 ") or situs_check == "0"):
-            is_residential = True
+        if cfg.get("use_field") == "VacantOrImproved":
+            # Outage fallback layer. VacantOrImproved is the assessor's own
+            # V/I flag - authoritative, and the only signal available here
+            # since this layer has no situs for the address heuristic to read.
+            # Without this branch every fallback row lands
+            # residential=False/vacant=False, which misfiles it downstream.
+            if use_code == "V":
+                is_vacant = True
+            elif use_code == "I":
+                is_residential = True
+        else:
+            situs_check = (situs or "").strip().upper()
+            if situs_check and not (situs_check.startswith("0 ")
+                                    or situs_check == "0"):
+                is_residential = True
     elif county.lower() == "lincoln":
         # VACANT field is "YES"/"NO"
         is_vacant = use_desc.upper() == "YES"
@@ -2140,6 +2240,7 @@ def _lookup_arcgis_county(
     # Search each owner field on lastname
     raw_rows: list[dict] = []
     seen_pids: set[str] = set()
+    active_cfg = cfg
     for owner_field in cfg["owner_fields"]:
         rows = _arcgis_query(cfg["url"], owner_field, last)
         for r in rows:
@@ -2148,9 +2249,53 @@ def _lookup_arcgis_county(
                 continue
             seen_pids.add(pid)
             raw_rows.append(r)
+    # The primary layer errored and produced nothing - try the county's
+    # fallback layer before accepting "owns nothing".
+    #
+    # Trigger is _outage_fails > 0, NOT is_endpoint_down(). is_endpoint_down
+    # only flips after _OUTAGE_THRESHOLD (3) consecutive failures, so gating on
+    # it would silently lose the first decedent or two of every run before the
+    # fallback ever engaged. _outage_fails is incremented on each failed query
+    # and POPPED by _outage_note_success, so ">0" means precisely "the last
+    # thing this host did was fail" - a clean 0-row answer (a real "no such
+    # owner") leaves it at 0 and correctly does NOT trigger a second search.
+    primary_host = _endpoint_key(cfg["url"])
+    primary_failing = (is_endpoint_down(cfg["url"])
+                       or _outage_fails.get(primary_host, 0) > 0)
+    if not raw_rows and cfg.get("fallback_url") and primary_failing:
+        fb_cfg = {**cfg, "url": cfg["fallback_url"],
+                  **cfg.get("fallback_overrides", {})}
+        # The fallback shares a host with the primary, so its own failures land
+        # on the same _outage_fails counter. Snapshot it to tell "the fallback
+        # errored" from "the fallback answered, this person owns nothing".
+        fails_before = _outage_fails.get(primary_host, 0)
+        for owner_field in fb_cfg["owner_fields"]:
+            rows = _arcgis_query(fb_cfg["url"], owner_field, last,
+                                 ignore_outage=True)
+            for r in rows:
+                pid = str(r.get(fb_cfg["parcel_field"]) or "")
+                if pid and pid in seen_pids:
+                    continue
+                seen_pids.add(pid)
+                raw_rows.append(r)
+        fallback_errored = _outage_fails.get(primary_host, 0) > fails_before
+        if fallback_errored:
+            # Both layers are broken. Drop any earlier rescue claim so the
+            # county reports DOWN again and the week stays unarchived rather
+            # than shipping short.
+            _fallback_served.discard(county_key)
+        elif raw_rows:
+            active_cfg = fb_cfg
+            if county_key not in _fallback_served:
+                logger.warning(
+                    "%s GIS: primary layer is DOWN - served from fallback layer "
+                    "%s. Rows have owner/parcel/value but NO property address.",
+                    county_key.title(), fb_cfg["url"])
+            _fallback_served.add(county_key)
     candidates: list[PropertyCandidate] = []
     for rec in raw_rows:
-        c = _arcgis_to_candidate(rec, county_key.title(), decedent_name, cfg)
+        c = _arcgis_to_candidate(rec, county_key.title(), decedent_name,
+                                 active_cfg)
         if not c:
             continue
         if c.match_score < min_score:
@@ -2968,7 +3113,11 @@ _LOOKUP_BY_COUNTY = {
 # Disable with NC_GIS_CACHE_DISABLE=1; tune lifetime with NC_GIS_CACHE_TTL_DAYS.
 # To clear by hand, delete output/.nc_gis_cache.json.
 _PERSIST_PATH = Path("output") / ".nc_gis_cache.json"
-_PERSIST_VERSION = 20  # bumped 2026-08-13 (2nd bump today). v20: compound-first-name
+_PERSIST_VERSION = 21  # bumped 2026-09-09. v21: the Cabarrus fallback layer
+                       # changes the candidate schema (no situs,
+                       # VacantOrImproved use code), so v20 Cabarrus entries
+                       # must not be reused.
+                       # v20 (2026-08-13): compound-first-name
 # normalization in _name_match_score_one — "IRISH JOANN SCOTT TRUSTEE" now scores
 # 1.00 against court "Irish, Jo Ann Scott" (was 0.4; Cabarrus 26E000837-120 shipped
 # parcel-less). Cached candidates carry old scores baked in, so bump per precedent.

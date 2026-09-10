@@ -55,10 +55,10 @@
       "id": "pierce_dorothy_catawba",
       "county": "Catawba",
       "address": "3435 HUIE ST",
-      "owner_contains": "PIERCE",
+      "owner_contains": "MORETZ",
       "expected_pid": "371119505521",
-      "verified_on": "2026-07-09",
-      "notes": "Decedent Dorothy Lee Cline Pierce (case 26E000799-170), a Week 28 miss. Catawba had NO smoke coverage. Guards the new GeoServer WFS address path (catawba:parcels_plus) — lookup_by_address returned [] for Catawba until 2026-07-09. The deed reads 'PIERCE DOROTHY L TRUSTEE | THE PIERCE SR FAMILY TRUST'; that stray 'SR' used to poison _suffix_match_score and sink this parcel beneath a namesake at 2661 Robinson Rd."
+      "verified_on": "2026-09-09",
+      "notes": "SOLD: as of 2026-09-09 this parcel is owned by MORETZ TERRY WAYNE (mailing 4596 Macedonia Church Rd, Vale - absentee), NOT Pierce. Owner updated 2026-09-09; the PID is unchanged and the endpoint was healthy throughout - only the fixture was stale, and it had been failing the nightly smoke test. Expect this to need updating again whenever the parcel next changes hands. Decedent Dorothy Lee Cline Pierce (case 26E000799-170), a Week 28 miss. Catawba had NO smoke coverage. Guards the new GeoServer WFS address path (catawba:parcels_plus) — lookup_by_address returned [] for Catawba until 2026-07-09. The deed reads 'PIERCE DOROTHY L TRUSTEE | THE PIERCE SR FAMILY TRUST'; that stray 'SR' used to poison _suffix_match_score and sink this parcel beneath a namesake at 2661 Robinson Rd."
     },
     {
       "id": "titterington_catawba_value",
