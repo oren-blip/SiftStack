@@ -161,6 +161,19 @@ not pick up code changes.
 
 ## Things worth knowing
 
+- **TWO `python.exe` rows with `slack-listen` is NORMAL — it is one listener.**
+  `.venv\Scripts\python.exe` is the Windows venv *launcher stub* (~250 KB); it
+  spawns the real interpreter as a CHILD with the identical command line and the
+  identical start time. Task Manager shows both. Tell them apart by memory: the
+  stub sits near 1 MB, the real listener near 20 MB, and the child's parent PID
+  is the stub. Confirm there is only one clock rather than counting processes —
+  `logs\sms_slack_buttons.log` prints `holding outbox N: pacing: ...` exactly
+  **once per 60s**; two listeners would print it twice a minute and each
+  `clock drain` would report its own send. Checked 2026-09-09: one tick per
+  minute, no duplicate sends, `===== started` appears once for the running
+  instance. The stop recipe above matches on the command line so it already
+  kills both rows — don't "helpfully" kill just one.
+
 - **The bot token takes over the whole channel feed.** Once `SLACK_BOT_TOKEN`
   and `SLACK_CHANNEL` are set, *every* escalation — hot leads, alerts, the
   campaign summary — posts as the bot instead of through the webhook. Point
