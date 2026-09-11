@@ -1,13 +1,11 @@
 {
   "_note": "SMS sending pool. At SMS_AGENT_PHASE=3 drafts are held for approval; only an approved draft can send from these numbers.",
-  "_source": "Originally seeded from C:\\tools\\caller-reputation\\config\\numbers.json (monitor RETIRED 2026-08-24). Maintained by hand since. Rebuilt 2026-09-02 from the CallerIDReputation daily email + Hiya unflag events (ticket #3482379/#3503914): these 4 were unflagged by smart_call_hiya on 2026-09-02 and match the summary's '4 Clean Numbers'.",
-  "_excluded": "+17048700565 is deliberately absent (direct-mail callback line, protect its reputation). +19804997918 and +19805772615 REMOVED 2026-09-02 — still flagged (Hiya's unflag pass skipped exactly those two). +19804052646 and +19804854803 are flagged as of 9/1-9/2, never added. Re-add any of these only after CIDR shows them clean.",
-  "_health": "app.calleridrep.com is the ONLY reputation signal — its daily email to Oren. Nothing in this repo watches carrier labels, so a flagged number will NOT drop itself out of this pool. Before scaling sends, check that email and prune by hand.",
+  "_source": "Rebuilt 2026-09-10 for the CallerIDReputation -> Number Verifier switch. The clean/flagged answer now comes from C:/tools/caller-reputation/roster.py (vendor-neutral: NV API -> NV export -> typed list -> legacy CIDR -> cache). These 3 are clean in BOTH the final CIDR export (2026-09-10) and the NV dashboard export.",
+  "_excluded": "+17048700565 is deliberately absent (direct-mail callback line, protect its reputation). REMOVED 2026-09-10 as flagged: +19803516039 (Hiya AND Verizon; handset screenshots 9/8 show 'Potential Spam'), +19803897673, +19804856791. REMOVED 2026-09-10 pm: +19804854803 - Number Verifier flagged it on AT&T (android) at 12:06, one day after it was added to monitoring. Also flagged, not in pool: +19804052646, +19804997918. Re-add only after roster.py reports the number clean.",
+  "_health": "Reputation source is roster.py, NOT this file. It refuses to call a number clean on data older than 48h and reports unknown rather than guessing. This pool is still NOT self-pruning: a number that gets flagged will stay here until someone edits it. Check with: python C:/tools/caller-reputation/roster.py",
   "_continuity": "These are the cold-CALL numbers on purpose. The number that texts is the number that dials and the number that shows on the callback. Do not give SMS its own separate pool.",
   "numbers": [
-    "+19803516039",
-    "+19803897673",
-    "+19804856791",
-    "+19809980892"
+    "+19809980892",
+    "+19805772615"
   ]
 }
