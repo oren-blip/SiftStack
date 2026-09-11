@@ -677,6 +677,70 @@ def run(live_model: bool = False) -> int:
         config.SLACK_INTERESTED_ONLY = _sio
         crm.find_records_by_phone = _find
 
+    # ---- 4e. a weak no from the model goes to a person --------------------
+    # With REPLY_TO_NO off a NOT_INTERESTED closes the thread with no human
+    # look. "How much?... it's a 1989 mobile home" closed at 0.65 and "Perhaps
+    # at some point" closed at 0.65 (2026-09-10). A price question is a lead; a
+    # maybe is a draft. A plain "No" at 0.70 stays a no -- five of those landed
+    # the same day and a draft for each would be its own bug.
+    print("\nweak no")
+    L = lambda intent, conf, text: (text, classify.Classification(intent, conf, "llm", "model"))
+    for text, c, expect in (
+        (*L("NOT_INTERESTED", 0.65, "How much?... it's a 1989 mobile home with a somewhat new metal roof"), "INTERESTED"),
+        (*L("NOT_INTERESTED", 0.85, "What would you even pay for it"), "INTERESTED"),
+        (*L("NOT_INTERESTED", 0.65, "Perhaps at some point"), "OTHER"),
+        (*L("NOT_INTERESTED", 0.85, "Not right now, maybe later"), "OTHER"),
+        (*L("NOT_INTERESTED", 0.70, "Try me back in the spring"), "OTHER"),
+        (*L("NOT_INTERESTED", 0.62, "We are not committing to anyone yet"), "OTHER"),
+        (*L("NOT_INTERESTED", 0.75, "No"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.70, "No bruh"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.75, "Sold"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.85, "No \U0001f44e"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.98, "Not interested thank you"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.75, "Fuck off"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.70, "Already sold it last year"), "NOT_INTERESTED"),
+        (*L("NOT_INTERESTED", 0.85, "I have a buyer, just trying to get the Estate closed"), "NOT_INTERESTED"),
+        (*L("OTHER", 0.55, "Perhaps at some point"), "OTHER"),          # only NOT_INTERESTED is guarded
+        (*L("INTERESTED", 0.60, "If the deal falls thru"), "INTERESTED"),
+    ):
+        got = classify.guard_llm(text, c)
+        label = text[:36].encode("ascii", "replace").decode()  # the console may not have the emoji
+        r.check(f"{c.intent} {c.confidence:.2f} {label!r} -> {expect}",
+                got.intent == expect, f"got {got.intent} ({got.source}: {got.rationale[:80]})")
+    r.check("a rules answer is never guarded",
+            classify.guard_llm("maybe?", classify.Classification("NOT_INTERESTED", 0.9, "rules", "x")).source == "rules")
+    r.check("'keeping it for now' is still a rules no",
+            classify.classify("I'm keeping it for now").source == "rules")
+    fam = classify.classify("No. No.  This residence stays in the family.")
+    r.check("'stays in the family' is a rules no",
+            fam.intent == "NOT_INTERESTED" and fam.source == "rules", str(fam.to_dict()))
+    r.check("'delete my number from your list' is an opt-out",
+            classify.classify("You can delete my number from your list.").intent == "OPT_OUT")
+
+    # End to end: the model says no, the guard says ask a person.
+    _llm = classify.classify_llm
+    try:
+        classify.classify_llm = lambda text, history=None: classify.Classification(
+            "NOT_INTERESTED", 0.65, "llm", "sounds like a no")
+        store.map_phone("8650009338", record_uuid="rec-9338", context=ctx)
+        out = inbound("8650009338", "Perhaps at some point", sms_id="weak-1")
+        r.check("a maybe is drafted, not closed", out.get("action") == "replied",
+                str(out.get("action")))
+        conv = store.get_conversation("8650009338") or {}
+        r.check("the thread stays active", conv.get("state") == "active", str(conv.get("state")))
+        r.check("one draft waits for approval",
+                len([x for x in store._conn().execute(
+                    "SELECT 1 FROM outbox WHERE phone='8650009338' AND status IN ('held','queued')")]) == 1)
+        r.check("the log shows the guard fired",
+                out.get("classification", {}).get("source") == "guard",
+                str(out.get("classification")))
+        store.map_phone("8650009339", record_uuid="rec-9339", context=ctx)
+        out = inbound("8650009339", "How much?... it's a 1989 mobile home", sms_id="weak-2")
+        r.check("a price question is a hot lead", out.get("action") == "handoff",
+                str(out.get("action")))
+    finally:
+        classify.classify_llm = _llm
+
     # ---- 5. human takeover silences the agent ---------------------------
     print("\nhuman takeover")
     inbound("8650004444", "who is this")

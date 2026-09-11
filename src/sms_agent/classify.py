@@ -31,8 +31,8 @@ OPT_OUT = [
     r"\bstop\s+(texting|messaging|contacting|calling|sending)\b",
     r"\bunsubscribe\b",
     r"\bopt\s*-?\s*out\b",
-    r"\b(remove|take)\s+(me|this\s+number)\s+(off|from)\b",
-    r"\bremove\s+(this\s+)?(number|me)\b",
+    r"\b(remove|take|delete)\s+(me|my\s+number|this\s+number)\s+(off|from)\b",
+    r"\b(remove|delete)\s+(this\s+|my\s+)?(number|me)\b",
     r"\bdo\s*n[o']?t\s+(contact|text|message|call)\s+me\b",
     r"\bdon'?t\s+(contact|text|message|call)\s+me\b",
     r"\bno\s+more\s+(texts|messages|calls)\b",
@@ -108,7 +108,7 @@ KEEPING_IT = [
     r"\bnot\s+going\s+anywhere\b",
     r"\b(plan|planning|plans|intend|want)\s+(on\s+|to\s+)?keep(ing)?\b",
     r"\b(keeping|gonna\s+keep|going\s+to\s+keep|will\s+keep)\s+(it|the\s+(house|property|home))\b",
-    r"\bstay(ing)?\s+in\s+the\s+family\b",
+    r"\bstay(s|ing)?\s+in\s+the\s+family\b",
     r"\b(never|not|won'?t|will\s+not)\s+(be\s+)?(going\s+to\s+|gonna\s+)?sell(ing)?\b",
     r"\bit'?s\s+not\s+for\s+sale\b",
 ]
@@ -389,6 +389,73 @@ def classify_llm(text: str, history: Optional[list[dict]] = None) -> Classificat
     )
 
 
+# ---- the guard on the model's answer -----------------------------------------
+#
+# The model is asked to be conservative (NOT_INTERESTED over INTERESTED when in
+# doubt), and with REPLY_TO_NO off a NOT_INTERESTED closes the thread with no
+# human look. Two live misses on 2026-09-10 came out of that pairing:
+# "How much?... it's a 1989 mobile home with a somewhat new metal roof" closed
+# as NOT_INTERESTED 0.65, and "Perhaps at some point" closed at 0.65 with no
+# follow-up. A weak no that is really a question or a maybe goes to a person.
+#
+# A price question is always a lead.
+PRICE_QUESTION = re.compile(
+    r"\bhow\s+much\b|\bwhat(?:'s|\s+is|\s+are|\s+would|\s+do)?\b[^.?!]{0,40}\b(offer|price|pay|paying)\b|\$\s?\d",
+    re.I,
+)
+# A maybe, a deferral, or a question: worth a human-approved reply, not a close.
+WEAK_NO = re.compile(
+    r"\?|\bmaybe\b|\bperhaps\b|\bsome\s+point\b|\blater\b|\bnot\s+right\s+now\b|\bnot\s+(?:yet|now)\b"
+    r"|\btry\s+(?:me\s+)?(?:back|again)\b|\bin\s+a\s+(?:few|couple)\b|\bdown\s+the\s+road\b"
+    r"|\bnext\s+(?:year|month|spring|summer|fall|winter)\b|\bcheck\s+back\b|\bpossibly\b",
+    re.I,
+)
+# A plain no. The model puts these at 0.70-0.75 as often as at 0.90 ("No",
+# "No bruh", "Sold" -- five of them on 2026-09-10 alone), and turning each
+# into a held draft would spend the person's morning dismissing them.
+BARE_NO = re.compile(
+    r"^\W*(?:no+|nope|nah|naw|sold|no\s+thanks?|no\s+thank\s+you|not\s+interested|not\s+for\s+sale|pass)"
+    r"(?:[\s,.!]+(?:thanks?|thank\s+you|sir|ma'?am|bruh|bro|man|dude|sorry|please|ty))?\W*$",
+    re.I,
+)
+# A firm no in more words. Hostile, or a settled fact. Never drafted at.
+FIRM_NO = re.compile(
+    r"\bf+u+c+k|\bpiss\s+off\b|\bget\s+lost\b|\bgo\s+away\b|\bscrew\s+you\b|\bhell\s+no\b|\babsolutely\s+not\b"
+    r"|\balready\s+(?:sold|listed|under\s+contract)\b|\bsold\s+it\b|\b(?:was|been|is)\s+sold\b"
+    r"|\bnot\s+for\s+sale\b|\bhave\s+an?\s+(?:agent|realtor)\b|\bnot\s+interested\b",
+    re.I,
+)
+
+
+def guard_llm(text: str, c: Classification) -> Classification:
+    """Second-guess the model only where a wrong answer closes a door silently.
+
+    Only a model answer is guarded (`source == "llm"`); a rules answer is
+    authoritative and never comes through here. A guarded answer carries
+    source "guard" so the log and the backfill report show it happened.
+    """
+    if c.source != "llm":
+        return c
+    t = (text or "").strip()
+
+    if c.intent == "NOT_INTERESTED":
+        if BARE_NO.search(t) or FIRM_NO.search(t):
+            return c
+        if PRICE_QUESTION.search(t):
+            return Classification(
+                "INTERESTED", 0.7, "guard",
+                f"asked for a price; model said NOT_INTERESTED {c.confidence:.2f}: {c.rationale}"[:300],
+            )
+        weak = WEAK_NO.search(t)
+        if weak or c.confidence < 0.80:
+            why = f"'{weak.group(0)}'" if weak else f"confidence {c.confidence:.2f}"
+            return Classification(
+                "OTHER", 0.6, "guard",
+                f"soft/maybe ({why}) - a person decides; model said NOT_INTERESTED: {c.rationale}"[:300],
+            )
+    return c
+
+
 def classify_rules_wrong_number(text: str) -> bool:
     """Does this message also carry a wrong-number signal?
 
@@ -406,7 +473,7 @@ def classify(text: str, history: Optional[list[dict]] = None) -> Classification:
 
     llm = classify_llm(text, history)
     if llm.source == "llm" and llm.confidence >= 0.5:
-        return llm
+        return guard_llm(text, llm)
 
     # Model unavailable or unsure. Fall back to the weak keyword buckets, which
     # only ever route to a human anyway.

@@ -204,7 +204,7 @@ def report(result: Result) -> str:
         avg = sum(confs) / len(confs) if confs else 0
         lines.append(f"  {intent:15} {n:4}   mean confidence {avg:.2f}")
 
-    by_llm = [r for r in result.replies if r.source == "llm"]
+    by_llm = [r for r in result.replies if r.source in ("llm", "guard")]
     if by_llm:
         low = [r for r in by_llm if r.confidence < config.CONFIDENCE_FLOOR]
         lines.append("")
