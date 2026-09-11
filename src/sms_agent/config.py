@@ -175,6 +175,10 @@ FOLLOWUP_PING_MINUTES = int(_env("SMS_AGENT_FOLLOWUP_PING_MINUTES", "30"))
 # this local hour, once a day. -1 disables. Oren, 2026-09-07: thirteen drafts
 # sat four days because nothing ever said "these are waiting on you".
 DIGEST_HOUR = int(_env("SMS_AGENT_DIGEST_HOUR", "8"))
+# If the listener was down at DIGEST_HOUR (the desktop rebooted overnight on
+# 2026-09-10 and came back at 9:09), the digest still posts on the first tick
+# before this local hour. After it, the day is too far gone; wait for tomorrow.
+DIGEST_CATCHUP_UNTIL = int(_env("SMS_AGENT_DIGEST_CATCHUP_UNTIL", "20"))
 
 # Daily campaign window, Eastern (Ty, 2026-08-11). The recipient-local quiet
 # hours above still apply on top: this is when WE work, that is when THEY may

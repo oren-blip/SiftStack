@@ -96,12 +96,25 @@ def _inbound_once() -> dict:
     return result
 
 
+def digest_due(now: datetime, already_posted: bool) -> bool:
+    """Is it time for today's digest?
+
+    Any tick from DIGEST_HOUR until DIGEST_CATCHUP_UNTIL counts, not just the
+    8 o'clock hour: on 2026-09-10 the desktop logged off at 1:29am, came back
+    at 9:09, and the digest for the day was simply skipped. A late boot posts
+    it on its first tick; after the cut-off it is stale and waits for tomorrow.
+    """
+    if config.DIGEST_HOUR < 0 or already_posted:
+        return False
+    return config.DIGEST_HOUR <= now.hour < config.DIGEST_CATCHUP_UNTIL
+
+
 def _digest_clock(stop: threading.Event) -> None:
-    """Post the day's readout once, at config.DIGEST_HOUR local time.
+    """Post the day's readout once a day, at or after config.DIGEST_HOUR local time.
 
     The digest existed from day one and was never posted anywhere, which is
     how thirteen drafts waited four days unseen. One post a day, keyed on the
-    date in the store so a restart inside the hour cannot post it twice.
+    date in the store so a restart inside the window cannot post it twice.
     """
     from zoneinfo import ZoneInfo
     from . import digest
@@ -110,14 +123,13 @@ def _digest_clock(stop: threading.Event) -> None:
     while not stop.wait(60):
         try:
             now = datetime.now(tz)
-            if config.DIGEST_HOUR < 0 or now.hour != config.DIGEST_HOUR:
-                continue
             key = f"digest_posted:{now:%Y-%m-%d}"
-            if store.get_meta(key):
+            if not digest_due(now, bool(store.get_meta(key))):
                 continue
             store.set_meta(key, store.now())
             digest.run(days=1, post=True)
-            log.info("posted the %s:00 digest", config.DIGEST_HOUR)
+            log.info("posted the %s:00 digest%s", config.DIGEST_HOUR,
+                     "" if now.hour == config.DIGEST_HOUR else f" (late, at {now:%H:%M})")
         except Exception:
             log.exception("digest clock failed")
 

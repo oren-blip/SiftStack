@@ -1258,5 +1258,63 @@ def run(live_model: bool = False) -> int:
     r.check("answering a draft records who did it",
             "oren" in json.dumps(resolved))
 
+    # ---- 14. housekeeping that bit ---------------------------------------
+    print("\nhousekeeping")
+    # The 8am digest posts on the first tick after a late boot, not only in
+    # the 8 o'clock hour (skipped on 2026-09-10 after a 1:29am reboot).
+    from datetime import datetime as _dt
+    _dh, _dc = config.DIGEST_HOUR, config.DIGEST_CATCHUP_UNTIL
+    config.DIGEST_HOUR, config.DIGEST_CATCHUP_UNTIL = 8, 20
+    for hh, mm, posted, want in (
+        (7, 59, False, False), (8, 0, False, True), (9, 9, False, True), (19, 59, False, True),
+        (20, 0, False, False), (9, 9, True, False),
+    ):
+        got = slack_buttons.digest_due(_dt(2026, 9, 10, hh, mm), posted)
+        r.check(f"digest at {hh:02d}:{mm:02d}{' (posted)' if posted else ''} -> {want}",
+                got is want, str(got))
+    config.DIGEST_HOUR = -1
+    r.check("digest can be switched off", slack_buttons.digest_due(_dt(2026, 9, 10, 9, 0), False) is False)
+    config.DIGEST_HOUR, config.DIGEST_CATCHUP_UNTIL = _dh, _dc
+
+    # The "no number pool" warning: once per process, not once per draft.
+    import logging as _lg
+
+    class _Catch(_lg.Handler):
+        def __init__(self):
+            super().__init__(); self.records = []
+        def emit(self, rec):
+            self.records.append(rec)
+    catcher = _Catch()
+    plog = _lg.getLogger("sms_agent.sender_pool")
+    plog.addHandler(catcher)
+    _pools = config.number_pools
+    config.number_pools = lambda: {"": ["+18650000001"]}
+    try:
+        sender_pool._warned_pools.discard("nobody")
+        sender_pool.pool("Nobody"); sender_pool.pool("Nobody"); sender_pool.pool("nobody")
+        warned = [x for x in catcher.records if x.levelno == _lg.WARNING and "Nobody" in x.getMessage()]
+        r.check("pool warning fires once per owner per process", len(warned) == 1, str(len(warned)))
+    finally:
+        plog.removeHandler(catcher)
+        config.number_pools = _pools
+
+    # The listener's inbound path keeps the whole outcome on the event, like
+    # the worker path always did, so a CRM write can be traced afterwards.
+    from . import reconcile
+    _fetch = reconcile.fetch_log
+    reconcile.fetch_log = lambda pages=2, per_page=200: [
+        {"id": "424242", "direction": "inbound", "fromNum": "8650009444",
+         "toNum": "+18650000001", "content": "STOP"}]
+    try:
+        store.map_phone("8650009444", record_uuid="rec-9444", context=ctx)
+        reconcile.run(pages=1, apply=True)
+        row = store._conn().execute(
+            "SELECT outcome FROM events WHERE dedupe_key='smrtphone:smsIncoming:424242'").fetchone()
+        out_json = (row["outcome"] if row else "") or ""
+        r.check("a reconciled event keeps the full outcome",
+                out_json.startswith("{") and '"actions"' in out_json, out_json[:120])
+    finally:
+        reconcile.fetch_log = _fetch
+
     print()
     return r.report()

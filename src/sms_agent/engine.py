@@ -122,7 +122,7 @@ def handle_inbound(payload: dict) -> dict:
     thread = store.thread(phone)
     result = classify.classify(body, thread[:-1])
     log.info("inbound %s [%s %.2f via %s] %s", phone, result.intent, result.confidence,
-             result.source, body[:80])
+             result.source, body[:160])
     store.stamp_intent(phone, sms_id, result.intent, result.confidence)
 
     outcome = {

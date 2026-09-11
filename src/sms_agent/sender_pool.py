@@ -114,6 +114,11 @@ def next_send_window(phone: str, at: Optional[datetime] = None) -> datetime:
     return target.astimezone(timezone.utc) + timedelta(seconds=random.randint(0, 1800))
 
 
+# Owners already warned about, so a solo operator with one flat pool (the
+# configured case here) sees the line once per process, not on every draft.
+_warned_pools: set[str] = set()
+
+
 def pool(owner: str = "") -> list[str]:
     """The numbers available to this caller, or everything when unbound."""
     pools = config.number_pools()
@@ -121,7 +126,13 @@ def pool(owner: str = "") -> list[str]:
         for name, numbers in pools.items():
             if name and name.strip().lower() == owner.strip().lower():
                 return list(numbers)
-        log.warning("no number pool for %r; falling back to the full pool", owner)
+        key = owner.strip().lower()
+        if key in _warned_pools:
+            log.debug("no number pool for %r; falling back to the full pool", owner)
+        else:
+            _warned_pools.add(key)
+            log.warning("no number pool for %r; falling back to the full pool "
+                        "(said once per process)", owner)
     return config.numbers()
 
 

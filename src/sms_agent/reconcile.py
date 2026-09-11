@@ -23,6 +23,7 @@ Two useful things come out of the log that the webhook does not carry:
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -203,7 +204,11 @@ def run(pages: int = 2, apply: bool = True) -> dict:
 
         try:
             outcome = engine.process("smrtphone", payload)
-            store.finish_event(event_id, str(outcome.get("action"))[:200])
+            # The whole outcome, as the worker path stores it. Storing only the
+            # action string lost the per-record detail ("phone -> DNC on
+            # 86b176d1: ok") that would have said exactly what an opt-out wrote
+            # to the CRM, when that had to be traced on 2026-09-10.
+            store.finish_event(event_id, json.dumps(outcome, default=str)[:2000])
             results.append({"phone": payload["from"], "action": outcome.get("action")})
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the sweep
             store.finish_event(event_id, "error", str(exc)[:300])
