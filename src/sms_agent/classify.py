@@ -263,9 +263,11 @@ def classify_rules(text: str) -> Optional[Classification]:
     if not t:
         return Classification("EMPTY", 1.0, "rules")
 
-    hit = _hit(t, ESCALATE_NOW)
+    hit = _hit_text(t, ESCALATE_NOW)
     if hit:
-        return Classification("ESCALATE", 1.0, "rules", f"sensitive: {hit}")
+        # The words, not the regex: this rationale is the one that reaches the
+        # Slack post, and "sensitive: attorney" reads; a pattern does not.
+        return Classification("ESCALATE", 1.0, "rules", f"sensitive: '{hit}'")
 
     # A named price beats a terminal phrase. "$335,000.00. Cash and if not
     # interested lose my number" (2026-09-10, 7046785412) is a seller making an
