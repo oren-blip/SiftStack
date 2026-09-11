@@ -1138,6 +1138,27 @@ def run(live_model: bool = False) -> int:
     })
     r.check("a replayed backlog question is never auto-answered",
             out.get("action") != "answered_who", str(out.get("action")))
+
+    # Once per thread. Elizabeth (7044675620, 2026-09-09) asked "What does this
+    # mean?", then "I am unaware of Oren?", then "What company are you with?"
+    # and the identical template went out twice with a third queued. A second
+    # question is a person who read the first answer; it gets a drafted reply.
+    out = engine.process("smrtphone", {
+        "event": "smsIncoming", "smsId": "fresh-2", "from": "8650004848",
+        "to": "+18650000001", "message": "who is this again?", "fresh": True,
+    })
+    r.check("a second fresh 'who?' is drafted, not templated again",
+            out.get("action") == "replied", str(out.get("action")))
+    r.check("the outcome says why",
+            any("already sent once" in a for a in out.get("actions", [])), str(out.get("actions")))
+    # The template path stamps confidence 1.0; a model draft never does.
+    who_rows = [x for x in store._conn().execute(
+        "SELECT status FROM outbox WHERE phone='8650004848' AND intent='ASKING_WHO' AND confidence=1.0")]
+    r.check("exactly one template row exists for the thread", len(who_rows) == 1, str(who_rows))
+    # Ty's rule stands (Oren, 2026-09-10): the drafted answer to "what company"
+    # is a local buyer in the county, never a company name.
+    r.check("drafts still never name a company",
+            "NEVER say a company name" in respond._identity_block(ctx))
     config.ANSWER_WHO = _answer
 
     # The buttons come off the message once it is answered, so the channel

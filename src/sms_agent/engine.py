@@ -257,12 +257,22 @@ def handle_inbound(payload: dict) -> dict:
         outcome["action"] = "closed_not_interested"
         return outcome
 
+    # The template answer is a once-per-thread thing. "What does this mean?"
+    # then "I am unaware of Oren?" (7044675620, 2026-09-09) got the identical
+    # intro twice ten minutes apart, and "What company are you with?" would
+    # have been the third. A second "who?" is a person who read the first
+    # answer and still has a question; that gets a drafted reply for a human.
+    who_again = result.intent == "ASKING_WHO" and store.who_answer_exists(phone)
+    if who_again:
+        outcome["actions"].append("who-answer already sent once on this thread; drafting instead")
+
     if (
         config.PHASE >= 3
         and result.intent == "ASKING_WHO"
         and config.ANSWER_WHO
         and result.confidence >= 0.5
         and payload.get("fresh") is True
+        and not who_again
     ):
         # "Who is this?" is the most common reply to a first text and the
         # answer never varies: a reviewed template, no model, nothing to leak.
@@ -284,7 +294,7 @@ def handle_inbound(payload: dict) -> dict:
         # This is deliberately NOT the hot-lead path. It makes no claim about
         # selling, writes no escalation tags, and says plainly what it is, so
         # the channel keeps its meaning: a handoff post means a live seller.
-        if result.intent == "ASKING_WHO" and config.ANSWER_WHO:
+        if result.intent == "ASKING_WHO" and config.ANSWER_WHO and not who_again:
             outcome["actions"] += _do_answer_who(phone, record_uuid, context)
             outcome["action"] = "answered_who"
             return outcome

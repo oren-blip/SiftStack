@@ -526,6 +526,21 @@ def cancel_queued(phone: str, reason: str = "superseded") -> int:
         return cur.rowcount
 
 
+def who_answer_exists(phone: str) -> bool:
+    """Has the "who is this?" template already gone (or been queued) on this thread?
+
+    The template is a once-per-conversation answer. Sent, queued and held all
+    count: a held one is waiting on a person, a queued one is minutes from
+    sending, and either way a second copy is the bug this guards against.
+    """
+    row = _conn().execute(
+        "SELECT 1 FROM outbox WHERE phone=? AND intent='ASKING_WHO'"
+        " AND status IN ('queued','held','sent') LIMIT 1",
+        (clean_phone(phone),),
+    ).fetchone()
+    return row is not None
+
+
 def cancel_queued_all(reason: str = "superseded") -> int:
     """Cancel every pending message across all numbers."""
     with tx() as c:
