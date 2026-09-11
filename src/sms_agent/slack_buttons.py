@@ -22,10 +22,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Optional
-
-import requests
 
 from . import config, escalate, store, worker
 
@@ -145,26 +144,50 @@ def _inbound_clock(stop: threading.Event) -> None:
 
 # --------------------------------------------------------------- the actions
 
-def _approve(phone: str, uuid: str) -> str:
-    """Queue the newest held draft and send it. `approve` + `work`, in one tap.
+def pick_held(phone: str, outbox_id: int = 0) -> tuple[Optional[dict], str]:
+    """The held draft a tap (or a typed approve) refers to, or why there is none.
 
-    Older held drafts for the same phone are cancelled rather than left to send
-    later out of order -- identical to cmd_approve, which is the point.
+    With an id -- every post since 2026-09-10 carries one -- it is THAT draft
+    and no other: if it is no longer held the answer says what happened to it
+    and nothing sends. Approving by phone alone took the newest held row,
+    which on 2026-09-09 was not the draft under the button (7044675620).
+    Without an id (an old post, the CLI) it is still the newest held draft.
     """
+    if outbox_id:
+        row = store.outbox_row(outbox_id)
+        if not row:
+            return None, f"draft #{outbox_id} does not exist"
+        if row.get("phone") != phone:
+            return None, f"ignored: draft #{outbox_id} is not for this number"
+        if row.get("status") != "held":
+            why = f" ({row.get('error')})" if row.get("error") else ""
+            return None, (f"this draft (#{outbox_id}) was already {row.get('status')}{why}"
+                          " - nothing sent; see the newer post" if row.get("status") == "cancelled"
+                          else f"this draft (#{outbox_id}) was already {row.get('status')}{why} - nothing sent")
+        return row, ""
     rows = list(store._conn().execute(
         "SELECT * FROM outbox WHERE phone=? AND status='held' ORDER BY id DESC", (phone,)
     ))
     if not rows:
-        return "nothing was held for this number (already handled?)"
+        return None, "nothing was held for this number (already handled?)"
+    return dict(rows[0]), ""
 
-    row = dict(rows[0])
+
+def _approve(phone: str, uuid: str, outbox_id: int = 0) -> str:
+    """Queue the held draft on this post and send it. `approve` + `work`, in one tap.
+
+    Older held drafts for the same phone are cancelled rather than left to send
+    later out of order, and their posts are rewritten to say so.
+    """
+    row, why = pick_held(phone, outbox_id)
+    if not row:
+        return why
+
     with store.tx() as c:
         c.execute("UPDATE outbox SET status='queued' WHERE id=?", (row["id"],))
-        c.execute(
-            "UPDATE outbox SET status='cancelled', error='superseded'"
-            " WHERE phone=? AND status='held' AND id<>?",
-            (phone, row["id"]),
-        )
+    older = store.supersede_held(phone, row["id"], f"superseded by approving #{row['id']}")
+    if older:
+        escalate.supersede_posts(older, row["id"])
     store.bump_ai_turns(phone)
 
     result = _drain()
@@ -233,7 +256,7 @@ def _wrong(phone: str, uuid: str) -> str:
     return f"suppressed - nothing will text this number again, {n} draft(s) dropped"
 
 
-def handle(action_id: str, phone: str, uuid: str = "", who: str = "") -> str:
+def handle(action_id: str, phone: str, uuid: str = "", who: str = "", outbox_id: int = 0) -> str:
     """Run one button. Returns the line that replaces the buttons in Slack.
 
     Kept free of any Slack object so the selftest can exercise every action
@@ -247,7 +270,7 @@ def handle(action_id: str, phone: str, uuid: str = "", who: str = "") -> str:
 
     store.init()
     if action_id == "sms_approve":
-        return _approve(phone, uuid)
+        return _approve(phone, uuid, outbox_id)
     if action_id == "sms_handle":
         return _handle(phone, uuid, who)
     if action_id == "sms_got_it":
@@ -279,20 +302,21 @@ def resolved_blocks(blocks: list, summary: str, who: str, label: str) -> list:
     return kept
 
 
-def _update_message(channel: str, ts: str, blocks: list, fallback: str) -> None:
-    try:
-        resp = requests.post(
-            "https://slack.com/api/chat.update",
-            json={"channel": channel, "ts": ts, "text": fallback, "blocks": blocks},
-            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
-            timeout=15,
-        )
-        body = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        log.warning("chat.update failed: %s", exc)
-        return
-    if not body.get("ok"):
-        log.warning("chat.update refused: %s", body.get("error"))
+def _update_message(channel: str, ts: str, blocks: list, fallback: str) -> bool:
+    """Strip the buttons and write the result line. Two tries, then say so loudly.
+
+    A post whose buttons stay up after a tap looks unhandled and invites a
+    second tap. Every handler is safe to run twice, so the second tap costs
+    nothing but confusion -- which is exactly what the log line is for.
+    """
+    for attempt in (1, 2):
+        if escalate._update_api(channel, ts, fallback, blocks):
+            return True
+        if attempt == 1:
+            time.sleep(1)
+    log.error("chat.update FAILED twice for %s/%s; buttons remain on the post, pressing again is safe",
+              channel, ts)
+    return False
 
 
 def on_action(payload: dict) -> Optional[str]:
@@ -311,11 +335,16 @@ def on_action(payload: dict) -> Optional[str]:
         value = {}
     phone = value.get("phone") or ""
     uuid = value.get("uuid") or ""
+    try:
+        outbox_id = int(value.get("id") or 0)
+    except (TypeError, ValueError):
+        outbox_id = 0
     user = payload.get("user") or {}
     who = user.get("name") or user.get("username") or user.get("id") or ""
 
-    summary = handle(action_id, phone, uuid, who)
-    log.info("slack button %s on %s by %s -> %s", action_id, phone, who, summary)
+    summary = handle(action_id, phone, uuid, who, outbox_id)
+    log.info("slack button %s on %s%s by %s -> %s", action_id, phone,
+             f" (#{outbox_id})" if outbox_id else "", who, summary)
 
     message = payload.get("message") or {}
     channel = (payload.get("channel") or {}).get("id") or config.SLACK_CHANNEL

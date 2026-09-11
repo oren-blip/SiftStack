@@ -50,6 +50,16 @@ Once pressed, the buttons are **removed from the message** and replaced with a
 line saying who pressed what and what happened. A draft either still has
 buttons (needs you) or it does not (done) — no scrolling to work out which.
 
+**Approve sends the draft on that post and no other.** The button carries the
+draft's outbox id. When the seller texts again and a newer draft is written,
+the older draft is cancelled and its post is rewritten to say "superseded by
+draft #N" with the buttons gone; if you tap Approve on it anyway (a stale
+phone screen), nothing sends and the post says so. Before 2026-09-10 approve
+picked by phone number, newest first, so a tap on the older of two posts sent
+the newer text. If a post's buttons ever fail to clear after a tap, the log
+says `chat.update FAILED twice` — pressing again is safe, every handler is
+harmless twice.
+
 The handlers call the same `store` / `worker` functions the typed commands do.
 Quiet hours, the 25/day/number caps and suppression all still apply, because
 they live in `worker.drain_outbox` and a button cannot route around it.

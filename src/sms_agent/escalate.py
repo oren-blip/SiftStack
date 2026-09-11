@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +36,16 @@ RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
 def _is_discord(url: str) -> bool:
     return "discord.com" in (url or "")
+
+
+# Where the last chat.postMessage landed (channel, ts), per thread. `_post`
+# keeps its bool contract -- the selftest stubs it -- so the ref rides here
+# for the one caller that needs to come back to its post (draft_for_approval).
+_tls = threading.local()
+
+
+def last_post_ref() -> tuple[str, str]:
+    return getattr(_tls, "last_ref", ("", ""))
 
 
 def _post_api(text: str, blocks: Optional[list] = None) -> bool:
@@ -65,10 +76,31 @@ def _post_api(text: str, blocks: Optional[list] = None) -> bool:
         # actually happen, and all three are setup mistakes worth naming.
         log.warning("slack chat.postMessage refused: %s", body.get("error"))
         return False
+    _tls.last_ref = (str(body.get("channel") or config.SLACK_CHANNEL), str(body.get("ts") or ""))
+    return True
+
+
+def _update_api(channel: str, ts: str, text: str, blocks: list) -> bool:
+    """Rewrite one of our own posts. One attempt; the caller decides on retries."""
+    try:
+        resp = requests.post(
+            "https://slack.com/api/chat.update",
+            json={"channel": channel, "ts": ts, "text": text, "blocks": blocks},
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            timeout=15,
+        )
+        body = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("chat.update failed: %s", exc)
+        return False
+    if not body.get("ok"):
+        log.warning("chat.update refused: %s", body.get("error"))
+        return False
     return True
 
 
 def _post(text: str, blocks: Optional[list] = None) -> bool:
+    _tls.last_ref = ("", "")
     if config.slack_buttons_enabled():
         return _post_api(text, blocks)
     url = config.SLACK_WEBHOOK_URL
@@ -328,8 +360,14 @@ def draft_for_approval(
     reason: str = "",
     record_uuid: str = "",
     blocked: Optional[list[str]] = None,
+    outbox_id: int = 0,
 ) -> bool:
-    """Phase 3: every reply goes here before anything is sent."""
+    """Phase 3: every reply goes here before anything is sent.
+
+    `outbox_id` is the draft row this post shows. It rides in the button value
+    so Approve sends THIS draft and no other, and the post's Slack ref is kept
+    on the row so a later draft can mark this one superseded.
+    """
     lines = [
         f"*Draft reply - {_fmt_phone(phone)}* (confidence {confidence:.0%})",
         f"> them: {inbound.strip()[:300]}",
@@ -347,10 +385,15 @@ def draft_for_approval(
     # nothing is worse than no button, because it looks handled.
     if config.slack_listener_ready():
         text = "\n".join(lines)
-        return _post(text, [
+        ok = _post(text, [
             {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-            action_buttons(phone, record_uuid),
+            action_buttons(phone, record_uuid, outbox_id),
         ])
+        if ok and outbox_id:
+            channel, ts = last_post_ref()
+            if ts:
+                store.set_outbox_slack_ref(outbox_id, ts, channel)
+        return ok
 
     # Both commands, as one copy-paste block. `approve` only moves the draft
     # into the queue; `work` is the only thing that sends, and it is the step
@@ -367,6 +410,34 @@ def draft_for_approval(
     )
     text = "\n".join(lines)
     return _post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+
+
+def supersede_posts(rows: list[dict], by_id: int) -> int:
+    """Rewrite the Slack posts of drafts a newer draft just replaced.
+
+    Buttons come off and the post says which draft took over, so the channel
+    cannot show two live Approve buttons for one number. Rows without a Slack
+    ref (posted through the webhook, or before refs were kept) are skipped.
+    """
+    done = 0
+    for row in rows or []:
+        ts, channel = row.get("slack_ts"), row.get("slack_channel") or config.SLACK_CHANNEL
+        if not ts or not channel:
+            continue
+        head = f"*Draft reply - {_fmt_phone(row.get('phone', ''))}* ~superseded~"
+        body = f"> us:   {str(row.get('body') or '').strip()[:300]}"
+        text = f"{head}\n{body}"
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text":
+                f":arrows_counterclockwise: superseded by draft #{by_id} - use the newer post"}]},
+        ]
+        if _update_api(channel, ts, f"superseded by draft #{by_id}", blocks):
+            done += 1
+        else:
+            log.warning("could not mark outbox #%s superseded in Slack; its buttons remain "
+                        "(Approve on it now says so and sends nothing)", row.get("id"))
+    return done
 
 
 # The four answers a draft can get. Kept here beside the post that renders them
@@ -407,14 +478,19 @@ def _button(action_id: str, value: str, style: str = "", confirm: str = "") -> d
     return el
 
 
-def _value(phone: str, record_uuid: str) -> str:
+def _value(phone: str, record_uuid: str, outbox_id: int = 0) -> str:
     # `value` carries everything the handler needs, because a Slack payload
     # arrives with no memory of what was posted and looking it up again by
-    # channel+ts would be a second failure point.
-    return json.dumps({"phone": store.clean_phone(phone), "uuid": record_uuid})[:1900]
+    # channel+ts would be a second failure point. `id` pins Approve to the
+    # draft on THIS post: approving by phone alone sent whichever draft was
+    # newest, which on 2026-09-09 was not the one under the button.
+    v: dict = {"phone": store.clean_phone(phone), "uuid": record_uuid}
+    if outbox_id:
+        v["id"] = int(outbox_id)
+    return json.dumps(v)[:1900]
 
 
-def action_buttons(phone: str, record_uuid: str = "") -> dict:
+def action_buttons(phone: str, record_uuid: str = "", outbox_id: int = 0) -> dict:
     """The actions block under a draft.
 
     Approve and Wrong number confirm first. These get tapped on a phone, where
@@ -422,7 +498,7 @@ def action_buttons(phone: str, record_uuid: str = "") -> dict:
     reversible from the channel.
     """
     ph = store.clean_phone(phone)
-    value = _value(ph, record_uuid)
+    value = _value(ph, record_uuid, outbox_id)
     return {
         "type": "actions",
         "block_id": f"sms_draft:{ph}",

@@ -1078,6 +1078,94 @@ def run(live_model: bool = False) -> int:
     r.check("approve with nothing held sends nothing",
             len(stub.sent) == before and "nothing" in msg, msg)
 
+    # ---- 13a. approve sends the draft under the button, not the newest ------
+    # 7044675620, 2026-09-09: "In meeting" and "Prefer text" six seconds apart
+    # made two held drafts with two live posts. Approve on the OLDER post sent
+    # the NEWER text (approve picked by phone, newest first) and the older
+    # post then said "nothing was held". Now the button carries the draft id,
+    # a newer draft cancels the older one and rewrites its post, and Approve on
+    # a cancelled draft sends nothing and says why.
+    print("\napprove by draft id")
+    r.check("the button value carries the draft id",
+            json.loads(escalate.action_buttons("8650004242", "rec-4242", 42)["elements"][0]["value"]).get("id") == 42)
+    r.check("no id on the value when there is no draft row",
+            "id" not in json.loads(escalate.action_buttons("8650004242", "rec-4242")["elements"][0]["value"]))
+    cols = {row[1] for row in store._conn().execute("PRAGMA table_info(outbox)")}
+    r.check("outbox remembers its Slack post", {"slack_ts", "slack_channel"} <= cols, str(sorted(cols)))
+    # An existing database gets the columns added, once.
+    import sqlite3 as _sq
+    old = _sq.connect(":memory:")
+    old.execute("CREATE TABLE outbox (id INTEGER PRIMARY KEY, phone TEXT, body TEXT, status TEXT)")
+    added = store._migrate(old)
+    r.check("an old database is migrated in place",
+            added == ["outbox.slack_ts", "outbox.slack_channel"], str(added))
+    r.check("migration is idempotent", store._migrate(old) == [])
+    old.close()
+
+    updates: list = []
+    _upd = escalate._update_api
+    escalate._update_api = lambda channel, ts, text, blocks: (updates.append((channel, ts, text, blocks)) or True)
+    _q = (config.QUIET_START_HOUR, config.QUIET_END_HOUR)
+    config.QUIET_START_HOUR, config.QUIET_END_HOUR = 0, 24
+    try:
+        store.map_phone("8650009441", record_uuid="rec-9441", context=ctx)
+        store.ensure_conversation("8650009441", from_number="+18650000001")
+        inbound("8650009441", "In meeting", sms_id="sup-1")
+        first = [dict(x) for x in store._conn().execute(
+            "SELECT * FROM outbox WHERE phone='8650009441' ORDER BY id")]
+        r.check("the first reply is held", len(first) == 1 and first[0]["status"] == "held",
+                str([(x["id"], x["status"]) for x in first]))
+        store.set_outbox_slack_ref(first[0]["id"], "1700000000.000100", "C1")  # as if posted with buttons
+        inbound("8650009441", "Prefer text", sms_id="sup-2")
+        rows = [dict(x) for x in store._conn().execute(
+            "SELECT * FROM outbox WHERE phone='8650009441' ORDER BY id")]
+        older, newer = rows[0], rows[-1]
+        r.check("a newer draft cancels the older held one",
+                len(rows) == 2 and older["status"] == "cancelled" and "superseded by #" in str(older["error"])
+                and newer["status"] == "held", str([(x["id"], x["status"], x["error"]) for x in rows]))
+        r.check("the older post is rewritten as superseded",
+                len(updates) == 1 and updates[-1][1] == "1700000000.000100"
+                and "superseded" in updates[-1][2], str(updates))
+        before = len(stub.sent)
+        msg = slack_buttons.handle("sms_approve", "8650009441", "rec-9441", "oren", outbox_id=older["id"])
+        r.check("approve on the superseded post sends nothing and says why",
+                len(stub.sent) == before and "already cancelled" in msg, msg)
+        msg = slack_buttons.handle("sms_approve", "8650009441", "rec-9441", "oren", outbox_id=newer["id"])
+        now_row = store.outbox_row(newer["id"]) or {}
+        r.check("approve on the live post approves THAT draft",
+                now_row.get("status") in ("queued", "sent") and "nothing" not in msg, f"{now_row.get('status')}: {msg}")
+        msg = slack_buttons.handle("sms_approve", "8650009441", "rec-9441", "oren", outbox_id=999999)
+        r.check("approve on an unknown draft id sends nothing", "does not exist" in msg, msg)
+        # A post from before ids existed (or the CLI) still approves the newest held draft.
+        store.ensure_conversation("8650009442", from_number="+18650000001")
+        legacy_id = store.queue_message("8650009442", "legacy draft", from_number="+18650000001", status="held")
+        slack_buttons.handle("sms_approve", "8650009442", "", "oren")
+        r.check("approve without an id still takes the newest held draft",
+                (store.outbox_row(legacy_id) or {}).get("status") in ("queued", "sent"),
+                str((store.outbox_row(legacy_id) or {}).get("status")))
+        r.check("a wrong-number tap is unaffected by ids",
+                "suppressed" in slack_buttons.handle("sms_wrong", "8650009443", "", "oren", outbox_id=5))
+    finally:
+        escalate._update_api = _upd
+        config.QUIET_START_HOUR, config.QUIET_END_HOUR = _q
+
+    # chat.update: one retry, then a loud log line rather than a silent stuck button.
+    calls: list = []
+    _upd = escalate._update_api
+    _sleep = slack_buttons.time.sleep
+    slack_buttons.time.sleep = lambda s: None
+    try:
+        escalate._update_api = lambda *a: (calls.append(a) or (len(calls) >= 2))
+        ok = slack_buttons._update_message("C1", "1.2", [], "x")
+        r.check("chat.update retries once and succeeds", ok is True and len(calls) == 2, str(len(calls)))
+        calls.clear()
+        escalate._update_api = lambda *a: (calls.append(a) or False)
+        ok = slack_buttons._update_message("C1", "1.2", [], "x")
+        r.check("chat.update gives up after two tries", ok is False and len(calls) == 2, str(len(calls)))
+    finally:
+        escalate._update_api = _upd
+        slack_buttons.time.sleep = _sleep
+
     # "Got it" on a hot-lead post records who took it. Local only.
     slack_buttons.handle("sms_got_it", "8650004545", who="oren")
     conv = store.get_conversation("8650004545") or {}

@@ -89,7 +89,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     confidence    REAL,
     error         TEXT,
     created_at    TEXT NOT NULL,
-    sent_at       TEXT
+    sent_at       TEXT,
+    slack_ts      TEXT,                    -- the Slack post that shows this draft
+    slack_channel TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_queued ON outbox(status, not_before);
 
@@ -133,6 +135,25 @@ def clean_phone(n: Any) -> str:
     return d
 
 
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS does
+# nothing on an existing database, so each one is ALTERed in when missing.
+# Idempotent; runs once per connection.
+_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "outbox": [("slack_ts", "TEXT"), ("slack_channel", "TEXT")],
+}
+
+
+def _migrate(c: sqlite3.Connection) -> list[str]:
+    added = []
+    for table, cols in _MIGRATIONS.items():
+        have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, decl in cols:
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                added.append(f"{table}.{name}")
+    return added
+
+
 def _conn() -> sqlite3.Connection:
     c = getattr(_local, "conn", None)
     if c is None:
@@ -142,6 +163,7 @@ def _conn() -> sqlite3.Connection:
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA busy_timeout=30000")
         c.executescript(SCHEMA)
+        _migrate(c)
         _local.conn = c
     return c
 
@@ -524,6 +546,44 @@ def cancel_queued(phone: str, reason: str = "superseded") -> int:
             (reason, clean_phone(phone)),
         )
         return cur.rowcount
+
+
+def outbox_row(row_id: int) -> Optional[dict]:
+    row = _conn().execute("SELECT * FROM outbox WHERE id=?", (int(row_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def set_outbox_slack_ref(row_id: int, ts: str, channel: str) -> None:
+    """Remember which Slack post shows this draft, so it can be rewritten later."""
+    if not (row_id and ts):
+        return
+    with tx() as c:
+        c.execute("UPDATE outbox SET slack_ts=?, slack_channel=? WHERE id=?",
+                  (ts, channel or None, int(row_id)))
+
+
+def supersede_held(phone: str, keep_id: int, reason: str = "superseded") -> list[dict]:
+    """Cancel every OTHER held draft for this number and return them.
+
+    The newest draft answers the whole thread (the model sees it all), so an
+    older one waiting for approval is stale the moment a newer one exists.
+    Returned rows carry their Slack refs so their posts can say so; until
+    2026-09-10 both stayed live and Approve on the older post sent the newer
+    text (7044675620, 9/9).
+    """
+    rows = [dict(r) for r in _conn().execute(
+        "SELECT id, phone, body, slack_ts, slack_channel FROM outbox"
+        " WHERE phone=? AND status='held' AND id<>?",
+        (clean_phone(phone), int(keep_id)),
+    )]
+    if rows:
+        with tx() as c:
+            c.execute(
+                "UPDATE outbox SET status='cancelled', error=?"
+                " WHERE phone=? AND status='held' AND id<>?",
+                (reason, clean_phone(phone), int(keep_id)),
+            )
+    return rows
 
 
 def who_answer_exists(phone: str) -> bool:

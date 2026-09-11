@@ -216,28 +216,27 @@ def cmd_thread(args) -> int:
 
 
 def cmd_approve(args) -> int:
-    """Release the held draft for a conversation into the send queue."""
+    """Release the held draft for a conversation into the send queue.
+
+    Same picker as the Slack button (`--id` pins a specific draft; without it
+    the newest held one), and the same supersede of older held drafts, so the
+    typed path and the tapped path cannot disagree about what is sent.
+    """
+    from . import escalate, slack_buttons
+
     store.init()
     phone = store.clean_phone(args.phone)
-    rows = [
-        r
-        for r in store._conn().execute(
-            "SELECT * FROM outbox WHERE phone=? AND status='held' ORDER BY id DESC", (phone,)
-        )
-    ]
-    if not rows:
-        print(f"nothing held for {phone}")
+    row, why = slack_buttons.pick_held(phone, int(getattr(args, "id", 0) or 0))
+    if not row:
+        print(why)
         return 1
-    row = dict(rows[0])
-    print(f"releasing: {row['body']}")
+    print(f"releasing #{row['id']}: {row['body']}")
     with store.tx() as c:
         c.execute("UPDATE outbox SET status='queued' WHERE id=?", (row["id"],))
-        # Anything older than the newest held draft is stale by definition.
-        c.execute(
-            "UPDATE outbox SET status='cancelled', error='superseded'"
-            " WHERE phone=? AND status='held' AND id<>?",
-            (phone, row["id"]),
-        )
+    older = store.supersede_held(phone, row["id"], f"superseded by approving #{row['id']}")
+    if older:
+        marked = escalate.supersede_posts(older, row["id"])
+        print(f"cancelled {len(older)} older held draft(s); {marked} Slack post(s) rewritten")
     store.bump_ai_turns(phone)
     print("queued. run `work` to send.")
     return 0
@@ -580,6 +579,8 @@ def main() -> int:
 
     p = sub.add_parser("approve", help="release a held draft into the send queue")
     p.add_argument("phone")
+    p.add_argument("--id", type=int, default=0,
+                   help="a specific outbox row (default: the newest held draft for the number)")
     p.set_defaults(fn=cmd_approve)
 
     p = sub.add_parser("pause", help="stop the agent on one conversation")

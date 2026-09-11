@@ -625,9 +625,18 @@ def _do_reply(phone: str, record_uuid: str, body: str, result, context: dict) ->
         store.bump_ai_turns(phone)
         acts.append(f"queued outbox #{row_id} from {from_number} (conf {reply.confidence:.2f})")
     else:
+        # The model drafted against the whole thread, so any older draft still
+        # waiting for approval is stale now. Cancel it and say so on its post;
+        # two live Approve buttons for one number is how the wrong text went
+        # out on 2026-09-09.
+        older = store.supersede_held(phone, row_id, f"superseded by #{row_id}")
         escalate.draft_for_approval(
-            phone, body, reply.message, reply.confidence, reply.reason, record_uuid
+            phone, body, reply.message, reply.confidence, reply.reason, record_uuid,
+            outbox_id=row_id,
         )
+        if older:
+            marked = escalate.supersede_posts(older, row_id)
+            acts.append(f"superseded {len(older)} older held draft(s), {marked} post(s) rewritten")
         acts.append(f"held outbox #{row_id} for approval (conf {reply.confidence:.2f})")
 
     if reply.handoff:
