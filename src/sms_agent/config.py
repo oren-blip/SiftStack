@@ -279,6 +279,11 @@ HANDOFF_NAME = _env("SMS_AGENT_HANDOFF_NAME", "Adriana")
 HANDOFF_SLACK_ID = _env("SMS_AGENT_HANDOFF_SLACK_ID", "")  # needs a bot token to look up
 HANDOFF_ASSIGNEE_UUID = _env("SMS_AGENT_HANDOFF_ASSIGNEE", "")
 
+# Which intents queue a debounced hot-lead handoff. A sensitive reply (ESCALATE:
+# threats, lawyers, a death, harassment) is NOT governed by this list any more:
+# it posts on its own, immediately, every time. It used to sit behind this
+# gate and behind the ops-suppression in escalate.alert(), and a man saying he
+# would be at the Huntersville office tomorrow reached nobody (2026-09-10).
 ESCALATE_INTENTS = [
     x.strip().upper()
     for x in _env("SMS_AGENT_ESCALATE_INTENTS", "INTERESTED").split(",")

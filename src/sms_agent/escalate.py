@@ -25,10 +25,10 @@ from . import classify, config, store
 
 log = logging.getLogger(__name__)
 
-# The only alert kinds allowed to reach the channel. A live seller, and the
-# daily campaign summary that was explicitly asked for. Everything else is
-# bookkeeping and belongs in the digest.
-ALWAYS_POST = {"handoff", "campaign", "needs_reply", "followup"}
+# The only alert kinds allowed to reach the channel. A live seller, the daily
+# campaign summary that was explicitly asked for, and a sensitive reply that
+# needs a person now. Everything else is bookkeeping and belongs in the digest.
+ALWAYS_POST = {"handoff", "campaign", "needs_reply", "followup", "sensitive"}
 
 RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
@@ -279,6 +279,47 @@ def _thread_block(thread: list[dict]) -> dict:
     return {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
 
 
+def sensitive(
+    phone: str,
+    inbound: str,
+    rationale: str = "",
+    context: Optional[dict] = None,
+    thread: Optional[list[dict]] = None,
+    record_uuid: str = "",
+) -> bool:
+    """A reply a person must handle NOW: a threat, a lawyer, a death, harassment.
+
+    Posts directly, like `hot_lead`, so neither the ESCALATE_INTENTS gate nor
+    the ops suppression in `alert()` can swallow it. Not debounced either: one
+    post per sensitive message. Both of those gates did swallow it -- "Oren
+    Markowitz you can answer me now or I will be at your Huntersville office
+    tomorrow" (7045601058, 2026-09-10 17:56) paused the thread and reached the
+    channel 21 minutes later only because the man texted once more and the
+    follow-up nudge quoted that instead.
+    """
+    ctx = context or {}
+    who = ctx.get("owner_first") or "Unknown owner"
+    where = ", ".join(x for x in (ctx.get("street"), ctx.get("city"), ctx.get("state")) if x)
+    mention = f"<@{config.HANDOFF_SLACK_ID}> " if config.HANDOFF_SLACK_ID else ""
+    lines = [
+        f"{mention}*:rotating_light: Sensitive reply - needs a person now*",
+        f"*{who}*  {_fmt_phone(phone)}" + (f"  {where}" if where else ""),
+        f"> {inbound.strip()[:400]}",
+    ]
+    if rationale:
+        lines.append(f"_{rationale[:300]}_")
+    lines.append("_The agent has paused this thread and will not reply on it._")
+    if record_uuid:
+        lines.append(RECORD_URL.format(uuid=record_uuid))
+    text = "\n".join(lines)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+    if thread:
+        blocks.append(_thread_block(thread))
+    if config.slack_listener_ready():
+        blocks.append(hot_lead_buttons(phone, record_uuid))
+    return _post(text, blocks)
+
+
 def draft_for_approval(
     phone: str,
     inbound: str,
@@ -435,11 +476,14 @@ def alert(title: str, detail: str = "", record_uuid: str = "", kind: str = "ops"
     `kind="campaign"`, `kind="handoff"`, and `kind="needs_reply"` are the
     exceptions: the daily "here is what went out" that was explicitly asked
     for, a live seller, and a live thread waiting on a human answer.
+
+    Returns False when the alert was suppressed. It used to return True, so
+    every caller logged "escalated" for a message nobody saw.
     """
     if config.SLACK_INTERESTED_ONLY and kind not in ALWAYS_POST:
         log.info("slack suppressed (%s): %s | %s", kind, title, detail[:200])
         store.set_meta(f"last_notice_{kind}", f"{title} :: {detail[:300]}")
-        return True
+        return False
 
     text = f"*{title}*" + (f"\n{detail}" if detail else "")
     if record_uuid:

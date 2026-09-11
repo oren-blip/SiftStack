@@ -621,6 +621,62 @@ def run(live_model: bool = False) -> int:
     finally:
         crm.find_records_by_phone = _find
 
+    # ---- 4d. a sensitive reply reaches a person, every time ----------------
+    # "Oren Markowitz you can answer me now or I will be at your Huntersville
+    # office tomorrow" (7045601058, 2026-09-10) paused the thread and posted
+    # nothing: the ESCALATE_INTENTS gate (INTERESTED only) and the ops
+    # suppression in alert() each swallowed it. Neither may ever again.
+    print("\nsensitive reply")
+    _sio = config.SLACK_INTERESTED_ONLY
+    config.SLACK_INTERESTED_ONLY = True
+    _find = crm.find_records_by_phone
+    crm.find_records_by_phone = lambda phone, limit=10: []
+    try:
+        r.check("a suppressed alert says so", escalate.alert("x", "y", kind="ops") is False)
+        r.check("an allowed alert still posts", escalate.alert("x", "y", kind="followup") is True)
+
+        store.map_phone("8650009336", record_uuid="rec-9336", context=ctx)
+        stub.slack.clear()
+        out = inbound("8650009336", "my attorney will be in touch", sms_id="sens-1")
+        r.check("posts exactly one Slack message, with the default gate",
+                len(stub.slack) == 1, f"{len(stub.slack)} posts; ESCALATE_INTENTS={config.ESCALATE_INTENTS}")
+        post = stub.slack[-1] if stub.slack else ""
+        r.check("the post quotes the message", "my attorney will be in touch" in post, post[:200])
+        r.check("the post is labelled sensitive", "Sensitive" in post, post[:120])
+        r.check("the outcome says it posted",
+                any("sensitive posted" in a for a in out.get("actions", [])),
+                str(out.get("actions")))
+        conv = store.get_conversation("8650009336") or {}
+        r.check("the thread is paused as sensitive",
+                conv.get("state") == "paused" and str(conv.get("paused_reason")).startswith("sensitive:"),
+                str(conv.get("paused_reason")))
+
+        # From a line we cannot name, it still posts.
+        stub.slack.clear()
+        out = inbound("8650009337", "I will be at your office tomorrow with my lawyer", sms_id="sens-2")
+        r.check("an unmapped sensitive reply still posts",
+                len(stub.slack) == 1 and out.get("action") == "escalated",
+                f"{len(stub.slack)} posts; action={out.get('action')}")
+
+        # Buttons under it when a listener is up, none when it is not.
+        captured: list = []
+        real_post = escalate._post
+        escalate._post = lambda text, blocks=None: (captured.append((text, blocks)) or True)
+        config.SLACK_BOT_TOKEN, config.SLACK_APP_TOKEN, config.SLACK_CHANNEL = "xoxb-t", "xapp-t", "C1"
+        escalate.sensitive("8650009336", "my attorney will be in touch", "lawyer", ctx, [], "rec-9336")
+        acts = [b for b in (captured[-1][1] or []) if b.get("type") == "actions"]
+        r.check("the sensitive post carries Got it / Not a lead",
+                bool(acts) and [e["action_id"] for e in acts[0]["elements"]] == list(escalate.LEAD_ACTIONS),
+                str([e["action_id"] for e in acts[0]["elements"]] if acts else "no buttons"))
+        config.SLACK_BOT_TOKEN = config.SLACK_APP_TOKEN = config.SLACK_CHANNEL = ""
+        escalate.sensitive("8650009336", "my attorney will be in touch", "lawyer", ctx, [], "rec-9336")
+        r.check("no buttons without a listener",
+                not [b for b in (captured[-1][1] or []) if b.get("type") == "actions"])
+        escalate._post = real_post
+    finally:
+        config.SLACK_INTERESTED_ONLY = _sio
+        crm.find_records_by_phone = _find
+
     # ---- 5. human takeover silences the agent ---------------------------
     print("\nhuman takeover")
     inbound("8650004444", "who is this")

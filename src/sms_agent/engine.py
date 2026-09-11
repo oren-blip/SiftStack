@@ -71,6 +71,17 @@ def _suppress_unknown(phone: str, intent: str) -> list[str]:
     return acts
 
 
+def _post_sensitive(phone: str, body: str, result, context: Optional[dict],
+                    thread: Optional[list[dict]], record_uuid: str) -> str:
+    """Put a sensitive reply in front of a person and say whether that worked."""
+    ok = escalate.sensitive(phone, body, result.rationale, context, thread, record_uuid)
+    if ok:
+        log.info("sensitive reply from %s posted to Slack", phone)
+        return "escalated:sensitive posted"
+    log.error("sensitive reply from %s could NOT be posted to Slack: %s", phone, body[:160])
+    return "escalated:sensitive post FAILED - check the log"
+
+
 def _report(result: dict) -> str:
     """Describe a CRM write honestly.
 
@@ -144,6 +155,14 @@ def handle_inbound(payload: dict) -> dict:
             outcome["actions"] += _suppress_unknown(phone, result.intent)
             outcome["action"] = result.intent.lower()
             return outcome
+        # A threat from a line we cannot name still needs a person now.
+        if result.intent == "ESCALATE":
+            store.pause_conversation(phone, f"sensitive: {result.rationale}")
+            store.cancel_queued(phone, "sensitive content")
+            if config.PHASE >= 2:
+                outcome["actions"].append(_post_sensitive(phone, body, result, {}, thread, ""))
+            outcome["action"] = "escalated"
+            return outcome
         # Everything else is logged, not escalated. Slack is for handing a
         # conversation to a person, not a feed of every stray inbound.
         log.info("unmapped inbound from %s: %s", phone, body[:120])
@@ -168,19 +187,15 @@ def handle_inbound(payload: dict) -> dict:
         return outcome
 
     if result.intent == "ESCALATE":
+        # Pause first, post second, and post unconditionally. This used to sit
+        # behind config.ESCALATE_INTENTS (default: INTERESTED only) and then
+        # behind the ops suppression in escalate.alert(), so a sensitive reply
+        # paused the thread and told nobody (7045601058, 2026-09-10).
         store.pause_conversation(phone, f"sensitive: {result.rationale}")
         store.cancel_queued(phone, "sensitive content")
         if config.PHASE >= 2:
             crm.add_tags(record_uuid, [config.TAG_AI_PAUSED, config.TAG_ESCALATED])
-            if "ESCALATE" in config.ESCALATE_INTENTS:
-                escalate.alert(
-                    "Sensitive SMS reply - needs a person now",
-                    f"> {body[:400]}\n_{result.rationale}_",
-                    record_uuid,
-                )
-                outcome["actions"].append("escalated:sensitive")
-            else:
-                outcome["actions"].append("sensitive: tagged and paused, not posted to Slack")
+            outcome["actions"].append(_post_sensitive(phone, body, result, context, thread, record_uuid))
         outcome["action"] = "escalated"
         return outcome
 
