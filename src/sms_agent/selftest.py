@@ -741,6 +741,50 @@ def run(live_model: bool = False) -> int:
     finally:
         classify.classify_llm = _llm
 
+    # ---- 4f. a relative answering is not a wrong number -------------------
+    # "My name is Lisa Dana is my sister it's my mom's house" (7046748532,
+    # 2026-09-10) was WRONG_NUMBER 0.75 from the model and suppressed for good.
+    # The sibling who picks up on an estate IS the lead. Only a model
+    # WRONG_NUMBER is guarded; "wrong number" from the rules stays terminal,
+    # and Kristie's "we are not selling anything" stays a no.
+    print("\nrelatives")
+    W = lambda conf, text: (text, classify.Classification("WRONG_NUMBER", conf, "llm", "not the owner"))
+    for text, c, expect in (
+        (*W(0.75, "My name is Lisa Dana is my sister it's my mom's house"), "OTHER"),
+        (*W(0.75, "Well it was my mom's. But she left it to her late husband. So I have no ties to it"), "OTHER"),
+        (*W(0.80, "That's my dad's place, he passed in March"), "OTHER"),
+        (*W(0.70, "I'm the executor of the estate, not the owner"), "OTHER"),
+        (*W(0.90, "I'm not Sallie."), "WRONG_NUMBER"),
+        (*W(0.90, "I am not Bashawn"), "WRONG_NUMBER"),
+        (*W(0.85, "I'm not the owner, I work in real estate"), "WRONG_NUMBER"),  # 'real estate' is not 'estate'
+    ):
+        got = classify.guard_llm(text, c)
+        r.check(f"WRONG_NUMBER {c.confidence:.2f} {text[:38]!r} -> {expect}",
+                got.intent == expect, f"got {got.intent} ({got.source}: {got.rationale[:80]})")
+    r.check("'wrong number' from the rules is still terminal",
+            classify.classify("Wrong number").intent == "WRONG_NUMBER")
+    kristie = classify.classify(
+        "This is actually his sister Kristie, that is going to my brother. I am the "
+        "Administrator to our Parents. We are not selling anything. So take it off your list.")
+    r.check("a relative saying no is still a no",
+            kristie.intent == "NOT_INTERESTED" and kristie.source == "rules", str(kristie.to_dict()))
+    r.check("the prompt tells the model a relative is a lead", "relative" in classify.SYSTEM)
+
+    _llm = classify.classify_llm
+    try:
+        classify.classify_llm = lambda text, history=None: classify.Classification(
+            "WRONG_NUMBER", 0.75, "llm", "says she is not Dana")
+        store.map_phone("8650009340", record_uuid="rec-9340", context=ctx)
+        out = inbound("8650009340", "My name is Lisa Dana is my sister it's my mom's house", sms_id="rel-1")
+        r.check("the sister is not suppressed", store.is_suppressed("8650009340") is None,
+                str(store.is_suppressed("8650009340")))
+        r.check("a reply is drafted for a person to approve", out.get("action") == "replied",
+                str(out.get("action")))
+        conv = store.get_conversation("8650009340") or {}
+        r.check("the thread stays open", conv.get("state") == "active", str(conv.get("state")))
+    finally:
+        classify.classify_llm = _llm
+
     # ---- 5. human takeover silences the agent ---------------------------
     print("\nhuman takeover")
     inbound("8650004444", "who is this")

@@ -312,7 +312,7 @@ SYSTEM = """You classify one inbound SMS from a property owner replying to a rea
 Return exactly one intent:
 - INTERESTED: engages about selling, asks price/offer/process, asks to be called, says yes, or gives any opening.
 - NOT_INTERESTED: a soft no. Not selling, already listed, has an agent, "no thanks". This is NOT a legal opt-out.
-- WRONG_NUMBER: says they are not the owner, do not own the property, or the number belongs to someone else.
+- WRONG_NUMBER: says they are not the owner, do not own the property, or the number belongs to someone else - but NOT when they say they are a relative of the owner (sibling, child, spouse, parent) or that the property belonged to a family member. A relative is a lead, not a wrong number: label that OTHER.
 - ASKING_WHO: does not know who is texting or how you got their info, asks what property, or asks if this is a bot or a scam.
 - ESCALATE: mentions a lawyer, a death, bankruptcy, harassment, a regulator, or anything a human must handle personally.
 - OTHER: anything that fits none of the above.
@@ -418,6 +418,16 @@ BARE_NO = re.compile(
     r"(?:[\s,.!]+(?:thanks?|thank\s+you|sir|ma'?am|bruh|bro|man|dude|sorry|please|ty))?\W*$",
     re.I,
 )
+# A relative answering. The model is told "not the owner = WRONG_NUMBER", and
+# there was no relative anywhere in its vocabulary, so "My name is Lisa Dana
+# is my sister it's my mom's house" (7046748532, 2026-09-10) was suppressed
+# for good. In an estate business the sibling who picks up IS the lead.
+FAMILY = re.compile(
+    r"\b(?:sister|brother|mom|mother|dad|father|son|daughter|husband|wife|aunt|uncle|cousin"
+    r"|niece|nephew|grand(?:ma|pa|mother|father|son|daughter|parents?)|in[- ]laws?|late\s+(?:husband|wife)"
+    r"|passed(?:\s+away)?|(?<!real\s)estate|executor|executrix|administrator|administratrix|heirs?|inherited)\b",
+    re.I,
+)
 # A firm no in more words. Hostile, or a settled fact. Never drafted at.
 FIRM_NO = re.compile(
     r"\bf+u+c+k|\bpiss\s+off\b|\bget\s+lost\b|\bgo\s+away\b|\bscrew\s+you\b|\bhell\s+no\b|\babsolutely\s+not\b"
@@ -437,6 +447,16 @@ def guard_llm(text: str, c: Classification) -> Classification:
     if c.source != "llm":
         return c
     t = (text or "").strip()
+
+    if c.intent == "WRONG_NUMBER":
+        fam = FAMILY.search(t)
+        if fam:
+            return Classification(
+                "OTHER", 0.6, "guard",
+                f"relative answered ('{fam.group(0)}') - a person decides; model said WRONG_NUMBER "
+                f"{c.confidence:.2f}: {c.rationale}"[:300],
+            )
+        return c
 
     if c.intent == "NOT_INTERESTED":
         if BARE_NO.search(t) or FIRM_NO.search(t):
