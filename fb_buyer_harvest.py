@@ -656,17 +656,49 @@ def _locate_thread(page, gid: str, post: dict) -> tuple[str, str]:
 
 
 def _harvest_thread_here(page, gid: str, permalink: str) -> dict:
-    """Comments from whatever post is open now (page or dialog)."""
+    """Comments from whatever post is open now (page or dialog).
+
+    The comment list is VIRTUALISED - Facebook drops comments out of the DOM as
+    they scroll away, so a single read after the expansion loop returns only the
+    last screen. This read one-at-the-end and captured 10 of 41 / 11 of 53 / 19
+    of 87 on the lender run; _harvest_thread has always accumulated per round.
+    Rounds raised 14 -> 40 to match it.
+    """
     sorted_all = _switch_to_all_comments(page)
-    for _ in range(14):
+    raw_by_key: dict[tuple, dict] = {}
+
+    def _grab():
+        for c in page.evaluate(COMMENTS_JS):
+            raw_by_key.setdefault((c["author"], c["text"][:120]), c)
+
+    # The post usually opens in a DIALOG. The wheel scrolls whatever is under the
+    # pointer, so without this the page behind the dialog scrolls, the comment list
+    # never lazy-loads, and the run stops at the first screenful (9 of 65).
+    try:
+        page.mouse.move(700, 600)
+    except Exception:
+        pass
+    _grab()
+    stale = 0
+    for _ in range(40):
         n = page.evaluate(EXPAND_JS)
+        before = len(raw_by_key)
         page.wait_for_timeout(random.uniform(1500, 2500))
+        _grab()
         page.mouse.wheel(0, 1500)
         page.wait_for_timeout(600)
-        if n == 0:
-            break
+        _grab()
+        # Don't quit the moment no expander is on screen - more load in as you
+        # scroll. Only give up after three rounds that add nothing at all.
+        if n == 0 and len(raw_by_key) == before:
+            stale += 1
+            if stale >= 3:
+                break
+        else:
+            stale = 0
     post_text = _clean(page.evaluate(POST_JS))
-    raw = page.evaluate(COMMENTS_JS)
+    _grab()
+    raw = list(raw_by_key.values())
     seen, comments = set(), []
     for c in raw:
         c["text"] = _clean(c["text"])
