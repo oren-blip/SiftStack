@@ -194,6 +194,20 @@ def _not_lead(phone: str, uuid: str) -> str:
     return f"closed as a soft no, {n} draft(s) dropped"
 
 
+def _not_lead_stop(phone: str, uuid: str) -> str:
+    """The seller named a price and said "if not interested lose my number", and
+    a human just said not interested. Honour the second half exactly as a STOP
+    is honoured: local suppression plus the one CRM write the scope permits
+    (phone status DNC). Same code path, so it cannot drift from a real opt-out.
+    """
+    from . import engine
+
+    conv = store.ensure_conversation(phone)
+    acts = engine._do_opt_out(phone, uuid or conv.get("record_uuid") or "")
+    detail = "; ".join(a for a in acts if a.startswith(("phone ->", "suppressed")))
+    return f"closed and opted out (they asked, if we passed) - {detail[:220]}"
+
+
 def _got_it(phone: str, uuid: str, who: str) -> str:
     """Acknowledge a hot lead from the phone. The engine already paused the
     thread at handoff; this records WHO took it so the digest and the next
@@ -240,6 +254,8 @@ def handle(action_id: str, phone: str, uuid: str = "", who: str = "") -> str:
         return _got_it(phone, uuid, who)
     if action_id == "sms_not_lead":
         return _not_lead(phone, uuid)
+    if action_id == "sms_not_lead_stop":
+        return _not_lead_stop(phone, uuid)
     return _wrong(phone, uuid)
 
 

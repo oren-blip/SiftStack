@@ -524,6 +524,103 @@ def run(live_model: bool = False) -> int:
     r.check("thread paused for the human", conv3333.get("state") == "paused",
             str(conv3333.get("state")))
 
+    # ---- 4c. a named price beats a terminal phrase ------------------------
+    # "$335,000.00. Cash and if not interested lose my number. Have a great day"
+    # (7046785412, 2026-09-10) is an offer with a condition on it. The rules
+    # read only the condition: OPT_OUT, DNC written to Sift, never shown to a
+    # person. A price is the one thing a human must judge every time, so it goes
+    # to the hot-lead post with the condition carried along. The negative
+    # controls are the point: a ZIP code, a house number or a year next to
+    # "stop" must still be a stop, and a carrier keyword on its own sentence
+    # always wins.
+    print("\nprice beats stop")
+    PRICE_STOP = "$335,000.00. Cash and if not interested lose my number. Have a great day"
+    got = classify.classify(PRICE_STOP)
+    r.check("a price with 'lose my number' is INTERESTED, not an opt-out",
+            got.intent == "INTERESTED", str(got.to_dict()))
+    r.check("the rationale carries the price", "$335,000" in got.rationale, got.rationale)
+    r.check("the rationale carries the condition", "lose my number" in got.rationale,
+            got.rationale)
+    for text, expect in (
+        ("I'd take 250k for it but stop texting me", "INTERESTED"),
+        ("not selling unless you pay 400,000", "INTERESTED"),
+        ("The house was built in 1962, stop texting me", "OPT_OUT"),
+        ("call me at 704 621 0442 and take me off your list", "OPT_OUT"),
+        ("wrong number, I'm in 28027", "WRONG_NUMBER"),           # a ZIP is not a price
+        ("I don't own that, I'm at 12345 Main St", "WRONG_NUMBER"),  # nor a house number
+        ("$335,000. STOP", "OPT_OUT"),          # the carrier keyword always wins
+        ("Wrong number. STOP", "OPT_OUT"),      # ...and is no longer dropped
+        ("not mine, unsubscribe", "OPT_OUT"),
+        ("wrong number, stop by the office sometime", "WRONG_NUMBER"),
+    ):
+        got = classify.classify(text)
+        r.check(f"{text[:40]!r} -> {expect}", got.intent == expect,
+                f"got {got.intent} ({got.source}: {got.rationale})")
+    r.check("'end of story' is not an opt-out",
+            classify.classify("No, end of story").intent != "OPT_OUT")
+    r.check("opt_out_signal quotes the writer's words",
+            classify.opt_out_signal(PRICE_STOP) == "lose my number",
+            str(classify.opt_out_signal(PRICE_STOP)))
+    r.check("opt_out_signal sees an embedded keyword",
+            classify.opt_out_signal("Wrong number. STOP") == "stop",
+            str(classify.opt_out_signal("Wrong number. STOP")))
+    r.check("opt_out_signal ignores 'stop by'",
+            classify.opt_out_signal("stop by the office") is None)
+    r.check("strict price needs a money marker or six figures",
+            classify.price_in("I'm in 28027", strict=True) == 0
+            and classify.price_in("28027", strict=False) == 28027
+            and classify.price_in("250000 firm", strict=True) == 250000)
+
+    # End to end: no suppression, no CRM write, a hot-lead post that names the
+    # ask and the condition, and a third button that honours the condition.
+    _find = crm.find_records_by_phone
+    crm.find_records_by_phone = lambda phone, limit=10: []
+    try:
+        store.map_phone("8650009335", record_uuid="rec-9335", context=ctx)
+        writes_before = len(stub.crm_writes)
+        out = inbound("8650009335", PRICE_STOP, sms_id="price-1")
+        r.check("routes to the human, not to opted_out", out.get("action") == "handoff",
+                str(out.get("action")))
+        r.check("the line is NOT suppressed", store.is_suppressed("8650009335") is None,
+                str(store.is_suppressed("8650009335")))
+        r.check("no DNC reaches the CRM",
+                not any(w[0] == "set_phone_status" and "DNC" in str(w[1]).upper()
+                        and "8650009335" in str(w[1])
+                        for w in stub.crm_writes[writes_before:]),
+                str([w for w in stub.crm_writes[writes_before:] if w[0] == "set_phone_status"]))
+        with store.tx() as c:
+            c.execute("UPDATE escalations SET due_at='2000-01-01T00:00:00+00:00'"
+                      " WHERE phone='8650009335'")
+        stub.slack.clear()
+        _w.flush_escalations()
+        post = stub.slack[-1] if stub.slack else ""
+        r.check("the handoff names the ask", "Asking $335,000" in post, post[:200])
+        r.check("the handoff carries the condition", "They also said" in post
+                and "lose my number" in post, post[:300])
+
+        lead = escalate.hot_lead_buttons("8650009335", "rec-9335", conditional_opt_out=True)
+        ids = [e["action_id"] for e in lead["elements"]]
+        r.check("a conditional opt-out adds the third button",
+                ids == list(escalate.LEAD_ACTIONS) + ["sms_not_lead_stop"], str(ids))
+        r.check("the third button confirms first",
+                "confirm" in lead["elements"][-1])
+        r.check("a plain hot lead does NOT get it",
+                "sms_not_lead_stop" not in
+                [e["action_id"] for e in escalate.hot_lead_buttons("8650009335")["elements"]])
+        from . import slack_buttons as _sb
+        msg = _sb.handle("sms_not_lead_stop", "8650009335", "rec-9335")
+        r.check("the tap suppresses the line", store.is_suppressed("8650009335") == "opt_out",
+                str(store.is_suppressed("8650009335")))
+        conv = store.get_conversation("8650009335") or {}
+        r.check("the tap closes the thread as opted out", conv.get("state") == "opted_out",
+                str(conv.get("state")))
+        r.check("the tap makes the one permitted CRM write",
+                any(w[0] == "set_phone_status" and "8650009335" in str(w[1])
+                    and "DNC" in str(w[1]).upper() for w in stub.crm_writes[writes_before:]),
+                msg)
+    finally:
+        crm.find_records_by_phone = _find
+
     # ---- 5. human takeover silences the agent ---------------------------
     print("\nhuman takeover")
     inbound("8650004444", "who is this")

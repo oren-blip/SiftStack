@@ -41,6 +41,16 @@ OPT_OUT = [
     r"\bnever\s+(text|contact|message)\s+me\b",
 ]
 
+# A carrier keyword as its own sentence inside a longer message: "Wrong number.
+# STOP", "not mine, unsubscribe". The bare-keyword rule above is anchored to the
+# whole message, so these used to fall through to WRONG_NUMBER and the STOP was
+# dropped on the floor (2026-09-09, 7042226408). Sentence-bounded on both sides
+# so "stop by the office" and "end of story" stay clear.
+OPT_OUT_EMBEDDED = [
+    r"(?:^|[.!?,;\n]\s*)(?:please\s+)?(stop|stopall|quit|end|cancel|unsubscribe|revoke|opt\s*-?\s*out)"
+    r"\s*[.!]*\s*(?:$|[.!?\n])",
+]
+
 # Strong signals only. A wrong-number flip writes to the CRM and permanently
 # suppresses a number, so it must not fire on "I don't think so".
 WRONG_NUMBER = [
@@ -184,6 +194,69 @@ def _hit(text: str, patterns: list[str]) -> Optional[str]:
     return None
 
 
+def _hit_text(text: str, patterns: list[str]) -> Optional[str]:
+    """Like `_hit`, but returns the words that matched rather than the regex.
+
+    For anything a human reads: a Slack line saying they also said 'lose my
+    number' is useful, one quoting `\\blose\\s+my\\s+number\\b` is not.
+    """
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return " ".join(m.group(0).split()).strip(" .!?,;")
+    return None
+
+
+def price_in(text: str, strict: bool = False) -> float:
+    """A price the owner named in their own message, or 0.0.
+
+    Bare numbers count: sellers write "350,000" far more often than "$350,000"
+    (Mark Pilkington, 401 W 1St St, 2026-08-22). A bare 4-digit number is a
+    year or a house number far more often than a price ("built in 1962"), so it
+    only counts when the writer marked it as money -- a dollar sign, a thousands
+    comma, a k suffix -- or when it is too large to be either.
+
+    `strict` is for decisions rather than display. Unmarked 5-digit numbers are
+    ZIP codes and house numbers ("I'm in 28027", "12345 Main St"); showing one
+    as an ask beside an estimate is a cosmetic miss, but letting it turn a
+    wrong-number into a hot lead is not. Strict requires the money marker or
+    six figures.
+    """
+    best = 0.0
+    for m in re.finditer(r"(\$)?\s?(\d[\d,]*)\s*([kK])?", text or ""):
+        dollar, raw, kilo = m.group(1), m.group(2).rstrip(","), m.group(3)
+        try:
+            n = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        if kilo:
+            n *= 1000
+        # A comma marks money only as a thousands separator ("335,000"), not
+        # as the punctuation after a year ("built in 1962, stop texting me").
+        grouped = bool(re.fullmatch(r"\d{1,3}(,\d{3})+", raw))
+        marked = bool(dollar) or grouped or bool(kilo)
+        if not marked and n < (100_000 if strict else 10_000):
+            continue
+        if 1000 <= n <= 100_000_000:
+            best = max(best, n)
+    return best
+
+
+def fmt_money(n: float) -> str:
+    return f"${round(n):,}" if n else ""
+
+
+def opt_out_signal(text: str) -> Optional[str]:
+    """The opt-out phrase in this message, if there is one, in the writer's words.
+
+    Used where an opt-out arrives alongside something else -- a price, a
+    wrong-number -- and the message is routed on the something else, so the
+    request to stop must be carried along rather than lost.
+    """
+    t = (text or "").strip().lower()
+    return _hit_text(t, OPT_OUT) or _hit_text(t, OPT_OUT_EMBEDDED)
+
+
 def classify_rules(text: str) -> Optional[Classification]:
     """Deterministic pass. Returns None when nothing fires with confidence."""
     t = (text or "").strip().lower()
@@ -193,7 +266,28 @@ def classify_rules(text: str) -> Optional[Classification]:
     hit = _hit(t, ESCALATE_NOW)
     if hit:
         return Classification("ESCALATE", 1.0, "rules", f"sensitive: {hit}")
-    hit = _hit(t, OPT_OUT)
+
+    # A named price beats a terminal phrase. "$335,000.00. Cash and if not
+    # interested lose my number" (2026-09-10, 7046785412) is a seller making an
+    # offer with a condition on it, and the rules read only the condition:
+    # OPT_OUT, DNC written to the CRM, never shown to a person. A price is the
+    # one thing a human must judge every time (see escalate._asking_price), so
+    # it goes to the hot-lead post with the condition carried along in the
+    # rationale and on the post itself. Deliberately narrow: a price with no
+    # terminal phrase still goes to the model as before, because "I sold it
+    # last year for 200k" is a no. A carrier keyword standing as its own
+    # sentence (OPT_OUT_EMBEDDED) is not overridden -- that is the registered
+    # opt-out and it wins regardless of what else the message says.
+    price = price_in(text, strict=True)
+    if price and not _hit(t, OPT_OUT_EMBEDDED):
+        also = _hit_text(t, OPT_OUT) or _hit_text(t, WRONG_NUMBER) or _hit_text(t, KEEPING_IT)
+        if also:
+            return Classification(
+                "INTERESTED", 0.7, "rules",
+                f"names a price ({fmt_money(price)}); also says '{also}' - honor that if you pass",
+            )
+
+    hit = _hit(t, OPT_OUT) or _hit(t, OPT_OUT_EMBEDDED)
     if hit:
         return Classification("OPT_OUT", 1.0, "rules", f"opt-out: {hit}")
     hit = _hit(t, WRONG_NUMBER)

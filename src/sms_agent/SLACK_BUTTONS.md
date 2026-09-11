@@ -37,6 +37,15 @@ A **hot-lead handoff** post gets two buttons of its own: **Got it** (records
 who took it) and **Not a lead** (closes it out). Neither sends anything or
 touches the CRM.
 
+When the seller named a price AND asked to be dropped if we pass ("$335,000
+cash, if not interested lose my number"), the post says so on a warning line
+and carries a third, confirmed button: **Not a lead + stop texting**. That one
+closes the thread and records the opt-out exactly as a STOP would (local
+suppression plus the phone-status DNC write in Sift) — the same code path, not
+a new kind of write. Without that button the "if you pass" half of their
+message would be lost, because the classifier now routes a message with a price
+to the hot-lead post instead of to opt-out (2026-09-10).
+
 Once pressed, the buttons are **removed from the message** and replaced with a
 line saying who pressed what and what happened. A draft either still has
 buttons (needs you) or it does not (done) — no scrolling to work out which.

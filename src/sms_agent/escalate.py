@@ -21,7 +21,7 @@ from typing import Optional
 
 import requests
 
-from . import config, store
+from . import classify, config, store
 
 log = logging.getLogger(__name__)
 
@@ -168,28 +168,12 @@ def _asking_price(text: str) -> str:
     Put beside the estimate so an over-ask is obvious without opening the
     record. Mark Pilkington (401 W 1St St, 2026-08-22) said "it can be yours for
     350,000"; the post carried beds and baths but no value, so triaging it meant
-    going to look. Bare numbers count: sellers write "350,000" far more often
-    than "$350,000".
+    going to look. The parser lives in classify.price_in now, because the same
+    read also decides that a price beats a "lose my number" -- one regex, not
+    two that drift apart.
     """
-    best = 0.0
-    for m in re.finditer(r"(\$)?\s?(\d[\d,]*)\s*([kK])?", text or ""):
-        dollar, raw, kilo = m.group(1), m.group(2), m.group(3)
-        try:
-            n = float(raw.replace(",", ""))
-        except ValueError:
-            continue
-        if kilo:
-            n *= 1000
-        # A bare 4-digit number is a year or a house number far more often than
-        # a price ("built in 1962", "1998 flood"). Only count it when the writer
-        # marked it as money -- a dollar sign, a thousands comma, a k suffix --
-        # or when it is too large to be either.
-        marked = bool(dollar) or "," in raw or bool(kilo)
-        if not marked and n < 10_000:
-            continue
-        if 1000 <= n <= 100_000_000:
-            best = max(best, n)
-    return _fmt_money(best) if best else ""
+    n = classify.price_in(text)
+    return _fmt_money(n) if n else ""
 
 
 def hot_lead(
@@ -260,6 +244,15 @@ def hot_lead(
     if detail:
         lines.append(", ".join(detail))
     lines.append(f"Read: *{intent}*" + (f" - {note}" if note else ""))
+    # A price with a condition on it. The classifier routed the message here
+    # on the price; the request to stop rides along so it is not lost, and the
+    # third button below is how a pass honours it.
+    conditional = classify.opt_out_signal(inbound)
+    if conditional:
+        lines.append(
+            f":warning: *They also said \"{conditional}\"* - if you pass, tap "
+            "\"Not a lead + stop texting\" so the number is DNC'd in Sift."
+        )
     if record_uuid:
         lines.append(RECORD_URL.format(uuid=record_uuid))
 
@@ -268,19 +261,22 @@ def hot_lead(
         {"type": "section", "text": {"type": "mrkdwn", "text": text}},
     ]
     if thread:
-        convo = "\n".join(
-            f"{'them' if m.get('direction') == 'in' else 'us'}: {m.get('body', '')}"
-            for m in thread[-6:]
-        )
-        blocks.append(
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
-        )
+        blocks.append(_thread_block(thread))
     # Clear it from the phone: "Got it" records who took it, "Not a lead"
     # closes it out. Both local-only; the CRM is untouched either way (Oren,
     # 2026-09-07). Same rule as drafts -- no buttons without a listener.
     if config.slack_listener_ready():
-        blocks.append(hot_lead_buttons(phone, record_uuid))
+        blocks.append(hot_lead_buttons(phone, record_uuid, conditional_opt_out=bool(conditional)))
     return _post(text, blocks)
+
+
+def _thread_block(thread: list[dict]) -> dict:
+    """The last few turns, as a code block, so the post reads without the app."""
+    convo = "\n".join(
+        f"{'them' if m.get('direction') == 'in' else 'us'}: {m.get('body', '')}"
+        for m in thread[-6:]
+    )
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
 
 
 def draft_for_approval(
@@ -341,6 +337,11 @@ ACTIONS = {
     "sms_not_lead": "Not a lead",
     "sms_wrong": "Wrong number",
     "sms_got_it": "Got it",
+    # Only rendered when the seller named a price AND asked to be dropped if we
+    # pass ("$335,000 ... if not interested lose my number"). A pass then has
+    # to honour the second half, and this is the same opt-out write a STOP
+    # takes -- not a new kind of write (Oren, 2026-09-10).
+    "sms_not_lead_stop": "Not a lead + stop texting",
 }
 DRAFT_ACTIONS = ("sms_approve", "sms_handle", "sms_not_lead", "sms_wrong")
 LEAD_ACTIONS = ("sms_got_it", "sms_not_lead")
@@ -395,17 +396,30 @@ def action_buttons(phone: str, record_uuid: str = "") -> dict:
     }
 
 
-def hot_lead_buttons(phone: str, record_uuid: str = "") -> dict:
-    """The actions block under a hot-lead handoff. Two answers, no sending."""
+def hot_lead_buttons(phone: str, record_uuid: str = "", conditional_opt_out: bool = False) -> dict:
+    """The actions block under a hot-lead handoff. Two answers, no sending.
+
+    A third, confirmed, when the seller's own words asked to be dropped if we
+    pass: "Not a lead + stop texting" closes the thread AND records the opt-out
+    the way a STOP would. Confirmed because it is the one irreversible tap on
+    the post.
+    """
     ph = store.clean_phone(phone)
     value = _value(ph, record_uuid)
+    elements = [
+        _button("sms_got_it", value, "primary"),
+        _button("sms_not_lead", value),
+    ]
+    if conditional_opt_out:
+        elements.append(_button(
+            "sms_not_lead_stop", value, "danger",
+            f"Close this out AND opt {_fmt_phone(ph)} out for good (DNC in Sift)? "
+            "They asked for exactly that if we pass.",
+        ))
     return {
         "type": "actions",
         "block_id": f"sms_lead:{ph}",
-        "elements": [
-            _button("sms_got_it", value, "primary"),
-            _button("sms_not_lead", value),
-        ],
+        "elements": elements,
     }
 
 
